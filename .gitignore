@@ -17,6 +17,10 @@ front/dist/
 *.zip
 .terraform.lock.hcl
 
+# Lambda layer build artifacts
+infra/lambda_layers/**/python/
+infra/lambda_layers/**/layer.zip
+
 # IDE
 .vscode/
 .idea/

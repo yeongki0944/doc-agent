@@ -438,6 +438,14 @@ data "archive_file" "export_docx_zip" {
   output_path = "${path.module}/export_docx.zip"
 }
 
+resource "aws_lambda_layer_version" "docxtpl" {
+  filename                 = "${path.module}/../lambda_layers/docxtpl/layer.zip"
+  layer_name               = "${local.project}-docxtpl"
+  source_code_hash         = filebase64sha256("${path.module}/../lambda_layers/docxtpl/layer.zip")
+  compatible_runtimes      = ["python3.12"]
+  compatible_architectures = ["x86_64"]
+}
+
 resource "aws_lambda_function" "export_docx" {
   function_name    = "${local.project}-export-docx"
   role             = aws_iam_role.gateway_lambda_exec.arn
@@ -445,13 +453,15 @@ resource "aws_lambda_function" "export_docx" {
   runtime          = "python3.12"
   filename         = data.archive_file.export_docx_zip.output_path
   source_code_hash = data.archive_file.export_docx_zip.output_base64sha256
-  timeout          = 60
-  memory_size      = 512
+  timeout          = 90
+  memory_size      = 1024
+  layers           = [aws_lambda_layer_version.docxtpl.arn]
   tags             = local.tags
 
   environment {
     variables = {
-      S3_BUCKET = aws_s3_bucket.artifacts.id
+      S3_BUCKET       = aws_s3_bucket.artifacts.id
+      TEMPLATE_S3_KEY = "templates/apn-poc-template.docx"
     }
   }
 }
