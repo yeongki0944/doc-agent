@@ -138,6 +138,40 @@ def _find_gateway_by_name(client, name: str) -> str | None:
     return None
 
 
+def _find_gateway_target_id_by_name(client, gateway_id: str, target_name: str) -> str | None:
+    """Find an existing Gateway target by name. Returns targetId or None."""
+    try:
+        resp = client.list_gateway_targets(gatewayIdentifier=gateway_id)
+        targets = resp.get("items", resp.get("targets", resp.get("gatewayTargets", [])))
+        for target in targets:
+            if target.get("name") == target_name or target.get("targetName") == target_name:
+                return (
+                    target.get("targetId")
+                    or target.get("gatewayTargetId")
+                    or target.get("id")
+                )
+    except Exception as exc:
+        print(f"[CDK]     Could not list gateway targets: {exc}")
+    return None
+
+
+def _ensure_lambda_invoke_permission(lambda_client, lambda_fn_name: str, role_arn: str, statement_id: str) -> None:
+    """Ensure the Gateway execution role can invoke the target Lambda."""
+    try:
+        lambda_client.add_permission(
+            FunctionName=lambda_fn_name,
+            StatementId=statement_id,
+            Action="lambda:InvokeFunction",
+            Principal=role_arn,
+        )
+        print(f"[CDK]     Lambda invoke permission added: {statement_id}")
+    except Exception as exc:
+        if "ResourceConflictException" in type(exc).__name__ or "already exists" in str(exc).lower():
+            print(f"[CDK]     Lambda invoke permission exists: {statement_id}")
+        else:
+            raise
+
+
 def _find_memory_by_name(client, name: str) -> str | None:
     """Find an existing memory by name. Returns memoryId or None."""
     try:
@@ -251,6 +285,7 @@ def create_or_update_gateway(client, env: str, account_id: str, region: str) -> 
     """Create or update AgentCore Gateway and register Lambda targets."""
     gateway_name = f"doc-agent-gateway-{env}"
     role_arn = f"arn:aws:iam::{account_id}:role/{PROJECT}-lambda-exec"
+    lambda_client = _get_boto3_client("lambda", region)
     print(f"[CDK] Creating/updating AgentCore Gateway: {gateway_name}")
 
     gateway_id = _find_gateway_by_name(client, gateway_name)
@@ -273,42 +308,62 @@ def create_or_update_gateway(client, env: str, account_id: str, region: str) -> 
         lambda_arn = f"arn:aws:lambda:{region}:{account_id}:function:{lambda_fn_name}"
         target_name = tool_name.replace("_", "-") + "-target"
         schema = TOOL_SCHEMAS.get(tool_name, {})
+        description = schema.get("description", tool_name)
+        target_configuration = {
+            "mcp": {
+                "lambda": {
+                    "lambdaArn": lambda_arn,
+                    "toolSchema": {"inlinePayload": [schema]},
+                }
+            }
+        }
+        credential_provider_configurations = [
+            {"credentialProviderType": "GATEWAY_IAM_ROLE"}
+        ]
 
         print(f"[CDK]   Registering target: {tool_name} → {lambda_fn_name}")
+        statement_id = f"AllowAgentCoreGateway{tool_name.replace('_', '')}"[:100]
         try:
-            client.create_gateway_target(
+            _ensure_lambda_invoke_permission(
+                lambda_client,
+                lambda_fn_name,
+                role_arn,
+                statement_id,
+            )
+        except Exception as pe:
+            print(f"[CDK]     Lambda permission setup failed: {pe}")
+            continue
+
+        target_id = _find_gateway_target_id_by_name(client, gateway_id, target_name)
+        if target_id:
+            print(f"[CDK]     Target exists ({target_id}), updating...")
+            try:
+                client.update_gateway_target(
+                    gatewayIdentifier=gateway_id,
+                    targetId=target_id,
+                    name=target_name,
+                    description=description,
+                    targetConfiguration=target_configuration,
+                    credentialProviderConfigurations=credential_provider_configurations,
+                )
+                print(f"[CDK]     Target updated: {target_name}")
+            except Exception as ue:
+                print(f"[CDK]     Update failed: {ue}")
+            continue
+
+        try:
+            resp = client.create_gateway_target(
                 gatewayIdentifier=gateway_id,
                 name=target_name,
-                description=schema.get("description", tool_name),
-                targetConfiguration={
-                    "mcp": {
-                        "lambda": {
-                            "lambdaArn": lambda_arn,
-                            "toolSchema": {"inlinePayload": [schema]},
-                        }
-                    }
-                },
+                description=description,
+                targetConfiguration=target_configuration,
+                credentialProviderConfigurations=credential_provider_configurations,
             )
+            created_id = resp.get("targetId", resp.get("gatewayTargetId", resp.get("id", "")))
+            suffix = f" ({created_id})" if created_id else ""
+            print(f"[CDK]     Target created: {target_name}{suffix}")
         except Exception as e:
-            if "Conflict" in type(e).__name__ or "already exists" in str(e).lower():
-                print(f"[CDK]     Target exists, updating...")
-                try:
-                    client.update_gateway_target(
-                        gatewayIdentifier=gateway_id,
-                        targetName=target_name,
-                        targetConfiguration={
-                            "mcp": {
-                                "lambda": {
-                                    "lambdaArn": lambda_arn,
-                                    "toolSchema": {"inlinePayload": [schema]},
-                                }
-                            }
-                        },
-                    )
-                except Exception as ue:
-                    print(f"[CDK]     Update failed: {ue}")
-            else:
-                print(f"[CDK]     Create failed: {e}")
+            print(f"[CDK]     Create failed: {e}")
 
     return gateway_id
 
