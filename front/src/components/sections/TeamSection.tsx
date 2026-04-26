@@ -1,9 +1,9 @@
 import { useCallback } from 'react'
 import { useDocumentStore, type FieldValue, type StaffingRole } from '../../store/documentStore'
+import { useSessionStore } from '../../store/sessionStore'
 import { AiBadge, isAiRecommended } from '../AiBadge'
 import { saveUserInput } from '../../utils/api'
-
-const DOC_ID = 'doc-demo-001'
+import { emitUserEdit } from '../../utils/userEditEvent'
 
 const resolve = (f: FieldValue | undefined | null) => f?.user_input ?? f?.ai_recommended ?? f?.calculated ?? ''
 
@@ -53,6 +53,7 @@ export function TeamSection() {
 
 function RoleRow({ role }: { role: StaffingRole }) {
   const updateRole = useDocumentStore(s => s.updateStaffingRole)
+  const docId = useSessionStore(s => s.currentDocId) || ''
 
   /**
    * Inline edit handler: writes to staffing_plan.roles[roleId].{field}.user_input only.
@@ -90,11 +91,13 @@ function RoleRow({ role }: { role: StaffingRole }) {
       } as any)
     }
 
+    // Notify chat about user edit
+    const oldVal = resolve((role as any)[field] ?? (role.phase_hours as any)[field])
+    emitUserEdit('Team', `${role.display_name} > ${field}`, String(oldVal), value)
+
     // Send user_input change to REST API (fire-and-forget)
-    saveUserInput(DOC_ID, apiPath, num).catch(() => {
-      // Error will be surfaced via status channel
-    })
-  }, [role, updateRole])
+    saveUserInput(docId, apiPath, num).catch(() => {})
+  }, [role, updateRole, docId])
 
   return (
     <tr>

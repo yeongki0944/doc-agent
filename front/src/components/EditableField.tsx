@@ -1,0 +1,129 @@
+import { useState, useRef, useEffect } from 'react'
+
+interface EditableFieldProps {
+  value: string
+  isAi?: boolean
+  onSave: (newValue: string) => void
+  placeholder?: string
+  multiline?: boolean
+  type?: 'text' | 'date'
+}
+
+/**
+ * Inline editable field. Double-click to edit, Enter/blur to save, Esc to cancel.
+ * Shows a pencil icon on hover. AI values get yellow background + badge.
+ * type="date" renders a native date picker.
+ */
+export function EditableField({ value, isAi, onSave, placeholder, multiline, type = 'text' }: EditableFieldProps) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value)
+  const [hover, setHover] = useState(false)
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
+
+  useEffect(() => { setDraft(value) }, [value])
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [editing])
+
+  const save = () => {
+    const trimmed = draft.trim()
+    setEditing(false)
+    if (trimmed && trimmed !== value) {
+      onSave(trimmed)
+    } else {
+      setDraft(value)
+    }
+  }
+
+  const cancel = () => { setDraft(value); setEditing(false) }
+
+  if (editing) {
+    const style: React.CSSProperties = {
+      width: '100%', padding: '4px 8px', border: '2px solid #3b82f6',
+      borderRadius: 4, fontSize: 14, outline: 'none', background: '#fff',
+      fontFamily: 'inherit', resize: multiline ? 'vertical' : 'none',
+    }
+    if (type === 'date') {
+      return (
+        <input
+          ref={inputRef as React.RefObject<HTMLInputElement>}
+          type="date"
+          value={draft}
+          onChange={e => {
+            setDraft(e.target.value)
+            // Auto-save on date selection
+            if (e.target.value && e.target.value !== value) {
+              onSave(e.target.value)
+            }
+            setEditing(false)
+          }}
+          onBlur={save}
+          onKeyDown={e => { if (e.key === 'Escape') cancel() }}
+          style={style}
+        />
+      )
+    }
+    if (multiline) {
+      return (
+        <textarea
+          ref={inputRef as React.RefObject<HTMLTextAreaElement>}
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={save}
+          onKeyDown={e => {
+            if (e.key === 'Escape') cancel()
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save() }
+          }}
+          rows={3}
+          style={style}
+        />
+      )
+    }
+    return (
+      <input
+        ref={inputRef as React.RefObject<HTMLInputElement>}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={e => {
+          if (e.key === 'Escape') cancel()
+          if (e.key === 'Enter') save()
+        }}
+        style={style}
+      />
+    )
+  }
+
+  const displayValue = value || placeholder || '-'
+
+  return (
+    <span
+      onDoubleClick={() => setEditing(true)}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        background: isAi ? '#fef9c3' : 'transparent',
+        padding: isAi ? '2px 6px' : '2px 4px',
+        borderRadius: 4, cursor: 'text', minHeight: 24,
+        border: hover ? '1px dashed #93c5fd' : '1px dashed transparent',
+        transition: 'border-color 0.15s',
+      }}
+      title="더블클릭하여 수정"
+    >
+      <span style={{ color: value ? 'inherit' : '#999' }}>{displayValue}</span>
+      {isAi && (
+        <span style={{
+          padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700,
+          color: '#d97706', background: '#fef3c7', border: '1px solid #fde68a',
+        }}>AI</span>
+      )}
+      {hover && (
+        <span style={{ fontSize: 12, color: '#93c5fd', marginLeft: 2, flexShrink: 0 }}>✎</span>
+      )}
+    </span>
+  )
+}

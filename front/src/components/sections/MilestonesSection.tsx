@@ -1,4 +1,9 @@
+import { useCallback } from 'react'
 import { useDocumentStore } from '../../store/documentStore'
+import { useSessionStore } from '../../store/sessionStore'
+import { EditableField } from '../EditableField'
+import { saveUserInput } from '../../utils/api'
+import { emitUserEdit } from '../../utils/userEditEvent'
 
 const PHASES = [
   { id: 'discovery', name: 'Discovery', deliverables: '요구사항 문서, 아키텍처 초안' },
@@ -9,8 +14,19 @@ const PHASES = [
 export function MilestonesSection() {
   const roles = useDocumentStore(s => s.staffing_plan?.roles ?? {})
   const sectionData = useDocumentStore(s => s.sections?.milestones) as Record<string, any> | undefined
+  const setDocument = useDocumentStore(s => s.setDocument)
+  const docId = useSessionStore(s => s.currentDocId) || ''
   const hasRoles = Object.keys(roles).length > 0
   const hasSectionData = sectionData && Object.keys(sectionData).some(k => sectionData[k])
+
+  const handleEdit = useCallback((key: string, newValue: string) => {
+    const oldValue = sectionData?.[key] ?? ''
+    const sections = useDocumentStore.getState().sections || {}
+    const updated = { ...(sections.milestones || {}), [key]: newValue }
+    setDocument({ sections: { ...sections, milestones: updated } } as any)
+    saveUserInput(docId, `sections.milestones.${key}`, newValue).catch(() => {})
+    emitUserEdit('Milestones', key, String(oldValue), newValue)
+  }, [sectionData, docId, setDocument])
 
   if (!hasRoles && !hasSectionData) {
     return (
@@ -27,12 +43,16 @@ export function MilestonesSection() {
 
       {hasSectionData && (
         <div style={{ marginBottom: 16 }}>
-          {Object.entries(sectionData).map(([key, val]) =>
+          {Object.entries(sectionData!).map(([key, val]) =>
             val ? (
-              <div key={key} style={{ marginBottom: 8, padding: 8, background: '#fef9c3', borderRadius: 4 }}>
-                <span style={{ fontWeight: 600 }}>{key}: </span>
-                {String(val)}
-                <span style={{ padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700, color: '#d97706', background: '#fef3c7', border: '1px solid #fde68a', marginLeft: 8 }}>AI</span>
+              <div key={key} style={{ marginBottom: 8, padding: 8, borderRadius: 4, border: '1px solid #f3f4f6' }}>
+                <span style={{ fontWeight: 600, marginRight: 4 }}>{key}: </span>
+                <EditableField
+                  value={String(val)}
+                  isAi={true}
+                  onSave={v => handleEdit(key, v)}
+                  multiline={String(val).length > 60}
+                />
               </div>
             ) : null
           )}

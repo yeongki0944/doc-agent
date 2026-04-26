@@ -32,6 +32,7 @@ export interface DocumentState {
   meta: { customer: FieldValue; partner: FieldValue; date: FieldValue }
   staffing_plan: { roles: Record<string, StaffingRole>; grand_total_hours: { calculated: number | null }; grand_total_cost: { calculated: number | null } }
   sections: Record<string, any>
+  sections_en?: Record<string, any>
   blocking_issues: any[]
   warnings: any[]
 }
@@ -41,7 +42,7 @@ export type AgentStatus = 'processing' | 'idle' | 'error' | 'degraded'
 const emptyField = (): FieldValue => ({ user_input: null, ai_recommended: null, calculated: null, status: 'empty' })
 
 const INITIAL_STATE: DocumentState = {
-  document_id: 'doc-demo-001',
+  document_id: '',
   mode: 'architecture_absent',
   version: 0,
   completion_score: 0.15,

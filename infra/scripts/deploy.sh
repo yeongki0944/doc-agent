@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# -----------------------------------------------
+# AWS credentials sanity — must come BEFORE any aws/terraform call
+# -----------------------------------------------
+# 다른 계정의 임시 자격증명이 export되어 있으면 AWS_PROFILE을 덮어쓰므로 제거
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+unset AWS_REGION AWS_DEFAULT_REGION
+
 export AWS_PROFILE="${AWS_PROFILE:-mzadmin}"
 REGION="ap-northeast-2"
+EXPECTED_ACCOUNT="626635430480"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV="${ENV:-demo}"
@@ -11,6 +20,22 @@ echo "============================================"
 echo " Doc Agent — Full Deploy (env=$ENV)"
 echo " Profile: $AWS_PROFILE  Region: $REGION"
 echo "============================================"
+
+# 어떤 계정으로 동작하는지 확인 후, 의도한 계정과 다르면 즉시 중단
+echo ""
+echo "=== Step 0: Verify AWS identity ==="
+CALLER_JSON=$(aws sts get-caller-identity --profile "$AWS_PROFILE" --output json)
+CALLER_ACCOUNT=$(echo "$CALLER_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['Account'])")
+CALLER_ARN=$(echo "$CALLER_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['Arn'])")
+echo "  Account: $CALLER_ACCOUNT"
+echo "  ARN:     $CALLER_ARN"
+
+if [ "$CALLER_ACCOUNT" != "$EXPECTED_ACCOUNT" ]; then
+  echo ""
+  echo "ERROR: 잘못된 AWS 계정입니다. expected=$EXPECTED_ACCOUNT, actual=$CALLER_ACCOUNT"
+  echo "       env | grep AWS 로 다른 자격증명이 export되어 있지 않은지 확인하세요."
+  exit 1
+fi
 
 # -----------------------------------------------
 # Step 1: Terraform apply (base infrastructure)
@@ -38,6 +63,7 @@ echo "=== Step 2: Update Lambda code (document_api) ==="
 cd "$ROOT_DIR"
 zip -j /tmp/document_api.zip agent/lambdas/document_api/handler.py
 aws lambda update-function-code \
+  --profile "$AWS_PROFILE" \
   --region "$REGION" \
   --function-name doc-agent-document-api \
   --zip-file fileb:///tmp/document_api.zip \
@@ -64,6 +90,7 @@ for entry in "${GATEWAY_LAMBDAS[@]}"; do
   echo "  Updating $FN_NAME..."
   zip -j "/tmp/${FILE}.zip" "agent/lambdas/gateway_tools/${FILE}.py"
   aws lambda update-function-code \
+    --profile "$AWS_PROFILE" \
     --region "$REGION" \
     --function-name "$FN_NAME" \
     --zip-file "fileb:///tmp/${FILE}.zip" \
@@ -86,14 +113,17 @@ if [ "${SKIP_FRONTEND:-}" != "true" ]; then
   echo "=== Step 5: Build & deploy frontend ==="
   cd "$ROOT_DIR/front"
 
-  # Write API URL into .env for build
   echo "VITE_API_URL=$API_GW_URL" > .env.production
 
   npm install --silent
   npx vite build
 
-  aws s3 sync dist/ "s3://$FRONTEND_BUCKET/" --delete --region "$REGION"
+  aws s3 sync dist/ "s3://$FRONTEND_BUCKET/" \
+    --profile "$AWS_PROFILE" \
+    --region "$REGION" \
+    --delete
   aws cloudfront create-invalidation \
+    --profile "$AWS_PROFILE" \
     --distribution-id "$CF_DIST_ID" \
     --paths "/*" \
     --query 'Invalidation.Id' --output text

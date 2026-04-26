@@ -59,20 +59,28 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
 }
 
 resource "aws_iam_role_policy" "lambda_dynamodb" {
-  name = "${local.project}-lambda-dynamodb"
+  name = "doc-agent-lambda-dynamodb"
   role = aws_iam_role.lambda_exec.id
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect = "Allow"
       Action = [
-        "dynamodb:GetItem", "dynamodb:PutItem",
-        "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan"
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
       ]
       Resource = [
         aws_dynamodb_table.documents.arn,
+        "${aws_dynamodb_table.documents.arn}/index/*",
         aws_dynamodb_table.patch_history.arn,
+        "${aws_dynamodb_table.patch_history.arn}/index/*",
         aws_dynamodb_table.conversation_history.arn,
+        "${aws_dynamodb_table.conversation_history.arn}/index/*",
       ]
     }]
   })
@@ -99,11 +107,24 @@ resource "aws_iam_role_policy" "lambda_bedrock" {
   role = aws_iam_role.lambda_exec.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-      Resource = ["*"]
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+        Resource = ["*"]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:CreateEvent",
+          "bedrock-agentcore:ListEvents",
+          "bedrock-agentcore:BatchCreateMemoryRecords",
+          "bedrock-agentcore:RetrieveMemoryRecords",
+          "bedrock-agentcore:ListMemoryRecords",
+        ]
+        Resource = ["arn:aws:bedrock-agentcore:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:memory/*"]
+      },
+    ]
   })
 }
 
@@ -134,6 +155,23 @@ resource "aws_dynamodb_table" "documents" {
     type = "S"
   }
   tags = local.tags
+  # 추가: GSI용 attribute 정의
+  attribute {
+    name = "user_id"
+    type = "S"
+  }
+  attribute {
+    name = "updated_at"
+    type = "S"
+  }
+
+  # 추가: GSI
+  global_secondary_index {
+    name            = "user_id-updated_at-index"
+    hash_key        = "user_id"
+    range_key       = "updated_at"
+    projection_type = "ALL"
+  }
 }
 
 resource "aws_dynamodb_table" "patch_history" {
@@ -473,7 +511,7 @@ resource "aws_lambda_function" "document_api" {
   runtime          = "python3.12"
   filename         = data.archive_file.document_api_zip.output_path
   source_code_hash = data.archive_file.document_api_zip.output_base64sha256
-  timeout          = 60
+  timeout          = 120
   memory_size      = 256
   tags             = local.tags
 
@@ -481,6 +519,8 @@ resource "aws_lambda_function" "document_api" {
     variables = {
       DOCUMENTS_TABLE            = aws_dynamodb_table.documents.name
       CONVERSATION_HISTORY_TABLE = aws_dynamodb_table.conversation_history.name
+      APPSYNC_HTTP_URL           = "https://${aws_cloudformation_stack.appsync_events.outputs["HttpDns"]}"
+      AGENTCORE_MEMORY_ID        = "doc_agent_memory-o6QiOB8zCT"
     }
   }
 }
@@ -508,8 +548,8 @@ resource "aws_apigatewayv2_api" "document_api" {
 
   cors_configuration {
     allow_origins = ["*"]
-    allow_methods = ["GET", "POST", "OPTIONS"]
-    allow_headers = ["Content-Type"]
+    allow_methods = ["GET", "POST", "DELETE", "PUT", "OPTIONS"]
+    allow_headers = ["Content-Type", "Authorization", "X-User-Id"]
     max_age       = 3600
   }
 

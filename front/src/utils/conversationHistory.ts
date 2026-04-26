@@ -88,15 +88,17 @@ export function toBoundedApiHistory(
 // Server API calls
 // ---------------------------------------------------------------------------
 
+import { apiFetch } from '../auth/api'
+
 export async function saveHistoryToServer(
-  apiBase: string,
+  _apiBase: string,
   docId: string,
   sessionId: string,
   messages: HistoryMessage[],
   boundedWindow: number = DEFAULT_BOUNDED_WINDOW,
 ): Promise<void> {
   try {
-    await fetch(`${apiBase}/documents/${docId}/history`, {
+    await apiFetch(`/documents/${docId}/history`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -119,13 +121,13 @@ export async function saveHistoryToServer(
 }
 
 export async function loadHistoryFromServer(
-  apiBase: string,
+  _apiBase: string,
   docId: string,
   sessionId?: string,
 ): Promise<ConversationHistory | null> {
   try {
     const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
-    const res = await fetch(`${apiBase}/documents/${docId}/history${qs}`)
+    const res = await apiFetch(`/documents/${docId}/history${qs}`)
     if (!res.ok) return null
     const data: ConversationHistory = await res.json()
     // Update localStorage cache with server data

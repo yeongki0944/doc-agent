@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useDocumentStore } from '../store/documentStore'
-import { requestReview, requestExport } from '../utils/api'
+import { requestReview, requestExport, getDocument } from '../utils/api'
 import { CoverSection } from './sections/CoverSection'
 import { OverviewSection } from './sections/OverviewSection'
 import { TeamSection } from './sections/TeamSection'
@@ -11,6 +11,7 @@ import { ArchitectureSection } from './sections/ArchitectureSection'
 import { MilestonesSection } from './sections/MilestonesSection'
 import { CostSection } from './sections/CostSection'
 import { AcceptanceSection } from './sections/AcceptanceSection'
+import { LangProvider, type DocLang } from './LangContext'
 
 const TABS = [
   'Cover', 'Overview', 'Team', 'Success Criteria', 'Assumptions',
@@ -32,25 +33,37 @@ const TAB_COMPONENTS: Record<TabName, React.FC> = {
   Acceptance: AcceptanceSection,
 }
 
-export function DocumentPanel() {
+export function DocumentPanel({ docId }: { docId: string }) {
   const [activeTab, setActiveTab] = useState<TabName>('Cover')
   const completionScore = useDocumentStore(s => s.completion_score ?? 0)
   const blockingIssues = useDocumentStore(s => s.blocking_issues ?? [])
-  const docId = useDocumentStore(s => s.document_id)
+  const setDocument = useDocumentStore(s => s.setDocument)
+  const [lang, setLang] = useState<DocLang>('ko')
   const ActiveComponent = TAB_COMPONENTS[activeTab]
 
+  // Load document data when docId changes
+  useEffect(() => {
+    let cancelled = false
+    getDocument(docId).then(doc => {
+      if (!cancelled && doc) setDocument(doc)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [docId, setDocument])
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <Header completionScore={completionScore} blockingIssues={blockingIssues} docId={docId} />
-      <TabBar tabs={TABS} active={activeTab} onSelect={setActiveTab} />
-      <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-        <ActiveComponent />
+    <LangProvider value={lang}>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <Header completionScore={completionScore} blockingIssues={blockingIssues} docId={docId} lang={lang} onLangChange={setLang} />
+        <TabBar tabs={TABS} active={activeTab} onSelect={setActiveTab} />
+        <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+          <ActiveComponent />
+        </div>
       </div>
-    </div>
+    </LangProvider>
   )
 }
 
-function Header({ completionScore, blockingIssues, docId }: { completionScore: number; blockingIssues: any[]; docId: string }) {
+function Header({ completionScore, blockingIssues, docId, lang, onLangChange }: { completionScore: number; blockingIssues: any[]; docId: string; lang: DocLang; onLangChange: (l: DocLang) => void }) {
   const exportEnabled = blockingIssues.length === 0
 
   return (
@@ -59,7 +72,8 @@ function Header({ completionScore, blockingIssues, docId }: { completionScore: n
         <span style={{ fontWeight: 600, fontSize: 15 }}>APN PoC Project Plan</span>
         <CompletionBadge score={completionScore} />
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <LangToggle lang={lang} onChange={onLangChange} />
         <ReviewButton docId={docId} />
         <ExportButton disabled={!exportEnabled} docId={docId} />
       </div>
@@ -134,6 +148,31 @@ function ReviewButton({ docId }: { docId: string }) {
     >
       {loading ? '리뷰 중...' : '리뷰 요청'}
     </button>
+  )
+}
+
+function LangToggle({ lang, onChange }: { lang: DocLang; onChange: (l: DocLang) => void }) {
+  return (
+    <div style={{ display: 'flex', borderRadius: 6, border: '1px solid #d1d5db', overflow: 'hidden', fontSize: 12 }}>
+      <button
+        onClick={() => onChange('ko')}
+        style={{
+          padding: '4px 10px', border: 'none', cursor: 'pointer',
+          background: lang === 'ko' ? '#3b82f6' : '#fff',
+          color: lang === 'ko' ? '#fff' : '#666',
+          fontWeight: lang === 'ko' ? 600 : 400,
+        }}
+      >한글</button>
+      <button
+        onClick={() => onChange('en')}
+        style={{
+          padding: '4px 10px', border: 'none', cursor: 'pointer',
+          background: lang === 'en' ? '#3b82f6' : '#fff',
+          color: lang === 'en' ? '#fff' : '#666',
+          fontWeight: lang === 'en' ? 600 : 400,
+        }}
+      >ENG</button>
+    </div>
   )
 }
 

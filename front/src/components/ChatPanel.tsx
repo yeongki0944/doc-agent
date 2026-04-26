@@ -1,18 +1,24 @@
 import { useState, useEffect, useRef } from 'react'
 import { useDocumentStore } from '../store/documentStore'
 import { StatusBar } from './StatusBar'
-import { initDocumentSubscription } from '../utils/appsync'
+import { initDocumentSubscription, type AppSyncMessage } from '../utils/appsync'
 import {
   type HistoryMessage,
   toBoundedApiHistory,
   saveHistoryToServer,
   loadHistory,
 } from '../utils/conversationHistory'
+import { apiFetch } from '../auth/api'
+import { onUserEdit } from '../utils/userEditEvent'
+import { useSessionStore } from '../store/sessionStore'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'https://7wejbdujd6.execute-api.ap-northeast-2.amazonaws.com'
-const DOC_ID = 'doc-demo-001'
 const SESSION_ID = 'default'
 const BOUNDED_WINDOW = 20
+
+interface ChatPanelProps {
+  docId: string
+}
 
 interface Message {
   id: string
@@ -24,7 +30,7 @@ function toHistoryMessage(m: Message): HistoryMessage {
   return { id: m.id, role: m.role, content: m.text, timestamp: new Date().toISOString() }
 }
 
-export function ChatPanel() {
+export function ChatPanel({ docId }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([
     { id: '0', role: 'agent', text: '안녕하세요! APN PoC Project Plan 문서 생성을 도와드리겠습니다. 프로젝트에 대해 알려주세요.' },
   ])
@@ -34,18 +40,64 @@ export function ChatPanel() {
   const setAgentStatus = useDocumentStore(s => s.setAgentStatus)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const streamMsgIdRef = useRef<string | null>(null)
+
   // Initialize AppSync subscription on mount
   useEffect(() => {
-    const unsubscribe = initDocumentSubscription(DOC_ID, (chatMsg) => {
-      // Handle incoming chat messages from AppSync
-      const agentMsg: Message = {
-        id: Date.now().toString(),
-        role: 'agent',
-        text: chatMsg.text,
+    const unsubscribe = initDocumentSubscription(docId, (msg: AppSyncMessage) => {
+      if (msg.type === 'status') {
+        setAgentStatus(msg.status as any)
+        return
       }
-      setMessages(prev => [...prev, agentMsg])
+
+      if (msg.type === 'chat_chunk') {
+        // Append text to the current streaming message
+        setMessages(prev => {
+          const streamId = streamMsgIdRef.current
+          if (!streamId) {
+            // Create new streaming message
+            const newId = `stream-${Date.now()}`
+            streamMsgIdRef.current = newId
+            return [...prev, { id: newId, role: 'agent', text: msg.text }]
+          }
+          // Append to existing streaming message
+          return prev.map(m =>
+            m.id === streamId ? { ...m, text: m.text + msg.text } : m
+          )
+        })
+      }
+
+      if (msg.type === 'chat_done') {
+        streamMsgIdRef.current = null
+        setLoading(false)
+        setAgentStatus('idle')
+        // Apply document state
+        if (msg.document) {
+          useDocumentStore.getState().setDocument(msg.document)
+        }
+      }
     })
     return unsubscribe
+  }, [docId, setAgentStatus])
+
+  // Reset state when docId changes
+  useEffect(() => {
+    setMessages([
+      { id: '0', role: 'agent', text: '안녕하세요! APN PoC Project Plan 문서 생성을 도와드리겠습니다. 프로젝트에 대해 알려주세요.' },
+    ])
+    setHistoryLoaded(false)
+  }, [docId])
+
+  // Listen for user direct edits on document fields → inject as user message for LLM context
+  useEffect(() => {
+    return onUserEdit((section, field, oldValue, newValue) => {
+      const editMsg: Message = {
+        id: `edit-${Date.now()}`,
+        role: 'user',
+        text: `[직접 수정] ${section} > ${field}: "${oldValue}" → "${newValue}"`,
+      }
+      setMessages(prev => [...prev, editMsg])
+    })
   }, [])
 
   // Load history from server on mount (document reopen)
@@ -53,7 +105,7 @@ export function ChatPanel() {
     if (historyLoaded) return
     let cancelled = false
 
-    loadHistory(API_BASE, DOC_ID, SESSION_ID).then(data => {
+    loadHistory(API_BASE, docId, SESSION_ID).then(data => {
       if (cancelled) return
       if (data && data.messages && data.messages.length > 0) {
         const restored: Message[] = data.messages.map(m => ({
@@ -67,7 +119,7 @@ export function ChatPanel() {
     })
 
     return () => { cancelled = true }
-  }, [historyLoaded])
+  }, [historyLoaded, docId])
 
   // Debounced save to server after messages change
   const scheduleSave = (msgs: Message[]) => {
@@ -76,7 +128,7 @@ export function ChatPanel() {
       const historyMsgs = msgs
         .filter(m => m.id !== '0')
         .map(toHistoryMessage)
-      saveHistoryToServer(API_BASE, DOC_ID, SESSION_ID, historyMsgs, BOUNDED_WINDOW)
+      saveHistoryToServer(API_BASE, docId, SESSION_ID, historyMsgs, BOUNDED_WINDOW)
     }, 1000)
   }
 
@@ -92,19 +144,19 @@ export function ChatPanel() {
     setAgentStatus('processing')
 
     try {
-      // Build bounded history for API call (only recent N turns)
       const historyMsgs = updatedMessages
         .filter(m => m.id !== '0')
         .map(toHistoryMessage)
       const boundedHistory = toBoundedApiHistory(historyMsgs, BOUNDED_WINDOW)
 
-      const res = await fetch(`${API_BASE}/documents/${DOC_ID}/chat`, {
+      const res = await apiFetch(`/documents/${docId}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, history: boundedHistory }),
       })
       const data = await res.json()
 
+      // Always use HTTP response to show agent message
       const agentMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'agent',
@@ -113,15 +165,14 @@ export function ChatPanel() {
       const finalMessages = [...updatedMessages, agentMsg]
       setMessages(finalMessages)
 
-      // Schedule save to server
-      scheduleSave(finalMessages)
-
-      // Apply document state from HTTP response
-      // (Until AppSync real-time is connected, HTTP response is the update path)
       if (data.document) {
         useDocumentStore.getState().setDocument(data.document)
       }
 
+      // Refresh sidebar document list (title may have changed)
+      useSessionStore.getState().fetchDocuments()
+
+      scheduleSave(finalMessages)
       setAgentStatus('idle')
     } catch {
       const errorMsg: Message = { id: (Date.now() + 1).toString(), role: 'agent', text: 'API 연결 오류가 발생했습니다.' }

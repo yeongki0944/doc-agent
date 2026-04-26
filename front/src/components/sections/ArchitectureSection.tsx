@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { useDocumentStore } from '../../store/documentStore'
-
-const API_BASE = import.meta.env.VITE_API_URL || 'https://7wejbdujd6.execute-api.ap-northeast-2.amazonaws.com'
-const DOC_ID = 'doc-demo-001'
+import { apiFetch } from '../../auth/api'
+import { useSessionStore } from '../../store/sessionStore'
 
 export function ArchitectureSection() {
+  const DOC_ID = useSessionStore(s => s.currentDocId) || ''
   const [fileName, setFileName] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -38,7 +38,7 @@ export function ArchitectureSection() {
       const formData = new FormData()
       formData.append('file', file)
 
-      const res = await fetch(`${API_BASE}/documents/${DOC_ID}/architecture/upload`, {
+      const res = await apiFetch(`/documents/${DOC_ID}/architecture/upload`, {
         method: 'POST',
         body: formData,
       })

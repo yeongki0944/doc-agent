@@ -1,108 +1,128 @@
 /**
- * AppSync Events subscription client.
- *
- * Subscribes to docs/{docId}/patch, docs/{docId}/status, docs/{docId}/chat
- * channels. Provides patch application to Zustand store and REST fallback.
+ * AppSync Events API WebSocket client.
+ * Protocol: https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html
  */
 
-import { useDocumentStore, type PatchOperation, type AgentStatus } from '../store/documentStore'
-import { getDocument } from './api'
+import { useDocumentStore, type AgentStatus } from '../store/documentStore'
 
-export interface PatchMessage {
-  patch_id: string
-  doc_id: string
-  agent: string
-  operations: PatchOperation[]
-  version: number
-}
+export interface ChatChunkMessage { type: 'chat_chunk'; text: string }
+export interface ChatDoneMessage { type: 'chat_done'; actions: string[]; document: any }
+export interface StatusMessage { type: 'status'; status: AgentStatus; message?: string }
+export type AppSyncMessage = ChatChunkMessage | ChatDoneMessage | StatusMessage
 
-export interface StatusMessage {
-  doc_id: string
-  agent: string
-  status: AgentStatus
-}
-
-export interface ChatMessage {
-  doc_id: string
-  agent: string
-  text: string
-}
-
+type MessageHandler = (msg: AppSyncMessage) => void
 type Unsubscribe = () => void
 
-/**
- * Subscribe to AppSync Events channels for a document.
- * Returns an unsubscribe function.
- *
- * Stub: In production, replace with real WebSocket connection.
- */
-export function subscribeToDocument(
-  docId: string,
-  handlers: {
-    onPatch?: (msg: PatchMessage) => void
-    onStatus?: (msg: StatusMessage) => void
-    onChat?: (msg: ChatMessage) => void
-  }
-): Unsubscribe {
-  // Stub — no real WebSocket connection yet.
-  // When AppSync Events infra is deployed, this will connect to:
-  //   docs/{docId}/patch
-  //   docs/{docId}/status
-  //   docs/{docId}/chat
-  console.log(`[appsync stub] Subscribed to doc ${docId}`)
+const APPSYNC_HTTP_URL = (import.meta.env.VITE_APPSYNC_HTTP_URL as string) || ''
+const APPSYNC_WS_URL = (import.meta.env.VITE_APPSYNC_WS_URL as string) || ''
+const APPSYNC_API_KEY = (import.meta.env.VITE_APPSYNC_API_KEY as string) || ''
 
-  const store = useDocumentStore.getState()
-  store.setAppsyncConnected(true)
+function base64url(obj: object): string {
+  return btoa(JSON.stringify(obj))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
+export function subscribeToChannel(channel: string, onMessage: MessageHandler): Unsubscribe {
+  if (!APPSYNC_WS_URL || !APPSYNC_API_KEY) {
+    console.warn('[appsync] Missing config, stub mode')
+    return () => {}
+  }
+
+  let ws: WebSocket | null = null
+  let closed = false
+  let subId: string | null = null
+
+  // Derive HTTP host for auth headers
+  const httpHost = APPSYNC_HTTP_URL
+    ? new URL(APPSYNC_HTTP_URL).host
+    : APPSYNC_WS_URL.replace('wss://', '').replace('/event/realtime', '').replace('realtime-api', 'api')
+
+  const connect = () => {
+    if (closed) return
+    try {
+      const authHeader = base64url({ host: httpHost, 'x-api-key': APPSYNC_API_KEY })
+      // URL must end with /event/realtime
+      let wsUrl = APPSYNC_WS_URL
+      if (!wsUrl.endsWith('/event/realtime')) {
+        wsUrl = wsUrl.replace(/\/$/, '') + '/event/realtime'
+      }
+
+      ws = new WebSocket(wsUrl, [`header-${authHeader}`, 'aws-appsync-event-ws'])
+
+      ws.onopen = () => {
+        ws?.send(JSON.stringify({ type: 'connection_init' }))
+      }
+
+      ws.onmessage = (evt) => {
+        try {
+          const data = JSON.parse(evt.data)
+
+          if (data.type === 'connection_ack') {
+            subId = `sub-${Date.now()}`
+            ws?.send(JSON.stringify({
+              type: 'subscribe',
+              id: subId,
+              channel: `/docs/${channel}`,
+              authorization: {
+                'x-api-key': APPSYNC_API_KEY,
+                host: httpHost,
+              },
+            }))
+          }
+
+          if (data.type === 'subscribe_success') {
+            console.log('[appsync] subscribed:', channel)
+            useDocumentStore.getState().setAppsyncConnected(true)
+          }
+
+          if (data.type === 'data') {
+            // Events API uses "event" (array of stringified JSON)
+            const events: string[] = data.event || data.events || []
+            for (const e of events) {
+              try {
+                onMessage(typeof e === 'string' ? JSON.parse(e) : e)
+              } catch { /* skip */ }
+            }
+          }
+
+          // keep-alive — no action needed
+        } catch { /* ignore */ }
+      }
+
+      ws.onclose = () => {
+        useDocumentStore.getState().setAppsyncConnected(false)
+        if (!closed) setTimeout(connect, 3000)
+      }
+
+      ws.onerror = () => { ws?.close() }
+    } catch (e) {
+      console.error('[appsync] connect error:', e)
+      if (!closed) setTimeout(connect, 5000)
+    }
+  }
+
+  connect()
 
   return () => {
-    console.log(`[appsync stub] Unsubscribed from doc ${docId}`)
+    closed = true
+    if (ws && subId) {
+      try { ws.send(JSON.stringify({ type: 'unsubscribe', id: subId })) } catch { /* */ }
+    }
+    try { ws?.close() } catch { /* */ }
     useDocumentStore.getState().setAppsyncConnected(false)
   }
 }
 
-/**
- * Default patch handler: apply JSON Patch operations to Zustand store.
- * This is the authoritative path for document state changes.
- */
-export function handlePatchMessage(msg: PatchMessage): void {
-  const store = useDocumentStore.getState()
-  store.applyPatches(msg.operations)
-  // Update version from patch
-  if (msg.version != null) {
-    store.applyPatches([{ op: 'replace', path: '/version', value: msg.version }])
-  }
-}
-
-/**
- * Default status handler: update agent status in Zustand store.
- */
-export function handleStatusMessage(msg: StatusMessage): void {
-  useDocumentStore.getState().setAgentStatus(msg.status)
-}
-
-/**
- * REST fallback: reload full document state when AppSync connection is lost.
- */
-export async function restFallbackReload(docId: string): Promise<void> {
-  try {
-    const doc = await getDocument(docId)
-    useDocumentStore.getState().setDocument(doc)
-  } catch (err) {
-    console.error('[appsync] REST fallback reload failed:', err)
-  }
-}
-
-/**
- * Initialize AppSync subscription with default handlers.
- * Returns unsubscribe function.
- */
 export function initDocumentSubscription(
   docId: string,
-  onChat?: (msg: ChatMessage) => void,
+  onChat?: (msg: AppSyncMessage) => void,
 ): Unsubscribe {
-  return subscribeToDocument(docId, {
-    onPatch: handlePatchMessage,
-    onStatus: handleStatusMessage,
-    onChat,
+  return subscribeToChannel(`${docId}/chat`, (msg) => {
+    if (msg.type === 'status') {
+      useDocumentStore.getState().setAgentStatus(msg.status)
+    }
+    if (onChat) onChat(msg)
   })
 }
