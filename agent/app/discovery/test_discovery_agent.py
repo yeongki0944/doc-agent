@@ -190,6 +190,70 @@ class TestCollectInfo:
 
     @pytest.mark.asyncio
     @patch("agent.app.discovery.discovery_agent.Agent")
+    async def test_collect_info_parses_docx_schema_fields(
+        self, mock_agent_cls: MagicMock, empty_doc: DocumentState
+    ) -> None:
+        mock_instance = MagicMock()
+        llm_response = json.dumps({
+            "extracted_fields": {
+                "customer": "ABC Corp",
+                "project_goal": "GenAI PoC",
+                "scope_summary": "문서 자동화",
+                "architecture_available": False,
+            },
+            "executive_summary": "Executive summary paragraph",
+            "executive_sponsors": [
+                {"name": "Kim", "title": "VP", "description": "Sponsor", "contact": "kim@example.com"},
+            ],
+            "stakeholders": [
+                {"name": "Lee", "title": "Owner", "stakeholder_for": "Business", "contact": ""},
+            ],
+            "project_team": [
+                {"name": "Park", "title": "SA", "role": "Architecture", "contact": "park@example.com"},
+            ],
+            "escalation_contacts": [],
+            "success_criteria": ["PoC success"],
+            "assumptions": ["AWS account ready"],
+            "scope_of_work": ["Build prototype"],
+            "acceptance_text": "Customer sign-off",
+            "missing_fields": ["phase_schedule"],
+        })
+        mock_instance.return_value = llm_response
+        mock_agent_cls.return_value = mock_instance
+
+        agent = DiscoveryAgent()
+        result = await agent.collect_info("ABC Corp GenAI PoC", empty_doc)
+
+        assert result.executive_summary == "Executive summary paragraph"
+        assert result.executive_sponsors[0]["name"] == "Kim"
+        assert result.stakeholders[0]["stakeholder_for"] == "Business"
+        assert result.project_team[0]["role"] == "Architecture"
+        assert result.escalation_contacts == []
+        assert result.success_criteria == ["PoC success"]
+        assert result.assumptions == ["AWS account ready"]
+        assert result.scope_of_work == ["Build prototype"]
+        assert result.acceptance_text == "Customer sign-off"
+        assert result.missing_fields == ["phase_schedule"]
+
+    @patch("agent.app.discovery.discovery_agent.Agent")
+    def test_parse_docx_schema_missing_values_default_empty(
+        self, mock_agent_cls: MagicMock
+    ) -> None:
+        agent = DiscoveryAgent()
+        parsed = agent._parse_agent_response(json.dumps({
+            "executive_summary": None,
+            "executive_sponsors": None,
+            "success_criteria": None,
+            "acceptance_text": None,
+        }))
+
+        assert parsed["executive_summary"] == ""
+        assert parsed["executive_sponsors"] == []
+        assert parsed["success_criteria"] == []
+        assert parsed["acceptance_text"] == ""
+
+    @pytest.mark.asyncio
+    @patch("agent.app.discovery.discovery_agent.Agent")
     async def test_collect_info_with_partial_input(
         self, mock_agent_cls: MagicMock, empty_doc: DocumentState
     ) -> None:

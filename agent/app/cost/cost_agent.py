@@ -29,6 +29,7 @@ from agent.lib.calculation.staffing_cost import (
 )
 from agent.lib.calculation.recalculate import recalculate_costs
 from agent.lib.gateway.agentcore_gateway import AgentCoreGatewayClient
+from agent.lib.schema.document_state import Contribution, FieldStatus, FieldValue
 
 logger = logging.getLogger(__name__)
 
@@ -238,3 +239,29 @@ class CostAgent:
             total_project_cost=round(total_staffing + total_aws, 2),
             generated_at=datetime.now(timezone.utc).isoformat(),
         )
+
+    def calculate_default_contribution(self, total_project_cost: float) -> Contribution:
+        """Return default Customer/Partner/AWS cost contribution.
+
+        Default split:
+        - Customer 50%
+        - Partner 25%
+        - AWS 25%
+        """
+        def fv(value: float) -> FieldValue:
+            return FieldValue(
+                user_input=None,
+                ai_recommended=value,
+                calculated=None,
+                status=FieldStatus.recommended,
+                user_edited=False,
+            )
+
+        contribution = Contribution()
+        contribution.customer.amount = fv(round(total_project_cost * 0.50, 2))
+        contribution.customer.pct = fv(50)
+        contribution.partner.amount = fv(round(total_project_cost * 0.25, 2))
+        contribution.partner.pct = fv(25)
+        contribution.aws.amount = fv(round(total_project_cost * 0.25, 2))
+        contribution.aws.pct = fv(25)
+        return contribution

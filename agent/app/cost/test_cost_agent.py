@@ -277,3 +277,22 @@ class TestDocumentLocalSummary:
         summary = agent.generate_document_local_summary(staffing, aws)
 
         assert summary.total_project_cost == 5000.0
+
+
+class TestDefaultContribution:
+
+    @patch("agent.app.cost.cost_agent.Agent")
+    def test_calculate_default_contribution(self, mock_agent_cls: MagicMock) -> None:
+        agent = CostAgent()
+
+        contribution = agent.calculate_default_contribution(1000.0)
+
+        assert contribution.customer.amount.ai_recommended == 500.0
+        assert contribution.customer.pct.ai_recommended == 50
+        assert contribution.partner.amount.ai_recommended == 250.0
+        assert contribution.partner.pct.ai_recommended == 25
+        assert contribution.aws.amount.ai_recommended == 250.0
+        assert contribution.aws.pct.ai_recommended == 25
+        assert contribution.customer.amount.user_input is None
+        assert contribution.customer.amount.status.value == "recommended"
+        assert contribution.customer.amount.user_edited is False

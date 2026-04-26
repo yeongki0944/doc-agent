@@ -21,6 +21,7 @@ from agent.app.staffing.staffing_agent import (
     StaffingRecommendation,
     RateViolation,
     STAFFING_PROMPT,
+    categorize_role,
 )
 
 
@@ -119,6 +120,15 @@ class TestRecommend:
             assert len(role_data["source_patterns"]) > 0
             assert "confidence" in role_data
 
+    @patch("agent.app.staffing.staffing_agent.Agent")
+    def test_recommend_sets_role_category(self, mock_agent_cls: MagicMock) -> None:
+        agent = StaffingAgent()
+        rec = agent.recommend("에이전트 프로젝트")
+
+        assert rec.roles["solutions_architect"]["category"] == "solution_architect"
+        assert rec.roles["ml_engineer"]["category"] == "engineer"
+        assert rec.roles["project_manager"]["category"] == "other"
+
 
 # ---------------------------------------------------------------------------
 # validate_rates()
@@ -191,6 +201,19 @@ class TestDetectProjectType:
     def test_defaults_to_genai_multi_agent(self, mock_agent_cls: MagicMock) -> None:
         agent = StaffingAgent()
         assert agent._detect_project_type("unknown project") == "genai_multi_agent"
+
+
+class TestCategorizeRole:
+
+    def test_known_role_ids(self) -> None:
+        assert categorize_role("solution_architect") == "solution_architect"
+        assert categorize_role("ml_engineer") == "engineer"
+        assert categorize_role("project_manager") == "other"
+
+    def test_fallback_matching(self) -> None:
+        assert categorize_role("principal_architect") == "solution_architect"
+        assert categorize_role("java_developer") == "engineer"
+        assert categorize_role("business_analyst") == "other"
 
 
 # ---------------------------------------------------------------------------

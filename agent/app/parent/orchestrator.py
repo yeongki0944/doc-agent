@@ -506,6 +506,8 @@ class ParentOrchestrator:
                 "source": "ai_recommended",
             })
 
+        patches.extend(_discovery_schema_patches(discovery_result))
+
         # Build chat response
         if discovery_result.can_generate_draft:
             chat_parts.append("프로젝트 정보 수집이 완료되었습니다. 초안 생성을 진행합니다.")
@@ -583,7 +585,21 @@ class ParentOrchestrator:
             patches.append({
                 "op": "replace",
                 "path": "/sections/architecture/description",
-                "value": arch_result.architecture_description,
+                "value": _ai_field_value(arch_result.architecture_description),
+                "source": "ai_recommended",
+            })
+        if arch_result.description:
+            patches.append({
+                "op": "replace",
+                "path": "/sections/architecture/description",
+                "value": _ai_field_value(arch_result.description),
+                "source": "ai_recommended",
+            })
+        if arch_result.tools:
+            patches.append({
+                "op": "replace",
+                "path": "/sections/architecture/tools",
+                "value": [_ai_field_value(tool) for tool in arch_result.tools],
                 "source": "ai_recommended",
             })
 
@@ -645,12 +661,21 @@ class ParentOrchestrator:
                 "op": "replace",
                 "path": "/sections/cost_breakdown/aws_service_cost",
                 "value": {
-                    "monthly_cost_summary": aws_result.monthly_cost_summary,
+                    "monthly_cost_summary": {"calculated": aws_result.monthly_cost_summary},
                     "service_breakdown": aws_result.service_breakdown,
                     "calculator_share_url": aws_result.calculator_share_url,
                     "manual_estimate_items": aws_result.manual_estimate_items,
                 },
                 "source": "calculated",
+            })
+            total_project_cost = _current_staffing_total(doc_state) + aws_result.monthly_cost_summary
+            patches.append({
+                "op": "replace",
+                "path": "/sections/resources_cost_estimates/contribution",
+                "value": self.cost_agent.calculate_default_contribution(
+                    total_project_cost
+                ).model_dump(mode="json"),
+                "source": "ai_recommended",
             })
             chat_parts.append(f"[cost_agent] AWS 서비스 비용: 월 ${aws_result.monthly_cost_summary:,.2f}")
         else:
@@ -663,9 +688,18 @@ class ParentOrchestrator:
                 "path": "/sections/cost_breakdown/staffing_cost",
                 "value": {
                     "roles_summary": staffing_result.roles_summary,
-                    "grand_total": staffing_result.grand_total,
+                    "grand_total": {"calculated": staffing_result.grand_total},
                 },
                 "source": "calculated",
+            })
+            total_project_cost = staffing_result.grand_total + _current_aws_monthly_total(doc_state)
+            patches.append({
+                "op": "replace",
+                "path": "/sections/resources_cost_estimates/contribution",
+                "value": self.cost_agent.calculate_default_contribution(
+                    total_project_cost
+                ).model_dump(mode="json"),
+                "source": "ai_recommended",
             })
             chat_parts.append(
                 f"[cost_agent] 인건비 계산 완료: 총 ${staffing_result.grand_total:,.2f}"
@@ -819,10 +853,11 @@ class ParentOrchestrator:
 
         if result:
             phases = result.get("phases", [])
+            phase_values = [_milestone_phase_to_field_values(p) for p in phases]
             patches.append({
                 "op": "replace",
                 "path": "/sections/milestones/phases",
-                "value": phases,
+                "value": phase_values,
                 "source": "calculated",
             })
             total_hours = result.get("total_project_hours", 0)
@@ -1524,6 +1559,98 @@ class ParentOrchestrator:
 # ---------------------------------------------------------------------------
 # Patch operation helpers
 # ---------------------------------------------------------------------------
+
+def _ai_field_value(value: Any) -> dict[str, Any]:
+    return {
+        "user_input": None,
+        "ai_recommended": value or "",
+        "calculated": None,
+        "status": FieldStatus.recommended.value,
+        "user_edited": False,
+    }
+
+
+def _contact_to_field_value(c: dict) -> dict:
+    role_value = c.get("description") or c.get("stakeholder_for") or c.get("role") or ""
+
+    def fv(value):
+        return _ai_field_value(value)
+
+    return {
+        "name": fv(c.get("name", "")),
+        "title": fv(c.get("title", "")),
+        "role_or_description": fv(role_value),
+        "contact": fv(c.get("contact", "")),
+    }
+
+
+def _field_value_list(items: list[Any]) -> list[dict[str, Any]]:
+    return [_ai_field_value(item) for item in items]
+
+
+def _discovery_schema_patches(discovery_result: Any) -> list[dict]:
+    patches: list[dict] = []
+    for path, value in [
+        ("/sections/executive_summary/text", discovery_result.executive_summary),
+        ("/sections/acceptance/text", discovery_result.acceptance_text),
+    ]:
+        if value != "":
+            patches.append({
+                "op": "replace",
+                "path": path,
+                "value": _ai_field_value(value),
+                "source": "ai_recommended",
+            })
+
+    for path, contacts in [
+        ("/sections/stakeholders/executive_sponsors", discovery_result.executive_sponsors),
+        ("/sections/stakeholders/stakeholders", discovery_result.stakeholders),
+        ("/sections/stakeholders/project_team", discovery_result.project_team),
+        ("/sections/stakeholders/escalation_contacts", discovery_result.escalation_contacts),
+    ]:
+        patches.append({
+            "op": "replace",
+            "path": path,
+            "value": [_contact_to_field_value(c) for c in contacts],
+            "source": "ai_recommended",
+        })
+
+    for path, items in [
+        ("/sections/success_criteria/items", discovery_result.success_criteria),
+        ("/sections/assumptions/items", discovery_result.assumptions),
+        ("/sections/scope_of_work/items", discovery_result.scope_of_work),
+    ]:
+        patches.append({
+            "op": "replace",
+            "path": path,
+            "value": _field_value_list(items),
+            "source": "ai_recommended",
+        })
+    return patches
+
+
+def _milestone_phase_to_field_values(phase: dict[str, Any]) -> dict[str, Any]:
+    deliverables = phase.get("deliverables", "")
+    if isinstance(deliverables, list):
+        deliverables = "\n".join(str(d) for d in deliverables if d)
+    completion_date = phase.get("completion_date") or phase.get("date") or phase.get("end_date") or ""
+    return {
+        "phase": _ai_field_value(phase.get("phase", "")),
+        "completion_date": _ai_field_value(completion_date),
+        "deliverables": _ai_field_value(deliverables),
+    }
+
+
+def _current_staffing_total(doc_state: DocumentState) -> float:
+    value = getattr(doc_state.staffing_plan.grand_total_cost, "calculated", 0) or 0
+    return float(value)
+
+
+def _current_aws_monthly_total(doc_state: DocumentState) -> float:
+    summary = doc_state.sections.cost_breakdown.aws_service_cost.monthly_cost_summary
+    value = getattr(summary, "calculated", 0) or 0
+    return float(value)
+
 
 def _apply_operation(doc_dict: dict, op: PatchOperation) -> None:
     """Apply a single JSON-Patch-style operation to a document dict."""

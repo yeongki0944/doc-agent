@@ -73,6 +73,14 @@ DISCOVERY_PROMPT: str = """당신은 APN PoC Project Plan 문서 생성을 위�
 - team_detail: 팀 구성 상세
 - phase_schedule: 단계별 일정
 - cost_resources: 비용/리소스 정보
+- executive_summary: 문서 Executive Summary 단락
+- executive_sponsors: executive sponsor 연락처 목록
+- project_team: 프로젝트 팀 연락처 목록
+- escalation_contacts: escalation 연락처 목록
+- success_criteria: 성공 기준 목록
+- assumptions: 가정 사항 목록
+- scope_of_work: 작업 범위 목록
+- acceptance_text: 검수/승인 문구
 
 ## 응답 형식
 반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트를 포함하지 마세요.
@@ -90,6 +98,24 @@ DISCOVERY_PROMPT: str = """당신은 APN PoC Project Plan 문서 생성을 위�
     "phase_schedule": "추출된 일정 또는 null",
     "cost_resources": "추출된 비용 정보 또는 null"
   },
+  "executive_summary": "single paragraph text",
+  "executive_sponsors": [
+    {"name": "...", "title": "...", "description": "...", "contact": "..."}
+  ],
+  "stakeholders": [
+    {"name": "...", "title": "...", "stakeholder_for": "...", "contact": "..."}
+  ],
+  "project_team": [
+    {"name": "...", "title": "...", "role": "...", "contact": "..."}
+  ],
+  "escalation_contacts": [
+    {"name": "...", "title": "...", "role": "...", "contact": "..."}
+  ],
+  "success_criteria": ["item1", "item2"],
+  "assumptions": ["item1", "item2"],
+  "scope_of_work": ["item1", "item2"],
+  "acceptance_text": "single paragraph acceptance text, or empty string",
+  "missing_fields": ["fields to ask user"],
   "follow_up_questions": ["누락된 필수 항목에 대한 재질문 목록"]
 }
 ```
@@ -130,6 +156,16 @@ class DiscoveryResult:
     missing: MissingFields = field(default_factory=MissingFields)
     follow_up_questions: list[str] = field(default_factory=list)
     can_generate_draft: bool = False
+    executive_summary: str = ""
+    executive_sponsors: list[dict[str, str]] = field(default_factory=list)
+    stakeholders: list[dict[str, str]] = field(default_factory=list)
+    project_team: list[dict[str, str]] = field(default_factory=list)
+    escalation_contacts: list[dict[str, str]] = field(default_factory=list)
+    success_criteria: list[str] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    scope_of_work: list[str] = field(default_factory=list)
+    acceptance_text: str = ""
+    missing_fields: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +225,16 @@ class DiscoveryAgent:
             missing=missing,
             follow_up_questions=questions,
             can_generate_draft=can_draft,
+            executive_summary=_string_value(structured.get("executive_summary")),
+            executive_sponsors=_contact_list(structured.get("executive_sponsors")),
+            stakeholders=_contact_list(structured.get("stakeholders")),
+            project_team=_contact_list(structured.get("project_team")),
+            escalation_contacts=_contact_list(structured.get("escalation_contacts")),
+            success_criteria=_string_list(structured.get("success_criteria")),
+            assumptions=_string_list(structured.get("assumptions")),
+            scope_of_work=_string_list(structured.get("scope_of_work")),
+            acceptance_text=_string_value(structured.get("acceptance_text")),
+            missing_fields=_string_list(structured.get("missing_fields")),
         )
 
     def classify_missing_fields(
@@ -276,9 +322,11 @@ class DiscoveryAgent:
 
         try:
             parsed = json.loads(text)
-            extracted = parsed.get("extracted_fields", parsed)
-            # Normalize: remove null values
-            return {k: v for k, v in extracted.items() if v is not None}
+            extracted = dict(parsed.get("extracted_fields", {}))
+            for key, value in parsed.items():
+                if key not in ("extracted_fields", "follow_up_questions"):
+                    extracted[key] = value
+            return _normalize_extracted(extracted)
         except (json.JSONDecodeError, ValueError):
             logger.warning("Failed to parse LLM response as JSON, using keyword fallback")
             return {}
@@ -320,3 +368,71 @@ class DiscoveryAgent:
 def _has_value(field_value: FieldValue) -> bool:
     """Check if a FieldValue has any meaningful value set."""
     return bool(field_value.user_input or field_value.ai_recommended)
+
+
+def _string_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [_string_value(v) for v in value if _string_value(v)]
+    if isinstance(value, str):
+        return [value] if value else []
+    return [_string_value(value)]
+
+
+def _contact_list(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    contacts: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        contacts.append({
+            "name": _string_value(item.get("name")),
+            "title": _string_value(item.get("title")),
+            "description": _string_value(item.get("description")),
+            "stakeholder_for": _string_value(item.get("stakeholder_for")),
+            "role": _string_value(item.get("role")),
+            "contact": _string_value(item.get("contact")),
+        })
+    return contacts
+
+
+def _normalize_extracted(extracted: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    list_fields = {
+        "executive_sponsors",
+        "stakeholders",
+        "project_team",
+        "escalation_contacts",
+        "success_criteria",
+        "assumptions",
+        "scope_of_work",
+        "missing_fields",
+    }
+    string_fields = {"executive_summary", "acceptance_text"}
+
+    for key, value in extracted.items():
+        if value is None:
+            if key in list_fields:
+                normalized[key] = []
+            elif key in string_fields:
+                normalized[key] = ""
+            continue
+        normalized[key] = value
+
+    for key in list_fields:
+        if key not in normalized:
+            normalized[key] = []
+    for key in string_fields:
+        if key not in normalized:
+            normalized[key] = ""
+    return normalized

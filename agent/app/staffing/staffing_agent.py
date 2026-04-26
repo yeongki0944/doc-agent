@@ -35,6 +35,29 @@ CHILD_MODEL: str = os.environ.get(
 
 PRESETS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "presets"
 
+ROLE_CATEGORY_MAP = {
+    "solution_architect": "solution_architect",
+    "senior_solution_architect": "solution_architect",
+    "lead_architect": "solution_architect",
+    "ml_architect": "solution_architect",
+    "architect": "solution_architect",
+    "solutions_architect": "solution_architect",
+
+    "data_engineer": "engineer",
+    "ml_engineer": "engineer",
+    "backend_engineer": "engineer",
+    "frontend_engineer": "engineer",
+    "devops_engineer": "engineer",
+    "qa_engineer": "engineer",
+    "engineer": "engineer",
+    "backend_developer": "engineer",
+    "frontend_developer": "engineer",
+
+    "project_manager": "other",
+    "delivery_manager": "other",
+    "technical_writer": "other",
+}
+
 # ---------------------------------------------------------------------------
 # System prompt for the Staffing Agent
 # ---------------------------------------------------------------------------
@@ -101,6 +124,17 @@ def _load_json(name: str) -> dict:
         return json.load(f)
 
 
+def categorize_role(role_id: str) -> str:
+    rid = role_id.lower()
+    if rid in ROLE_CATEGORY_MAP:
+        return ROLE_CATEGORY_MAP[rid]
+    if "architect" in rid:
+        return "solution_architect"
+    if "engineer" in rid or "developer" in rid:
+        return "engineer"
+    return "other"
+
+
 # ---------------------------------------------------------------------------
 # Staffing Agent
 # ---------------------------------------------------------------------------
@@ -164,6 +198,7 @@ class StaffingAgent:
             rec.roles[role_id] = {
                 "role_id": role_id,
                 "display_name": catalog_entry.get("display_name", role_id),
+                "category": categorize_role(role_id),
                 "count": {
                     "user_input": None,
                     "ai_recommended": role_preset.get("count", 1),

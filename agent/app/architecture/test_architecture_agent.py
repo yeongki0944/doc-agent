@@ -147,6 +147,8 @@ class TestAnalyzeExisting:
             "analysis": "서버리스 API 아키텍처",
             "recommendations": ["CloudWatch 모니터링 추가 권장"],
             "architecture_description": "API Gateway → Lambda → DynamoDB 패턴",
+            "description": "서버리스 API 처리 흐름",
+            "tools": ["AWS Lambda", "Amazon DynamoDB"],
         })
         mock_instance.return_value = llm_response
         mock_agent_cls.return_value = mock_instance
@@ -158,6 +160,8 @@ class TestAnalyzeExisting:
         assert len(result.services) > 0
         assert result.analysis != ""
         assert isinstance(result.recommendations, list)
+        assert result.description == "서버리스 API 처리 흐름"
+        assert result.tools == ["AWS Lambda", "Amazon DynamoDB"]
 
     @pytest.mark.asyncio
     @patch("agent.app.architecture.architecture_agent.Agent")
@@ -200,6 +204,8 @@ class TestDesignNew:
             "analysis": "GenAI 멀티에이전트 아키텍처 초안",
             "recommendations": ["CloudWatch 모니터링 추가", "KMS 암호화 적용"],
             "architecture_description": "Bedrock 기반 멀티에이전트 시스템",
+            "description": "Bedrock과 Lambda를 사용하는 멀티에이전트 시스템",
+            "tools": ["Amazon Bedrock", "AWS Lambda"],
         })
         mock_instance.return_value = llm_response
         mock_agent_cls.return_value = mock_instance
@@ -210,6 +216,8 @@ class TestDesignNew:
         assert isinstance(result, ArchitectureResult)
         assert len(result.services) > 0
         assert result.analysis != ""
+        assert result.description == "Bedrock과 Lambda를 사용하는 멀티에이전트 시스템"
+        assert result.tools == ["Amazon Bedrock", "AWS Lambda"]
 
     @pytest.mark.asyncio
     @patch("agent.app.architecture.architecture_agent.Agent")
