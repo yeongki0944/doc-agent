@@ -581,18 +581,12 @@ class ParentOrchestrator:
                 "value": arch_result.recommendations,
                 "source": "ai_recommended",
             })
-        if arch_result.architecture_description:
+        architecture_description = arch_result.description or arch_result.architecture_description
+        if architecture_description:
             patches.append({
                 "op": "replace",
                 "path": "/sections/architecture/description",
-                "value": _ai_field_value(arch_result.architecture_description),
-                "source": "ai_recommended",
-            })
-        if arch_result.description:
-            patches.append({
-                "op": "replace",
-                "path": "/sections/architecture/description",
-                "value": _ai_field_value(arch_result.description),
+                "value": _ai_field_value(architecture_description),
                 "source": "ai_recommended",
             })
         if arch_result.tools:
@@ -1590,6 +1584,7 @@ def _field_value_list(items: list[Any]) -> list[dict[str, Any]]:
 
 def _discovery_schema_patches(discovery_result: Any) -> list[dict]:
     patches: list[dict] = []
+    structured_input = getattr(discovery_result, "structured_input", {}) or {}
     for path, value in [
         ("/sections/executive_summary/text", discovery_result.executive_summary),
         ("/sections/acceptance/text", discovery_result.acceptance_text),
@@ -1608,6 +1603,9 @@ def _discovery_schema_patches(discovery_result: Any) -> list[dict]:
         ("/sections/stakeholders/project_team", discovery_result.project_team),
         ("/sections/stakeholders/escalation_contacts", discovery_result.escalation_contacts),
     ]:
+        field_name = path.rsplit("/", 1)[-1]
+        if not isinstance(structured_input.get(field_name), list) or not contacts:
+            continue
         patches.append({
             "op": "replace",
             "path": path,
@@ -1620,6 +1618,9 @@ def _discovery_schema_patches(discovery_result: Any) -> list[dict]:
         ("/sections/assumptions/items", discovery_result.assumptions),
         ("/sections/scope_of_work/items", discovery_result.scope_of_work),
     ]:
+        field_name = path.split("/")[-2]
+        if not isinstance(structured_input.get(field_name), list) or not items:
+            continue
         patches.append({
             "op": "replace",
             "path": path,
@@ -1643,7 +1644,11 @@ def _milestone_phase_to_field_values(phase: dict[str, Any]) -> dict[str, Any]:
 
 def _current_staffing_total(doc_state: DocumentState) -> float:
     value = getattr(doc_state.staffing_plan.grand_total_cost, "calculated", 0) or 0
-    return float(value)
+    if value:
+        return float(value)
+    staffing_cost = doc_state.sections.cost_breakdown.staffing_cost
+    section_value = getattr(staffing_cost.grand_total, "calculated", 0) or 0
+    return float(section_value)
 
 
 def _current_aws_monthly_total(doc_state: DocumentState) -> float:

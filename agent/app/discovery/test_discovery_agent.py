@@ -252,6 +252,30 @@ class TestCollectInfo:
         assert parsed["success_criteria"] == []
         assert parsed["acceptance_text"] == ""
 
+    @patch("agent.app.discovery.discovery_agent.Agent")
+    def test_parse_omitted_docx_schema_fields_are_not_added(
+        self, mock_agent_cls: MagicMock
+    ) -> None:
+        agent = DiscoveryAgent()
+        parsed = agent._parse_agent_response(json.dumps({
+            "extracted_fields": {"customer": "ABC Corp"},
+        }))
+
+        assert "customer" in parsed
+        assert "executive_sponsors" not in parsed
+        assert "success_criteria" not in parsed
+
+    @patch("agent.app.discovery.discovery_agent.Agent")
+    def test_legacy_stakeholders_string_does_not_become_contact_list(
+        self, mock_agent_cls: MagicMock
+    ) -> None:
+        agent = DiscoveryAgent()
+        parsed = agent._parse_agent_response(json.dumps({
+            "extracted_fields": {"stakeholders": "Business owner and IT owner"},
+        }))
+
+        assert parsed["stakeholders"] == "Business owner and IT owner"
+
     @pytest.mark.asyncio
     @patch("agent.app.discovery.discovery_agent.Agent")
     async def test_collect_info_with_partial_input(

@@ -429,10 +429,4 @@ def _normalize_extracted(extracted: dict[str, Any]) -> dict[str, Any]:
             continue
         normalized[key] = value
 
-    for key in list_fields:
-        if key not in normalized:
-            normalized[key] = []
-    for key in string_fields:
-        if key not in normalized:
-            normalized[key] = ""
     return normalized

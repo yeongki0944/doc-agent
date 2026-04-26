@@ -384,7 +384,14 @@ class TestDelegateTask:
 
         mock_discovery = MagicMock()
         mock_discovery.collect_info = AsyncMock(return_value=DiscoveryResult(
-            structured_input={"customer": "TestCorp", "architecture_available": False},
+            structured_input={
+                "customer": "TestCorp",
+                "architecture_available": False,
+                "executive_sponsors": [
+                    {"name": "Kim", "title": "VP", "description": "Sponsor", "contact": "kim@example.com"},
+                ],
+                "success_criteria": ["Success"],
+            },
             missing=MissingFields(),
             can_generate_draft=True,
             executive_summary="Summary",
@@ -408,9 +415,34 @@ class TestDelegateTask:
         patches = {p["path"]: p["value"] for p in result.patches}
         assert patches["/sections/executive_summary/text"]["ai_recommended"] == "Summary"
         assert patches["/sections/stakeholders/executive_sponsors"][0]["role_or_description"]["ai_recommended"] == "Sponsor"
-        assert patches["/sections/stakeholders/stakeholders"] == []
+        assert "/sections/stakeholders/stakeholders" not in patches
         assert patches["/sections/success_criteria/items"][0]["ai_recommended"] == "Success"
         assert patches["/sections/acceptance/text"]["ai_recommended"] == "Accepted by customer"
+
+    @pytest.mark.asyncio
+    async def test_discovery_delegate_does_not_overwrite_omitted_lists(self, orchestrator: ParentOrchestrator):
+        from unittest.mock import AsyncMock, MagicMock
+        from agent.app.discovery.discovery_agent import DiscoveryResult, MissingFields
+
+        mock_discovery = MagicMock()
+        mock_discovery.collect_info = AsyncMock(return_value=DiscoveryResult(
+            structured_input={"customer": "TestCorp", "stakeholders": "legacy stakeholder text"},
+            missing=MissingFields(),
+            can_generate_draft=True,
+            stakeholders=[],
+            success_criteria=[],
+        ))
+        orchestrator._discovery_agent = mock_discovery
+
+        result = await orchestrator.delegate_task(
+            "discovery_agent",
+            Task(agent="discovery_agent", action="collect", params={"message": "hi"}),
+            DocumentState(document_id="doc-001"),
+        )
+
+        paths = [p["path"] for p in result.patches]
+        assert "/sections/stakeholders/stakeholders" not in paths
+        assert "/sections/success_criteria/items" not in paths
 
     @pytest.mark.asyncio
     async def test_architecture_delegate_populates_description_and_tools(self, orchestrator: ParentOrchestrator):
@@ -435,6 +467,32 @@ class TestDelegateTask:
         patches = {p["path"]: p["value"] for p in result.patches}
         assert patches["/sections/architecture/description"]["ai_recommended"] == "Architecture description"
         assert patches["/sections/architecture/tools"][0]["ai_recommended"] == "AWS Lambda"
+
+    @pytest.mark.asyncio
+    async def test_architecture_delegate_patches_description_once(self, orchestrator: ParentOrchestrator):
+        from unittest.mock import AsyncMock, MagicMock
+        from agent.app.architecture.architecture_agent import ArchitectureResult
+
+        mock_arch = MagicMock()
+        mock_arch.design_new = AsyncMock(return_value=ArchitectureResult(
+            analysis="analysis",
+            architecture_description="Legacy description",
+            description="New description",
+        ))
+        orchestrator._architecture_agent = mock_arch
+
+        result = await orchestrator.delegate_task(
+            "architecture_agent",
+            Task(agent="architecture_agent", action="design", params={"message": "design"}),
+            DocumentState(document_id="doc-001"),
+        )
+
+        description_patches = [
+            p for p in result.patches
+            if p["path"] == "/sections/architecture/description"
+        ]
+        assert len(description_patches) == 1
+        assert description_patches[0]["value"]["ai_recommended"] == "New description"
 
     @pytest.mark.asyncio
     async def test_cost_delegate_populates_default_contribution(self, orchestrator: ParentOrchestrator):
@@ -462,6 +520,37 @@ class TestDelegateTask:
         contribution_patch = patches["/sections/resources_cost_estimates/contribution"]
         assert contribution_patch["customer"]["amount"]["ai_recommended"] == 500.0
         assert contribution_patch["partner"]["pct"]["ai_recommended"] == 25
+
+    @pytest.mark.asyncio
+    async def test_aws_cost_contribution_uses_existing_cost_breakdown_staffing_total(self, orchestrator: ParentOrchestrator):
+        from unittest.mock import AsyncMock, MagicMock
+        from agent.app.cost.cost_agent import AWSCostResult, CostAgent
+
+        doc = DocumentState(document_id="doc-001")
+        doc.sections.cost_breakdown.staffing_cost.grand_total.calculated = 1000.0
+
+        with patch("agent.app.cost.cost_agent.Agent"):
+            contribution = CostAgent().calculate_default_contribution(1200.0)
+
+        mock_cost = MagicMock()
+        mock_cost.calculate_aws_cost = AsyncMock(return_value=AWSCostResult(
+            monthly_cost_summary=200.0,
+            service_breakdown=[],
+        ))
+        mock_cost.calculate_default_contribution.return_value = contribution
+        orchestrator._cost_agent = mock_cost
+        orchestrator.gateway_client = MagicMock()
+
+        result = await orchestrator.delegate_task(
+            "cost_agent",
+            Task(agent="cost_agent", action="calculate_aws_cost", params={"services": []}),
+            doc,
+        )
+
+        mock_cost.calculate_default_contribution.assert_called_once_with(1200.0)
+        patches = {p["path"]: p["value"] for p in result.patches}
+        contribution_patch = patches["/sections/resources_cost_estimates/contribution"]
+        assert contribution_patch["customer"]["amount"]["ai_recommended"] == 600.0
 
 
 # ---------------------------------------------------------------------------
