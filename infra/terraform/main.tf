@@ -460,6 +460,7 @@ resource "aws_lambda_function" "export_docx" {
 
   environment {
     variables = {
+      ARTIFACTS_BUCKET = aws_s3_bucket.artifacts.id
       S3_BUCKET       = aws_s3_bucket.artifacts.id
       TEMPLATE_S3_KEY = "templates/apn-poc-template.docx"
     }
