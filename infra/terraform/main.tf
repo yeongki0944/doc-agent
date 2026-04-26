@@ -694,6 +694,10 @@ output "s3_bucket" {
   value = aws_s3_bucket.artifacts.id
 }
 
+output "artifacts_bucket" {
+  value = aws_s3_bucket.artifacts.id
+}
+
 output "documents_table" {
   value = aws_dynamodb_table.documents.name
 }
