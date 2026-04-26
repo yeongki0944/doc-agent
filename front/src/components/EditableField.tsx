@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { color, radius } from '../styles/tokens'
 
 interface EditableFieldProps {
   value: string
@@ -42,8 +43,8 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
 
   if (editing) {
     const style: React.CSSProperties = {
-      width: '100%', padding: '4px 8px', border: '2px solid #3b82f6',
-      borderRadius: 4, fontSize: 14, outline: 'none', background: '#fff',
+      width: '100%', padding: '4px 8px', border: `2px solid ${color.mzRed}`,
+      borderRadius: 4, fontSize: 14, outline: 'none', background: color.bgSurface,
       fontFamily: 'inherit', resize: multiline ? 'vertical' : 'none',
     }
     if (type === 'date') {
@@ -106,23 +107,23 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
       onMouseLeave={() => setHover(false)}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 4,
-        background: isAi ? '#fef9c3' : 'transparent',
+        background: isAi ? color.aiBadgeBg : 'transparent',
         padding: isAi ? '2px 6px' : '2px 4px',
         borderRadius: 4, cursor: 'text', minHeight: 24,
-        border: hover ? '1px dashed #93c5fd' : '1px dashed transparent',
+        border: hover ? `1px dashed ${color.mzRed}` : '1px dashed transparent',
         transition: 'border-color 0.15s',
       }}
       title="더블클릭하여 수정"
     >
-      <span style={{ color: value ? 'inherit' : '#999' }}>{displayValue}</span>
+      <span style={{ color: value ? 'inherit' : color.textMuted }}>{displayValue}</span>
       {isAi && (
         <span style={{
           padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700,
-          color: '#d97706', background: '#fef3c7', border: '1px solid #fde68a',
+          color: color.aiBadgeText, background: color.aiBadgeBg, border: `1px solid ${color.aiBadgeBorder}`,
         }}>AI</span>
       )}
       {hover && (
-        <span style={{ fontSize: 12, color: '#93c5fd', marginLeft: 2, flexShrink: 0 }}>✎</span>
+        <span style={{ fontSize: 12, color: color.mzRed, marginLeft: 2, flexShrink: 0 }}>✎</span>
       )}
     </span>
   )

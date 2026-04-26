@@ -4,6 +4,7 @@ import { useSessionStore } from '../../store/sessionStore'
 import { EditableField } from '../EditableField'
 import { saveUserInput } from '../../utils/api'
 import { emitUserEdit } from '../../utils/userEditEvent'
+import { color } from '../../styles/tokens'
 
 const PHASES = [
   { id: 'discovery', name: 'Discovery', deliverables: '요구사항 문서, 아키텍처 초안' },
@@ -32,7 +33,7 @@ export function MilestonesSection() {
     return (
       <div>
         <h2 style={{ marginBottom: 16 }}>Milestones & Deliverables</h2>
-        <p style={{ color: '#999' }}>팀 구성과 범위가 설정되면 마일스톤이 자동 생성됩니다. 채팅에서 "Milestones 작성해줘"라고 요청하세요.</p>
+        <p style={{ color: color.textMuted }}>팀 구성과 범위가 설정되면 마일스톤이 자동 생성됩니다. 채팅에서 "Milestones 작성해줘"라고 요청하세요.</p>
       </div>
     )
   }
@@ -45,7 +46,7 @@ export function MilestonesSection() {
         <div style={{ marginBottom: 16 }}>
           {Object.entries(sectionData!).map(([key, val]) =>
             val ? (
-              <div key={key} style={{ marginBottom: 8, padding: 8, borderRadius: 4, border: '1px solid #f3f4f6' }}>
+              <div key={key} style={{ marginBottom: 8, padding: 8, borderRadius: 4, border: `1px solid ${color.border}` }}>
                 <span style={{ fontWeight: 600, marginRight: 4 }}>{key}: </span>
                 <EditableField
                   value={String(val)}
@@ -62,9 +63,9 @@ export function MilestonesSection() {
       {hasRoles && (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
           <thead>
-            <tr style={{ background: '#f9fafb' }}>
+            <tr style={{ background: color.bgPrimary }}>
               {['Phase', 'Deliverables', '담당 역할'].map(h => (
-                <th key={h} style={{ padding: '8px 6px', borderBottom: '2px solid #eee', textAlign: 'left' }}>{h}</th>
+                <th key={h} style={{ padding: '8px 6px', borderBottom: `2px solid ${color.border}`, textAlign: 'left' }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -83,4 +84,4 @@ export function MilestonesSection() {
   )
 }
 
-const td: React.CSSProperties = { padding: '8px 6px', borderBottom: '1px solid #eee' }
+const td: React.CSSProperties = { padding: '8px 6px', borderBottom: `1px solid ${color.border}` }

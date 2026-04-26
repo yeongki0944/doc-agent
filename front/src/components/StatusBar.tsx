@@ -4,11 +4,12 @@
  */
 
 import { useDocumentStore, type AgentStatus } from '../store/documentStore'
+import { color } from '../styles/tokens'
 
 const STATUS_CONFIG: Record<AgentStatus, { color: string; label: string; pulse?: boolean }> = {
   processing: { color: '#f59e0b', label: 'processing', pulse: true },
-  idle: { color: '#22c55e', label: 'idle' },
-  error: { color: '#ef4444', label: 'error' },
+  idle: { color: color.success, label: 'idle' },
+  error: { color: color.error, label: 'error' },
   degraded: { color: '#f97316', label: 'degraded', pulse: true },
 }
 
@@ -18,7 +19,7 @@ export function StatusBar() {
   const config = STATUS_CONFIG[agentStatus] || STATUS_CONFIG.idle
 
   return (
-    <div style={{ padding: '6px 12px', borderBottom: '1px solid #eee', fontSize: 13, color: '#666' }}>
+    <div style={{ padding: '6px 12px', borderBottom: `1px solid ${color.border}`, fontSize: 13, color: color.textSecondary }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span
           style={{

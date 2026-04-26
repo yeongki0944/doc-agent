@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useDocumentStore } from '../../store/documentStore'
 import { apiFetch } from '../../auth/api'
 import { useSessionStore } from '../../store/sessionStore'
+import { color } from '../../styles/tokens'
 
 export function ArchitectureSection() {
   const DOC_ID = useSessionStore(s => s.currentDocId) || ''
@@ -63,8 +64,8 @@ export function ArchitectureSection() {
       <div style={{ marginBottom: 16 }}>
         <label
           style={{
-            display: 'inline-block', padding: '8px 16px', background: '#f3f4f6',
-            borderRadius: 6, cursor: uploading ? 'wait' : 'pointer', border: '1px dashed #d1d5db',
+            display: 'inline-block', padding: '8px 16px', background: color.bgPrimary,
+            borderRadius: 6, cursor: uploading ? 'wait' : 'pointer', border: `1px dashed ${color.border}`,
             opacity: uploading ? 0.6 : 1,
           }}
         >
@@ -77,17 +78,17 @@ export function ArchitectureSection() {
           />
           {uploading ? '업로드 중...' : '.drawio 파일 업로드'}
         </label>
-        {fileName && <span style={{ marginLeft: 12, color: '#666' }}>{fileName}</span>}
-        {error && <div style={{ color: '#ef4444', fontSize: 13, marginTop: 4 }}>{error}</div>}
+        {fileName && <span style={{ marginLeft: 12, color: color.textSecondary }}>{fileName}</span>}
+        {error && <div style={{ color: color.error, fontSize: 13, marginTop: 4 }}>{error}</div>}
       </div>
 
       {textEntries.length > 0 && (
         <div style={{ marginBottom: 16 }}>
           {textEntries.map(([key, val]) => (
-            <div key={key} style={{ marginBottom: 8, padding: 8, background: '#fef9c3', borderRadius: 4 }}>
+            <div key={key} style={{ marginBottom: 8, padding: 8, background: color.aiBadgeBg, borderRadius: 4 }}>
               <span style={{ fontWeight: 600 }}>{key}: </span>
               {String(val)}
-              <span style={{ padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700, color: '#d97706', background: '#fef3c7', border: '1px solid #fde68a', marginLeft: 8 }}>AI</span>
+              <span style={{ padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700, color: color.aiBadgeText, background: color.aiBadgeBg, border: `1px solid ${color.aiBadgeBorder}`, marginLeft: 8 }}>AI</span>
             </div>
           ))}
         </div>
@@ -98,21 +99,21 @@ export function ArchitectureSection() {
           <img
             src={previewUrl}
             alt="Architecture diagram preview"
-            style={{ maxWidth: '100%', border: '1px solid #eee', borderRadius: 8 }}
+            style={{ maxWidth: '100%', border: `1px solid ${color.border}`, borderRadius: 8 }}
           />
           <div style={{ marginTop: 8, display: 'flex', gap: 12 }}>
             {drawioUrl && (
-              <a href={drawioUrl} style={{ color: '#3b82f6', fontSize: 13 }} download>
+              <a href={drawioUrl} style={{ color: color.info, fontSize: 13 }} download>
                 원본 .drawio 다운로드
               </a>
             )}
-            <a href={previewUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#3b82f6', fontSize: 13 }}>
+            <a href={previewUrl} target="_blank" rel="noopener noreferrer" style={{ color: color.info, fontSize: 13 }}>
               Preview 원본 보기
             </a>
           </div>
         </div>
       ) : (
-        <div style={{ padding: 32, background: '#f9fafb', borderRadius: 8, textAlign: 'center', color: '#999' }}>
+        <div style={{ padding: 32, background: '#f9fafb', borderRadius: 8, textAlign: 'center', color: color.textMuted }}>
           {uploading
             ? '다이어그램 분석 중...'
             : fileName

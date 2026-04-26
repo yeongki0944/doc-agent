@@ -38,6 +38,13 @@ class FieldStatus(str, Enum):
     calculated = "calculated"
 
 
+class RoleCategory(str, Enum):
+    """Phase × Role 시간표 컬럼 분류."""
+    solution_architect = "solution_architect"
+    engineer = "engineer"
+    other = "other"
+
+
 # ---------------------------------------------------------------------------
 # 4-property pattern base types
 # ---------------------------------------------------------------------------
@@ -72,6 +79,38 @@ class DocumentMeta(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# DOCX export sub-models
+# ---------------------------------------------------------------------------
+
+class ContactEntry(BaseModel):
+    """Stakeholders 표의 단일 행."""
+    name: FieldValue = Field(default_factory=FieldValue)
+    title: FieldValue = Field(default_factory=FieldValue)
+    role_or_description: FieldValue = Field(default_factory=FieldValue)
+    contact: FieldValue = Field(default_factory=FieldValue)
+
+
+class Phase(BaseModel):
+    """Milestones 표의 단일 phase."""
+    phase: FieldValue = Field(default_factory=FieldValue)
+    completion_date: FieldValue = Field(default_factory=FieldValue)
+    deliverables: FieldValue = Field(default_factory=FieldValue)
+
+
+class ContributionEntry(BaseModel):
+    """Cost contribution 표의 단일 당사자 항목."""
+    amount: FieldValue = Field(default_factory=FieldValue)   # USD
+    pct: FieldValue = Field(default_factory=FieldValue)      # 0~100
+
+
+class Contribution(BaseModel):
+    """Customer/Partner/AWS 비용 분담."""
+    customer: ContributionEntry = Field(default_factory=ContributionEntry)
+    partner: ContributionEntry = Field(default_factory=ContributionEntry)
+    aws: ContributionEntry = Field(default_factory=ContributionEntry)
+
+
+# ---------------------------------------------------------------------------
 # Section models — each section is a generic container for now.
 # Specific section schemas can be refined per-section as needed.
 # ---------------------------------------------------------------------------
@@ -88,37 +127,41 @@ class CoverSection(Section):
 
 class ExecutiveSummarySection(Section):
     """Executive summary section."""
-    pass
+    text: FieldValue = Field(default_factory=FieldValue)
 
 
 class StakeholdersSection(Section):
     """Sponsor / Stakeholder / Team contact & org info."""
-    pass
+    executive_sponsors: list[ContactEntry] = Field(default_factory=list)
+    stakeholders: list[ContactEntry] = Field(default_factory=list)
+    project_team: list[ContactEntry] = Field(default_factory=list)
+    escalation_contacts: list[ContactEntry] = Field(default_factory=list)
 
 
 class SuccessCriteriaSection(Section):
     """Success criteria / KPIs section."""
-    pass
+    items: list[FieldValue] = Field(default_factory=list)
 
 
 class AssumptionsSection(Section):
     """Assumptions & risks section."""
-    pass
+    items: list[FieldValue] = Field(default_factory=list)
 
 
 class ScopeOfWorkSection(Section):
     """Scope of work section."""
-    pass
+    items: list[FieldValue] = Field(default_factory=list)
 
 
 class ArchitectureSection(Section):
     """Architecture section — diagrams, service list, analysis."""
-    pass
+    description: FieldValue = Field(default_factory=FieldValue)
+    tools: list[FieldValue] = Field(default_factory=list)
 
 
 class MilestonesSection(Section):
     """Milestones & deliverables section."""
-    pass
+    phases: list[Phase] = Field(default_factory=list)
 
 
 class RoleCostSummary(BaseModel):
@@ -176,12 +219,12 @@ class CostBreakdownSection(Section):
 
 class AcceptanceSection(Section):
     """Acceptance criteria section."""
-    pass
+    text: FieldValue = Field(default_factory=FieldValue)
 
 
 class ResourcesCostEstimatesSection(Section):
     """Resources & cost estimates — sub-section of Cost tab."""
-    pass
+    contribution: Contribution = Field(default_factory=Contribution)
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +263,7 @@ class StaffingRole(BaseModel):
     """Single role entry in the staffing plan."""
     role_id: str
     display_name: str = ""
+    category: RoleCategory = RoleCategory.other
     count: FieldValue = Field(default_factory=FieldValue)
     allocation_pct: FieldValue = Field(default_factory=FieldValue)
     rate_per_hour: FieldValue = Field(default_factory=FieldValue)

@@ -6,6 +6,7 @@ import { EditableField } from '../EditableField'
 import { saveUserInput } from '../../utils/api'
 import { emitUserEdit } from '../../utils/userEditEvent'
 import { useDocLang } from '../LangContext'
+import { color, font, size, space } from '../../styles/tokens'
 
 export function CoverSection() {
   const lang = useDocLang()
@@ -51,7 +52,7 @@ export function CoverSection() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 16 }}>Cover Page</h2>
+      <h2 style={{ marginBottom: 16, fontSize: size.lg, fontWeight: 600, fontFamily: font.heading }}>Cover Page</h2>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <tbody>
           <MetaRow label="고객사" field={meta?.customer} onSave={v => handleMetaEdit('customer', '고객사', v)} />
@@ -105,5 +106,5 @@ function CoverRow({ label, value, onSave }: { label: string; value: string; onSa
   )
 }
 
-const tdLabel: React.CSSProperties = { padding: '8px 12px', fontWeight: 600, borderBottom: '1px solid #eee', width: 120 }
-const tdValue: React.CSSProperties = { padding: '8px 12px', borderBottom: '1px solid #eee' }
+const tdLabel: React.CSSProperties = { padding: '8px 12px', fontWeight: 600, borderBottom: `1px solid ${color.border}`, width: 120 }
+const tdValue: React.CSSProperties = { padding: '8px 12px', borderBottom: `1px solid ${color.border}` }

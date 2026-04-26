@@ -16,6 +16,9 @@ import pytest
 from agent.lib.schema.document_state import (
     AWSServiceCost,
     CalculatedOnly,
+    ContactEntry,
+    Contribution,
+    ContributionEntry,
     ConversationHistory,
     ConversationMessage,
     CostBreakdownSection,
@@ -24,7 +27,9 @@ from agent.lib.schema.document_state import (
     DocumentState,
     FieldStatus,
     FieldValue,
+    Phase,
     PhaseHours,
+    RoleCategory,
     RoleCostSummary,
     Sections,
     ServiceBreakdownItem,
@@ -462,3 +467,212 @@ class TestPatchSerialization:
         assert restored.operations[0].op == "replace"
         assert restored.operations[1].op == "add"
         assert restored.operations[2].op == "remove"
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 — New model round-trip tests
+# ---------------------------------------------------------------------------
+
+class TestContactEntryRoundTrip:
+    def test_default_round_trip(self):
+        ce = ContactEntry()
+        data = ce.model_dump()
+        restored = ContactEntry.model_validate(data)
+        assert restored.name.status == FieldStatus.empty
+        assert restored.contact.user_input is None
+
+    def test_full_round_trip(self):
+        ce = ContactEntry(
+            name=FieldValue(user_input="홍길동", status=FieldStatus.confirmed),
+            title=FieldValue(user_input="CTO"),
+            role_or_description=FieldValue(ai_recommended="Technical Lead"),
+            contact=FieldValue(user_input="hong@example.com"),
+        )
+        data = ce.model_dump()
+        restored = ContactEntry.model_validate(data)
+        assert restored.name.user_input == "홍길동"
+        assert restored.role_or_description.ai_recommended == "Technical Lead"
+
+
+class TestPhaseRoundTrip:
+    def test_default_round_trip(self):
+        p = Phase()
+        data = p.model_dump()
+        restored = Phase.model_validate(data)
+        assert restored.phase.user_input is None
+
+    def test_full_round_trip(self):
+        p = Phase(
+            phase=FieldValue(user_input="Discovery"),
+            completion_date=FieldValue(user_input="2025-08-15"),
+            deliverables=FieldValue(ai_recommended="요구사항 문서, 아키텍처 초안"),
+        )
+        data = p.model_dump()
+        restored = Phase.model_validate(data)
+        assert restored.phase.user_input == "Discovery"
+        assert restored.deliverables.ai_recommended == "요구사항 문서, 아키텍처 초안"
+
+
+class TestContributionRoundTrip:
+    def test_default_round_trip(self):
+        c = Contribution()
+        data = c.model_dump()
+        restored = Contribution.model_validate(data)
+        assert restored.customer.amount.user_input is None
+        assert restored.aws.pct.user_input is None
+
+    def test_full_round_trip(self):
+        c = Contribution(
+            customer=ContributionEntry(
+                amount=FieldValue(user_input=30000),
+                pct=FieldValue(calculated=60),
+            ),
+            partner=ContributionEntry(
+                amount=FieldValue(user_input=10000),
+                pct=FieldValue(calculated=20),
+            ),
+            aws=ContributionEntry(
+                amount=FieldValue(user_input=10000),
+                pct=FieldValue(calculated=20),
+            ),
+        )
+        json_str = c.model_dump_json()
+        restored = Contribution.model_validate_json(json_str)
+        assert restored.customer.amount.user_input == 30000
+        assert restored.partner.pct.calculated == 20
+        assert restored.aws.amount.user_input == 10000
+
+
+class TestRoleCategoryEnum:
+    def test_serialization(self):
+        assert RoleCategory.solution_architect.value == "solution_architect"
+        assert RoleCategory.engineer.value == "engineer"
+        assert RoleCategory.other.value == "other"
+
+    def test_json_serialization(self):
+        role = StaffingRole(role_id="sa", category=RoleCategory.solution_architect)
+        data = role.model_dump()
+        assert data["category"] == "solution_architect"
+        json_str = role.model_dump_json()
+        restored = StaffingRole.model_validate_json(json_str)
+        assert restored.category == RoleCategory.solution_architect
+
+
+class TestDocumentStateFullRoundTripV2:
+    """DocumentState with all new Phase 0 fields."""
+
+    def test_full_round_trip_with_new_fields(self):
+        from agent.lib.schema.document_state import (
+            AcceptanceSection,
+            ArchitectureSection,
+            AssumptionsSection,
+            ExecutiveSummarySection,
+            MilestonesSection,
+            ResourcesCostEstimatesSection,
+            ScopeOfWorkSection,
+            StakeholdersSection,
+            SuccessCriteriaSection,
+        )
+        ts = datetime(2025, 7, 1, 9, 0, 0, tzinfo=timezone.utc)
+        doc = DocumentState(
+            document_id="doc-phase0-test",
+            version=1,
+            created_at=ts,
+            updated_at=ts,
+        )
+        doc.sections.executive_summary = ExecutiveSummarySection(
+            text=FieldValue(ai_recommended="This PoC validates AI-based automation."),
+        )
+        doc.sections.stakeholders = StakeholdersSection(
+            executive_sponsors=[ContactEntry(name=FieldValue(user_input="김대표"))],
+            project_team=[
+                ContactEntry(name=FieldValue(user_input="이개발"), title=FieldValue(user_input="Engineer")),
+            ],
+        )
+        doc.sections.success_criteria = SuccessCriteriaSection(
+            items=[FieldValue(user_input="응답 정확도 85% 이상")],
+        )
+        doc.sections.assumptions = AssumptionsSection(
+            items=[FieldValue(user_input="고객 데이터 접근 가능")],
+        )
+        doc.sections.scope_of_work = ScopeOfWorkSection(
+            items=[FieldValue(ai_recommended="AI 상담 자동화 파이프라인 구축")],
+        )
+        doc.sections.architecture = ArchitectureSection(
+            description=FieldValue(ai_recommended="Bedrock + Lambda + DynamoDB"),
+            tools=[FieldValue(user_input="Amazon Bedrock")],
+        )
+        doc.sections.milestones = MilestonesSection(
+            phases=[
+                Phase(
+                    phase=FieldValue(user_input="Discovery"),
+                    completion_date=FieldValue(user_input="2025-08-01"),
+                    deliverables=FieldValue(ai_recommended="요구사항 문서"),
+                ),
+            ],
+        )
+        doc.sections.acceptance = AcceptanceSection(
+            text=FieldValue(ai_recommended="PoC 성공 기준 80% 이상 충족 시 승인"),
+        )
+        doc.sections.resources_cost_estimates = ResourcesCostEstimatesSection(
+            contribution=Contribution(
+                customer=ContributionEntry(amount=FieldValue(user_input=30000)),
+                aws=ContributionEntry(amount=FieldValue(user_input=10000)),
+            ),
+        )
+        doc.staffing_plan.roles["sa"] = StaffingRole(
+            role_id="sa",
+            display_name="Solutions Architect",
+            category=RoleCategory.solution_architect,
+        )
+
+        json_str = doc.model_dump_json()
+        restored = DocumentState.model_validate_json(json_str)
+
+        assert restored.sections.executive_summary.text.ai_recommended == "This PoC validates AI-based automation."
+        assert len(restored.sections.stakeholders.executive_sponsors) == 1
+        assert restored.sections.stakeholders.executive_sponsors[0].name.user_input == "김대표"
+        assert len(restored.sections.success_criteria.items) == 1
+        assert restored.sections.architecture.description.ai_recommended == "Bedrock + Lambda + DynamoDB"
+        assert len(restored.sections.milestones.phases) == 1
+        assert restored.sections.acceptance.text.ai_recommended is not None
+        assert restored.sections.resources_cost_estimates.contribution.customer.amount.user_input == 30000
+        assert restored.staffing_plan.roles["sa"].category == RoleCategory.solution_architect
+
+
+class TestBackwardCompatibility:
+    """Existing documents without new fields load without errors."""
+
+    def test_empty_sections_load(self):
+        data = {"document_id": "doc-old", "sections": {"stakeholders": {}}}
+        doc = DocumentState.model_validate(data)
+        assert doc.sections.stakeholders.executive_sponsors == []
+        assert doc.sections.stakeholders.project_team == []
+
+    def test_legacy_dict_without_new_fields(self):
+        data = {
+            "document_id": "doc-legacy",
+            "version": 5,
+            "sections": {
+                "executive_summary": {"some_old_field": "value"},
+                "architecture": {"preview_url": "https://example.com/img.png"},
+            },
+            "staffing_plan": {
+                "roles": {
+                    "pm": {"role_id": "pm", "display_name": "PM"},
+                },
+            },
+        }
+        doc = DocumentState.model_validate(data)
+        assert doc.sections.executive_summary.text.user_input is None  # new field defaults
+        assert doc.sections.architecture.description.user_input is None
+        assert doc.staffing_plan.roles["pm"].category == RoleCategory.other  # default
+        # extra fields preserved
+        assert doc.sections.executive_summary.model_extra.get("some_old_field") == "value"
+        assert doc.sections.architecture.model_extra.get("preview_url") == "https://example.com/img.png"
+
+    def test_no_sections_at_all(self):
+        data = {"document_id": "doc-minimal"}
+        doc = DocumentState.model_validate(data)
+        assert doc.sections.milestones.phases == []
+        assert doc.sections.acceptance.text.user_input is None

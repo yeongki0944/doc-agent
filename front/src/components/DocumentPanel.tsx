@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { color, font, radius } from '../styles/tokens'
 import { useDocumentStore } from '../store/documentStore'
 import { requestReview, requestExport, getDocument } from '../utils/api'
 import { CoverSection } from './sections/CoverSection'
@@ -67,7 +68,7 @@ function Header({ completionScore, blockingIssues, docId, lang, onLangChange }: 
   const exportEnabled = blockingIssues.length === 0
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px', borderBottom: '1px solid #eee' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px', borderBottom: `1px solid ${color.border}` }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ fontWeight: 600, fontSize: 15 }}>APN PoC Project Plan</span>
         <CompletionBadge score={completionScore} />
@@ -84,10 +85,10 @@ function Header({ completionScore, blockingIssues, docId, lang, onLangChange }: 
 /** Completion score badge: 0.0~1.0 displayed as percentage with color coding */
 export function CompletionBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100)
-  const bg = pct >= 100 ? '#22c55e' : pct >= 50 ? '#f59e0b' : '#ef4444'
+  const bg = pct >= 100 ? color.success : pct >= 50 ? '#f59e0b' : color.error
   return (
     <span
-      style={{ padding: '2px 8px', borderRadius: 10, fontSize: 12, fontWeight: 600, color: '#fff', background: bg }}
+      style={{ padding: '2px 8px', borderRadius: 10, fontSize: 12, fontWeight: 600, color: color.bgSurface, background: bg }}
       role="status"
       aria-label={`Completion: ${pct}%`}
     >
@@ -118,7 +119,7 @@ function ExportButton({ disabled, docId }: { disabled: boolean; docId: string })
       style={{
         padding: '6px 14px', borderRadius: 6, border: 'none', fontSize: 13,
         cursor: disabled ? 'not-allowed' : 'pointer',
-        background: disabled ? '#d1d5db' : '#3b82f6', color: '#fff',
+        background: disabled ? color.border : color.mzRed, color: color.bgSurface,
       }}
     >
       DOCX Export
@@ -144,7 +145,7 @@ function ReviewButton({ docId }: { docId: string }) {
     <button
       onClick={handleReview}
       disabled={loading}
-      style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13, cursor: loading ? 'wait' : 'pointer', background: '#fff', color: '#374151' }}
+      style={{ padding: '6px 14px', borderRadius: 6, border: `1px solid ${color.border}`, fontSize: 13, cursor: loading ? 'wait' : 'pointer', background: color.bgSurface, color: color.textPrimary }}
     >
       {loading ? '리뷰 중...' : '리뷰 요청'}
     </button>
@@ -153,13 +154,13 @@ function ReviewButton({ docId }: { docId: string }) {
 
 function LangToggle({ lang, onChange }: { lang: DocLang; onChange: (l: DocLang) => void }) {
   return (
-    <div style={{ display: 'flex', borderRadius: 6, border: '1px solid #d1d5db', overflow: 'hidden', fontSize: 12 }}>
+    <div style={{ display: 'flex', borderRadius: 6, border: `1px solid ${color.border}`, overflow: 'hidden', fontSize: 12 }}>
       <button
         onClick={() => onChange('ko')}
         style={{
           padding: '4px 10px', border: 'none', cursor: 'pointer',
-          background: lang === 'ko' ? '#3b82f6' : '#fff',
-          color: lang === 'ko' ? '#fff' : '#666',
+          background: lang === 'ko' ? color.mzNavy : color.bgSurface,
+          color: lang === 'ko' ? color.bgSurface : color.textSecondary,
           fontWeight: lang === 'ko' ? 600 : 400,
         }}
       >한글</button>
@@ -167,8 +168,8 @@ function LangToggle({ lang, onChange }: { lang: DocLang; onChange: (l: DocLang) 
         onClick={() => onChange('en')}
         style={{
           padding: '4px 10px', border: 'none', cursor: 'pointer',
-          background: lang === 'en' ? '#3b82f6' : '#fff',
-          color: lang === 'en' ? '#fff' : '#666',
+          background: lang === 'en' ? color.mzNavy : color.bgSurface,
+          color: lang === 'en' ? color.bgSurface : color.textSecondary,
           fontWeight: lang === 'en' ? 600 : 400,
         }}
       >ENG</button>
@@ -178,7 +179,7 @@ function LangToggle({ lang, onChange }: { lang: DocLang; onChange: (l: DocLang) 
 
 function TabBar({ tabs, active, onSelect }: { tabs: readonly string[]; active: string; onSelect: (t: any) => void }) {
   return (
-    <div style={{ display: 'flex', overflowX: 'auto', borderBottom: '1px solid #eee', padding: '0 8px' }}>
+    <div style={{ display: 'flex', overflowX: 'auto', borderBottom: `1px solid ${color.border}`, padding: '0 8px' }}>
       {tabs.map(t => (
         <button
           key={t}
@@ -186,8 +187,8 @@ function TabBar({ tabs, active, onSelect }: { tabs: readonly string[]; active: s
           style={{
             padding: '8px 14px', border: 'none', background: 'none', cursor: 'pointer',
             fontSize: 13, fontWeight: active === t ? 600 : 400, whiteSpace: 'nowrap',
-            borderBottom: active === t ? '2px solid #3b82f6' : '2px solid transparent',
-            color: active === t ? '#3b82f6' : '#666',
+            borderBottom: active === t ? `2px solid ${color.mzRed}` : '2px solid transparent',
+            color: active === t ? color.mzRed : color.textSecondary,
           }}
         >
           {t}

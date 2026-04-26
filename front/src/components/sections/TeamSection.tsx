@@ -4,6 +4,7 @@ import { useSessionStore } from '../../store/sessionStore'
 import { AiBadge, isAiRecommended } from '../AiBadge'
 import { saveUserInput } from '../../utils/api'
 import { emitUserEdit } from '../../utils/userEditEvent'
+import { color } from '../../styles/tokens'
 
 const resolve = (f: FieldValue | undefined | null) => f?.user_input ?? f?.ai_recommended ?? f?.calculated ?? ''
 
@@ -17,7 +18,7 @@ export function TeamSection() {
     return (
       <div>
         <h2 style={{ marginBottom: 16 }}>Team / Staffing Plan</h2>
-        <p style={{ color: '#999' }}>아직 팀 구성이 설정되지 않았습니다. 채팅에서 프로젝트 정보를 입력하면 AI가 추천합니다.</p>
+        <p style={{ color: color.textMuted }}>아직 팀 구성이 설정되지 않았습니다. 채팅에서 프로젝트 정보를 입력하면 AI가 추천합니다.</p>
         <p style={{ color: '#bbb', fontSize: 12, marginTop: 8 }}>
           ※ stakeholders 섹션은 연락처/조직 정보 전용입니다. 인력 편집은 이 Team 탭에서 수행합니다.
         </p>
@@ -30,9 +31,9 @@ export function TeamSection() {
       <h2 style={{ marginBottom: 16 }}>Team / Staffing Plan</h2>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
         <thead>
-          <tr style={{ background: '#f9fafb' }}>
+          <tr style={{ background: color.bgPrimary }}>
             {['역할','인원','할당(%)','시급($)','Discovery','Dev','Test','총시간','총비용($)'].map(h => (
-              <th key={h} style={{ padding: '8px 6px', borderBottom: '2px solid #eee', textAlign: 'left', fontSize: 12 }}>{h}</th>
+              <th key={h} style={{ padding: '8px 6px', borderBottom: `2px solid ${color.border}`, textAlign: 'left', fontSize: 12 }}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -40,7 +41,7 @@ export function TeamSection() {
           {entries.map(r => <RoleRow key={r.role_id} role={r} />)}
         </tbody>
         <tfoot>
-          <tr style={{ fontWeight: 700, background: '#f9fafb' }}>
+          <tr style={{ fontWeight: 700, background: color.bgPrimary }}>
             <td colSpan={7} style={td}>Grand Total</td>
             <td style={td}>{grandHours ?? '—'}</td>
             <td style={td}>{grandCost != null ? `${grandCost.toLocaleString()}` : '—'}</td>
@@ -104,7 +105,7 @@ function RoleRow({ role }: { role: StaffingRole }) {
       <td style={td}>
         {role.display_name}
         {role.reason && (
-          <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>{role.reason}</div>
+          <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2 }}>{role.reason}</div>
         )}
       </td>
       <EditableCell field="count" value={resolve(role.count)} fieldValue={role.count} onChange={v => handleChange('count', v)} />
@@ -141,9 +142,9 @@ function EditableCell({
           onBlur={e => onChange(e.target.value)}
           style={{
             width: '100%', border: '1px solid transparent', padding: '4px 6px', borderRadius: 4, fontSize: 14,
-            background: isAi ? '#fef3c7' : 'transparent',
+            background: isAi ? color.aiBadgeBg : 'transparent',
           }}
-          onFocus={e => { e.target.style.borderColor = '#3b82f6'; e.target.style.background = '#fff' }}
+          onFocus={e => { e.target.style.borderColor = color.mzRed; e.target.style.background = color.bgSurface }}
           aria-label={field}
         />
         {isAi && (
@@ -156,4 +157,4 @@ function EditableCell({
   )
 }
 
-const td: React.CSSProperties = { padding: '6px', borderBottom: '1px solid #eee' }
+const td: React.CSSProperties = { padding: '6px', borderBottom: `1px solid ${color.border}` }

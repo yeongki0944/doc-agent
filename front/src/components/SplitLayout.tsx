@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import { color } from '../styles/tokens'
 import { ChatPanel } from './ChatPanel'
 import { DocumentPanel } from './DocumentPanel'
 import { Sidebar } from './Sidebar'
@@ -37,14 +38,14 @@ export function SplitLayout() {
           </div>
           <div
             onMouseDown={onMouseDown}
-            style={{ width: 4, cursor: 'col-resize', background: '#ddd', flexShrink: 0 }}
+            style={{ width: 4, cursor: 'col-resize', background: color.border, flexShrink: 0 }}
           />
           <div style={{ flex: 1, overflow: 'auto' }}>
             <DocumentPanel docId={currentDocId} />
           </div>
         </div>
       ) : (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999' }}>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: color.textMuted }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>📄</div>
             <div style={{ fontSize: 16 }}>문서를 선택하거나 새 문서를 만들어주세요</div>

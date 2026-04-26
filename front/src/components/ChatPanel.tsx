@@ -11,6 +11,7 @@ import {
 import { apiFetch } from '../auth/api'
 import { onUserEdit } from '../utils/userEditEvent'
 import { useSessionStore } from '../store/sessionStore'
+import { color, font, space, radius } from '../styles/tokens'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'https://7wejbdujd6.execute-api.ap-northeast-2.amazonaws.com'
 const SESSION_ID = 'default'
@@ -192,24 +193,25 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         {messages.map(m => (
           <div key={m.id} style={{
             marginBottom: 8, padding: '8px 12px', borderRadius: 8,
-            background: m.role === 'user' ? '#e0f2fe' : '#f3f4f6',
+            background: m.role === 'user' ? color.bgSubtle : color.bgSurface,
+            border: m.role === 'agent' ? `1px solid ${color.border}` : undefined,
             maxWidth: '85%', marginLeft: m.role === 'user' ? 'auto' : 0,
           }}>
-            <div style={{ fontSize: 11, color: '#999', marginBottom: 2 }}>
+            <div style={{ fontSize: 11, color: color.textMuted, marginBottom: 2 }}>
               {m.role === 'user' ? '나' : 'Agent'}
             </div>
             {m.text}
           </div>
         ))}
         {loading && (
-          <div style={{ padding: '8px 12px', color: '#999', fontSize: 13 }}>
+          <div style={{ padding: '8px 12px', color: color.textMuted, fontSize: 13 }}>
             분석 중...
           </div>
         )}
       </div>
-      <div style={{ display: 'flex', padding: 8, borderTop: '1px solid #eee', gap: 8 }}>
+      <div style={{ display: 'flex', padding: 8, borderTop: `1px solid ${color.border}`, gap: 8 }}>
         <input
-          style={{ flex: 1, padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6, fontSize: 14 }}
+          style={{ flex: 1, padding: '8px 12px', border: `1px solid ${color.border}`, borderRadius: 6, fontSize: 14 }}
           placeholder="프로젝트 정보를 입력하세요..."
           value={input}
           onChange={e => setInput(e.target.value)}
@@ -219,7 +221,7 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         <button
           onClick={handleSend}
           disabled={loading}
-          style={{ padding: '8px 16px', background: loading ? '#93c5fd' : '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: loading ? 'wait' : 'pointer' }}
+          style={{ padding: '8px 16px', background: loading ? '#F09090' : color.mzRed, color: color.bgSurface, border: 'none', borderRadius: 6, cursor: loading ? 'wait' : 'pointer' }}
         >
           전송
         </button>

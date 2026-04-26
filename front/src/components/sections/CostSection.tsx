@@ -1,5 +1,6 @@
 import { useDocumentStore } from '../../store/documentStore'
 import { AiHighlight, resolveFieldValue } from '../AiBadge'
+import { color } from '../../styles/tokens'
 
 export function CostSection() {
   const roles = useDocumentStore(s => s.staffing_plan?.roles ?? {})
@@ -15,9 +16,9 @@ export function CostSection() {
       {entries.length > 0 ? (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14, marginBottom: 16 }}>
           <thead>
-            <tr style={{ background: '#f9fafb' }}>
+            <tr style={{ background: color.bgPrimary }}>
               {['역할', '총시간', '시급($)', '소계($)'].map(h => (
-                <th key={h} style={{ padding: '8px 6px', borderBottom: '2px solid #eee', textAlign: 'left' }}>{h}</th>
+                <th key={h} style={{ padding: '8px 6px', borderBottom: `2px solid ${color.border}`, textAlign: 'left' }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -42,10 +43,10 @@ export function CostSection() {
             </tr>
           </tfoot>
         </table>
-      ) : <p style={{ color: '#999', marginBottom: 16 }}>팀 구성 후 인건비가 계산됩니다.</p>}
+      ) : <p style={{ color: color.textMuted, marginBottom: 16 }}>팀 구성 후 인건비가 계산됩니다.</p>}
 
       <h3 style={{ marginBottom: 8 }}>AWS 서비스 비용</h3>
-      <div style={{ padding: 16, background: '#f9fafb', borderRadius: 8, marginBottom: 16 }}>
+      <div style={{ padding: 16, background: color.bgPrimary, borderRadius: 8, marginBottom: 16 }}>
         {costBreakdown?.aws_service_cost?.monthly_cost_summary?.calculated ? (
           <>
             <p style={{ fontWeight: 600 }}>
@@ -56,7 +57,7 @@ export function CostSection() {
                 href={costBreakdown.aws_service_cost.calculator_share_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                style={{ color: '#3b82f6', fontSize: 13 }}
+                style={{ color: color.info, fontSize: 13 }}
               >
                 calculator.aws에서 상세 보기
               </a>
@@ -64,7 +65,7 @@ export function CostSection() {
           </>
         ) : (
           <>
-            <p style={{ color: '#999' }}>AWS 비용 추정이 아직 수행되지 않았습니다.</p>
+            <p style={{ color: color.textMuted }}>AWS 비용 추정이 아직 수행되지 않았습니다.</p>
             <p style={{ color: '#bbb', fontSize: 12, marginTop: 4 }}>calculator.aws 링크가 여기에 표시됩니다.</p>
           </>
         )}
@@ -72,16 +73,16 @@ export function CostSection() {
 
       <h3 style={{ marginBottom: 8 }}>Resources & Cost Estimates</h3>
       {costBreakdown?.document_local_summary ? (
-        <div style={{ padding: 16, background: '#f9fafb', borderRadius: 8 }}>
+        <div style={{ padding: 16, background: color.bgPrimary, borderRadius: 8 }}>
           <p>총 인건비: ${costBreakdown.document_local_summary.total_staffing_cost?.toLocaleString() ?? '—'}</p>
           <p>총 AWS 월간 비용: ${costBreakdown.document_local_summary.total_aws_monthly_cost?.toLocaleString() ?? '—'}</p>
           <p style={{ fontWeight: 600 }}>총 프로젝트 비용: ${costBreakdown.document_local_summary.total_project_cost?.toLocaleString() ?? '—'}</p>
         </div>
       ) : (
-        <p style={{ color: '#999' }}>리소스 비용 추정이 아직 수행되지 않았습니다.</p>
+        <p style={{ color: color.textMuted }}>리소스 비용 추정이 아직 수행되지 않았습니다.</p>
       )}
     </div>
   )
 }
 
-const td: React.CSSProperties = { padding: '8px 6px', borderBottom: '1px solid #eee' }
+const td: React.CSSProperties = { padding: '8px 6px', borderBottom: `1px solid ${color.border}` }

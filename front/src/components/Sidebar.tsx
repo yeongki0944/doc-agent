@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSessionStore } from '../store/sessionStore'
 import { useAuth } from '../auth/AuthContext'
+import { color, font, space, radius, shadow } from '../styles/tokens'
 
 export function Sidebar() {
   const { user, logout } = useAuth()
@@ -35,17 +36,17 @@ export function Sidebar() {
   return (
     <div style={{
       width: 240, minWidth: 240, height: '100vh', display: 'flex', flexDirection: 'column',
-      background: '#f9fafb', borderRight: '1px solid #e5e7eb',
+      background: color.bgPrimary, borderRight: `1px solid ${color.border}`,
     }}>
       {/* Header */}
-      <div style={{ padding: '16px 12px 8px', borderBottom: '1px solid #e5e7eb' }}>
+      <div style={{ padding: '16px 12px 8px', borderBottom: `1px solid ${color.border}` }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <span style={{ fontWeight: 700, fontSize: 15 }}>Doc Agent</span>
         </div>
         <button
           onClick={handleCreate}
           style={{
-            width: '100%', padding: '8px 12px', background: '#3b82f6', color: '#fff',
+            width: '100%', padding: '8px 12px', background: color.mzRed, color: color.bgSurface,
             border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: 'pointer',
           }}
         >
@@ -56,10 +57,10 @@ export function Sidebar() {
       {/* Document list */}
       <div style={{ flex: 1, overflow: 'auto', padding: '8px 0' }}>
         {loading && documents.length === 0 && (
-          <div style={{ padding: 12, color: '#999', fontSize: 13, textAlign: 'center' }}>불러오는 중...</div>
+          <div style={{ padding: 12, color: color.textMuted, fontSize: 13, textAlign: 'center' }}>불러오는 중...</div>
         )}
         {!loading && documents.length === 0 && (
-          <div style={{ padding: 12, color: '#999', fontSize: 13, textAlign: 'center' }}>
+          <div style={{ padding: 12, color: color.textMuted, fontSize: 13, textAlign: 'center' }}>
             문서가 없습니다.<br />새 문서를 만들어보세요.
           </div>
         )}
@@ -69,7 +70,7 @@ export function Sidebar() {
             onClick={() => selectDocument(doc.document_id)}
             style={{
               padding: '10px 12px', margin: '0 8px', borderRadius: 6, cursor: 'pointer',
-              background: currentDocId === doc.document_id ? '#e0f2fe' : 'transparent',
+              background: currentDocId === doc.document_id ? color.bgSubtle : 'transparent',
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               gap: 4,
             }}
@@ -82,7 +83,7 @@ export function Sidebar() {
                 {doc.title || '제목 없음'}
               </div>
               {doc.updated_at && (
-                <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+                <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2 }}>
                   {new Date(doc.updated_at).toLocaleDateString('ko-KR')}
                 </div>
               )}
@@ -93,7 +94,7 @@ export function Sidebar() {
               title="삭제"
               style={{
                 background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px',
-                fontSize: 14, color: '#999', borderRadius: 4, flexShrink: 0,
+                fontSize: 14, color: color.textMuted, borderRadius: 4, flexShrink: 0,
               }}
             >
               {deleting === doc.document_id ? '...' : '✕'}
@@ -104,17 +105,17 @@ export function Sidebar() {
 
       {/* Footer — user info + logout */}
       <div style={{
-        padding: '12px', borderTop: '1px solid #e5e7eb',
+        padding: '12px', borderTop: `1px solid ${color.border}`,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
       }}>
-        <div style={{ fontSize: 12, color: '#666', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+        <div style={{ fontSize: 12, color: color.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
           {user?.email || '사용자'}
         </div>
         <button
           onClick={logout}
           style={{
-            background: 'none', border: '1px solid #d1d5db', borderRadius: 4,
-            padding: '4px 10px', fontSize: 12, color: '#666', cursor: 'pointer', flexShrink: 0,
+            background: 'none', border: `1px solid ${color.border}`, borderRadius: 4,
+            padding: '4px 10px', fontSize: 12, color: color.textSecondary, cursor: 'pointer', flexShrink: 0,
           }}
         >
           로그아웃

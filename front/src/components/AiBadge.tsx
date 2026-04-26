@@ -5,6 +5,7 @@
  */
 
 import type { FieldValue } from '../store/documentStore'
+import { color } from '../styles/tokens'
 
 /** Check if a FieldValue is showing an AI-recommended value (no user override) */
 export function isAiRecommended(f: FieldValue | undefined | null): boolean {
@@ -27,9 +28,9 @@ export function AiBadge() {
         borderRadius: 4,
         fontSize: 9,
         fontWeight: 700,
-        color: '#d97706',
-        background: '#fef3c7',
-        border: '1px solid #fde68a',
+        color: color.aiBadgeText,
+        background: color.aiBadgeBg,
+        border: `1px solid ${color.aiBadgeBorder}`,
         marginLeft: 4,
         verticalAlign: 'middle',
         lineHeight: '14px',
@@ -52,7 +53,7 @@ export function AiHighlight({
   return (
     <span
       style={{
-        background: isAi ? '#fef9c3' : 'transparent',
+        background: isAi ? color.aiBadgeBg : 'transparent',
         padding: isAi ? '2px 6px' : 0,
         borderRadius: isAi ? 4 : 0,
         display: 'inline-flex',

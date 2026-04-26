@@ -1,6 +1,9 @@
 import { useState, useMemo } from 'react'
 import { useAuth } from '../auth/AuthContext'
 
+import { color, font, space, radius, shadow } from '../styles/tokens'
+import { input as inputStyle, buttonPrimary } from '../styles/components'
+
 type Mode = 'login' | 'signup' | 'confirm'
 
 const ALLOWED_DOMAINS = ['mz.co.kr', 'megazone.com']
@@ -27,7 +30,7 @@ function validatePassword(pw: string) {
 
 function Check({ ok, label }: { ok: boolean; label: string }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: ok ? '#16a34a' : '#9ca3af' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: ok ? color.success : color.textMuted }}>
       <span style={{ fontSize: 14 }}>{ok ? '✓' : '○'}</span>
       <span>{label}</span>
     </div>
@@ -265,36 +268,35 @@ export default function LoginPage() {
 const s: Record<string, React.CSSProperties> = {
   container: {
     minHeight: '100vh', display: 'flex', alignItems: 'center',
-    justifyContent: 'center', background: '#f3f4f6',
+    justifyContent: 'center', background: color.bgPrimary,
   },
   card: {
-    background: '#fff', padding: 40, borderRadius: 12,
-    boxShadow: '0 4px 12px rgba(0,0,0,0.05)', width: 380, textAlign: 'center',
+    background: color.bgSurface, padding: space.xxxl, borderRadius: radius.lg,
+    boxShadow: shadow.elevated, width: 380, textAlign: 'center',
+    border: `1px solid ${color.border}`,
   },
   input: {
-    width: '100%', padding: '10px 14px', border: '1px solid #d1d5db',
-    borderRadius: 6, fontSize: 14, marginBottom: 10, boxSizing: 'border-box' as const,
-    outline: 'none', transition: 'border-color 0.15s',
+    ...inputStyle, marginBottom: space.md,
+    transition: 'border-color 0.15s',
   },
   btn: {
-    width: '100%', padding: '11px 16px', background: '#3b82f6', color: '#fff',
-    border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 500,
-    cursor: 'pointer', marginTop: 8,
+    ...buttonPrimary, width: '100%', marginTop: space.sm,
   },
   linkBtn: {
-    background: 'none', border: 'none', color: '#3b82f6', fontSize: 13,
-    cursor: 'pointer', marginTop: 12, display: 'block', width: '100%',
+    background: 'none', border: 'none', color: color.mzRed, fontSize: 13,
+    cursor: 'pointer', marginTop: space.md, display: 'block', width: '100%',
+    fontFamily: font.body,
   },
   checkGroup: {
     display: 'flex', flexDirection: 'column' as const, gap: 2,
-    padding: '4px 4px 8px', textAlign: 'left' as const,
+    padding: `${space.xs}px ${space.xs}px ${space.sm}px`, textAlign: 'left' as const,
   },
   error: {
-    marginTop: 12, padding: '8px 12px', background: '#fef2f2',
-    color: '#dc2626', borderRadius: 6, fontSize: 13, textAlign: 'left' as const,
+    marginTop: space.md, padding: `${space.sm}px ${space.md}px`, background: '#fef2f2',
+    color: color.error, borderRadius: radius.sm, fontSize: 13, textAlign: 'left' as const,
   },
   message: {
-    marginTop: 12, padding: '8px 12px', background: '#f0fdf4',
-    color: '#16a34a', borderRadius: 6, fontSize: 13, textAlign: 'left' as const,
+    marginTop: space.md, padding: `${space.sm}px ${space.md}px`, background: '#f0fdf4',
+    color: color.success, borderRadius: radius.sm, fontSize: 13, textAlign: 'left' as const,
   },
 }

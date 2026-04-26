@@ -5,6 +5,7 @@ import { EditableField } from '../EditableField'
 import { saveUserInput } from '../../utils/api'
 import { emitUserEdit } from '../../utils/userEditEvent'
 import { useDocLang } from '../LangContext'
+import { color } from '../../styles/tokens'
 
 interface GenericSectionProps {
   title: string
@@ -41,7 +42,7 @@ export function GenericSection({ title, sectionKey, emptyMessage, chatHint }: Ge
     return (
       <div>
         <h2 style={{ marginBottom: 16 }}>{title}</h2>
-        <p style={{ color: '#999' }}>{emptyMessage} 채팅에서 "{chatHint}"라고 요청하세요.</p>
+        <p style={{ color: color.textMuted }}>{emptyMessage} 채팅에서 "{chatHint}"라고 요청하세요.</p>
       </div>
     )
   }
@@ -60,7 +61,7 @@ export function GenericSection({ title, sectionKey, emptyMessage, chatHint }: Ge
       <h2 style={{ marginBottom: 16 }}>{title}</h2>
       {Object.entries(sectionData!).map(([key, val]) =>
         val ? (
-          <div key={key} style={{ marginBottom: 8, padding: 8, borderRadius: 4, border: '1px solid #f3f4f6' }}>
+          <div key={key} style={{ marginBottom: 8, padding: 8, borderRadius: 4, border: `1px solid ${color.border}` }}>
             <span style={{ fontWeight: 600, marginRight: 4 }}>{key}: </span>
             <EditableField
               value={String(val)}
