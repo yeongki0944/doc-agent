@@ -1,0 +1,8 @@
+{
+  "project_manager": { "min": 60, "default": 81.78, "max": 120 },
+  "solutions_architect": { "min": 80, "default": 105.00, "max": 150 },
+  "ml_engineer": { "min": 75, "default": 95.00, "max": 140 },
+  "backend_developer": { "min": 55, "default": 75.00, "max": 110 },
+  "frontend_developer": { "min": 50, "default": 70.00, "max": 105 },
+  "qa_engineer": { "min": 45, "default": 60.00, "max": 90 }
+}

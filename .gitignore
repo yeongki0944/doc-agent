@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+
+# Node
+node_modules/
+front/dist/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.zip
+.terraform.lock.hcl
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Env
+.env
+.env.*
+
+# Temp
+/tmp/
+
+# Excluded folders
+megathon/
+aiops/

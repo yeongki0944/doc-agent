@@ -1,0 +1,11 @@
+{
+  "genai_multi_agent": {
+    "description": "GenAI 멀티에이전트 PoC phase별 시간 배분",
+    "total_weeks": 4,
+    "phases": {
+      "discovery": { "ratio": 0.2, "default_hours": 40, "description": "요구사항 분석, 아키텍처 설계" },
+      "development": { "ratio": 0.6, "default_hours": 120, "description": "에이전트 구현, API 개발, UI 구현" },
+      "testing": { "ratio": 0.2, "default_hours": 40, "description": "통합 테스트, UAT, 버그 수정" }
+    }
+  }
+}

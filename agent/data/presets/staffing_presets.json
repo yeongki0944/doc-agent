@@ -1,0 +1,13 @@
+{
+  "genai_multi_agent": {
+    "description": "GenAI 멀티에이전트 PoC 프로젝트 기본 구성",
+    "roles": {
+      "project_manager": { "count": 1, "allocation_pct": 50, "rate_per_hour": 81.78 },
+      "solutions_architect": { "count": 1, "allocation_pct": 60, "rate_per_hour": 105.00 },
+      "ml_engineer": { "count": 2, "allocation_pct": 100, "rate_per_hour": 95.00 },
+      "backend_developer": { "count": 2, "allocation_pct": 100, "rate_per_hour": 75.00 },
+      "frontend_developer": { "count": 1, "allocation_pct": 80, "rate_per_hour": 70.00 },
+      "qa_engineer": { "count": 1, "allocation_pct": 60, "rate_per_hour": 60.00 }
+    }
+  }
+}

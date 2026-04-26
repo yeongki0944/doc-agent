@@ -1,0 +1,32 @@
+{
+  "rules": [
+    {
+      "type": "genai_multi_agent",
+      "keywords": ["multi-agent", "멀티에이전트", "agent", "에이전트", "bedrock", "llm", "genai", "gen ai"],
+      "conditions": {
+        "min_agents": 2,
+        "requires_llm": true
+      },
+      "description": "GenAI 멀티에이전트 기반 PoC 프로젝트"
+    },
+    {
+      "type": "genai_single",
+      "keywords": ["chatbot", "챗봇", "rag", "summarization", "요약"],
+      "conditions": {
+        "min_agents": 0,
+        "requires_llm": true
+      },
+      "description": "단일 GenAI 모델 기반 PoC 프로젝트"
+    },
+    {
+      "type": "data_analytics",
+      "keywords": ["analytics", "분석", "dashboard", "대시보드", "etl", "data lake"],
+      "conditions": {
+        "min_agents": 0,
+        "requires_llm": false
+      },
+      "description": "데이터 분석/시각화 PoC 프로젝트"
+    }
+  ],
+  "default_type": "genai_multi_agent"
+}
