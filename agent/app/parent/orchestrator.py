@@ -669,7 +669,7 @@ class ParentOrchestrator:
                 "value": self.cost_agent.calculate_default_contribution(
                     total_project_cost
                 ).model_dump(mode="json"),
-                "source": "ai_recommended",
+                "source": "calculated",
             })
             chat_parts.append(f"[cost_agent] AWS 서비스 비용: 월 ${aws_result.monthly_cost_summary:,.2f}")
         else:
@@ -693,7 +693,7 @@ class ParentOrchestrator:
                 "value": self.cost_agent.calculate_default_contribution(
                     total_project_cost
                 ).model_dump(mode="json"),
-                "source": "ai_recommended",
+                "source": "calculated",
             })
             chat_parts.append(
                 f"[cost_agent] 인건비 계산 완료: 총 ${staffing_result.grand_total:,.2f}"
