@@ -1192,6 +1192,8 @@ class ParentOrchestrator:
         # Update patch versions and publish to AppSync
         for patch in patches:
             patch.version = new_version
+            patch.version_before = expected_version
+            patch.version_after = new_version
         await self.publish_patch(doc_id, patches)
 
         return new_version
@@ -1209,7 +1211,10 @@ class ParentOrchestrator:
         channel = f"docs/{doc_id}/patch"
 
         for patch in patches:
-            payload = patch.model_dump(mode="json")
+            payload = {
+                **patch.model_dump(mode="json"),
+                "type": "patch",
+            }
             self._patch_log.append(patch)
 
             if APPSYNC_HTTP_ENDPOINT:

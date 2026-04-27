@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useDocumentStore } from '../store/documentStore'
 import { StatusBar } from './StatusBar'
-import { initDocumentSubscription, type AppSyncMessage } from '../utils/appsync'
+import { initDocumentSubscription, type ChatMessage } from '../utils/appsync'
 import {
   type HistoryMessage,
   toBoundedApiHistory,
@@ -45,12 +45,7 @@ export function ChatPanel({ docId }: ChatPanelProps) {
 
   // Initialize AppSync subscription on mount
   useEffect(() => {
-    const unsubscribe = initDocumentSubscription(docId, (msg: AppSyncMessage) => {
-      if (msg.type === 'status') {
-        setAgentStatus(msg.status as any)
-        return
-      }
-
+    const unsubscribe = initDocumentSubscription(docId, (msg: ChatMessage) => {
       if (msg.type === 'chat_chunk') {
         // Append text to the current streaming message
         setMessages(prev => {
@@ -72,10 +67,8 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         streamMsgIdRef.current = null
         setLoading(false)
         setAgentStatus('idle')
-        // Apply document state
-        if (msg.document) {
-          useDocumentStore.getState().setDocument(msg.document)
-        }
+        // Source of truth: document updates arrive on docs/{docId}/patch.
+        // Ignore any legacy chat_done.document payload.
       }
     })
     return unsubscribe
@@ -166,9 +159,8 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       const finalMessages = [...updatedMessages, agentMsg]
       setMessages(finalMessages)
 
-      if (data.document) {
-        useDocumentStore.getState().setDocument(data.document)
-      }
+      // Source of truth: chat HTTP responses carry message metadata only.
+      // REST fallback reloads elsewhere may still call setDocument().
 
       // Refresh sidebar document list (title may have changed)
       useSessionStore.getState().fetchDocuments()

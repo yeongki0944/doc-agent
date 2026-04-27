@@ -636,6 +636,46 @@ class TestPublishing:
         assert len(orchestrator._patch_log) == 1
 
     @pytest.mark.asyncio
+    async def test_publish_patch_payload_includes_event_contract(self, orchestrator: ParentOrchestrator):
+        published = []
+
+        async def fake_publish(channel: str, payload: dict):
+            published.append((channel, payload))
+
+        orchestrator._appsync_publish = fake_publish
+
+        patch = Patch(
+            patch_id="p-001",
+            doc_id="doc-001",
+            agent="test",
+            version_before=1,
+            version_after=2,
+            operations=[PatchOperation(op="replace", path="/mode", value="architecture_present")],
+        )
+
+        import agent.app.parent.orchestrator as orchestrator_mod
+
+        old_endpoint = orchestrator_mod.APPSYNC_HTTP_ENDPOINT
+        orchestrator_mod.APPSYNC_HTTP_ENDPOINT = "https://example.com/event"
+        try:
+            await orchestrator.publish_patch("doc-001", [patch])
+        finally:
+            orchestrator_mod.APPSYNC_HTTP_ENDPOINT = old_endpoint
+
+        assert published[0][0] == "docs/doc-001/patch"
+        assert published[0][1]["type"] == "patch"
+        assert published[0][1]["version_before"] == 1
+        assert published[0][1]["version_after"] == 2
+        assert published[0][1]["operations"] == [
+            {
+                "op": "replace",
+                "path": "/mode",
+                "value": "architecture_present",
+                "source": None,
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_publish_status_logs_without_appsync(self, orchestrator: ParentOrchestrator):
         await orchestrator.publish_status("doc-001", AgentStatus.processing)
 

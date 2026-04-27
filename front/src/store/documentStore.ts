@@ -129,6 +129,8 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
   appsyncConnected: false,
 
   setDocument: (doc) => set((s) => {
+    // Full document replacement is intentionally limited to REST fallback
+    // reloads. Agent-authored document mutations must arrive as patch events.
     const incomingMeta = doc.meta as DocumentState['meta'] | undefined
     const safeMeta = {
       customer: incomingMeta?.customer || s.meta.customer,

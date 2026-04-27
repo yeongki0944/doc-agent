@@ -3,12 +3,19 @@
  * Protocol: https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html
  */
 
-import { useDocumentStore, type AgentStatus } from '../store/documentStore'
+import { useDocumentStore, type AgentStatus, type PatchOperation } from '../store/documentStore'
 
 export interface ChatChunkMessage { type: 'chat_chunk'; text: string }
-export interface ChatDoneMessage { type: 'chat_done'; actions: string[]; document: any }
+export interface ChatDoneMessage { type: 'chat_done'; actions?: string[]; document?: unknown }
 export interface StatusMessage { type: 'status'; status: AgentStatus; message?: string }
-export type AppSyncMessage = ChatChunkMessage | ChatDoneMessage | StatusMessage
+export interface PatchMessage {
+  type: 'patch'
+  version_before: number
+  version_after: number
+  operations: PatchOperation[]
+}
+export type ChatMessage = ChatChunkMessage | ChatDoneMessage
+export type AppSyncMessage = ChatMessage | StatusMessage | PatchMessage
 
 type MessageHandler = (msg: AppSyncMessage) => void
 type Unsubscribe = () => void
@@ -115,14 +122,53 @@ export function subscribeToChannel(channel: string, onMessage: MessageHandler): 
   }
 }
 
+function isPatchMessage(msg: AppSyncMessage): msg is PatchMessage {
+  return msg.type === 'patch' && Array.isArray((msg as PatchMessage).operations)
+}
+
+function isStatusMessage(msg: AppSyncMessage): msg is StatusMessage {
+  return msg.type === 'status'
+}
+
+function isChatMessage(msg: AppSyncMessage): msg is ChatMessage {
+  return msg.type === 'chat_chunk' || msg.type === 'chat_done'
+}
+
+export function handleDocumentEvent(
+  msg: AppSyncMessage,
+  onChat?: (msg: ChatMessage) => void,
+): void {
+  const store = useDocumentStore.getState()
+
+  if (isPatchMessage(msg)) {
+    // Source of truth: document mutations from agents are applied only from
+    // docs/{docId}/patch. Full-document setDocument is reserved for REST reloads.
+    store.applyPatches(msg.operations)
+    return
+  }
+
+  if (isStatusMessage(msg)) {
+    store.setAgentStatus(msg.status)
+    return
+  }
+
+  if (isChatMessage(msg) && onChat) {
+    // Chat events update chat UI only. Ignore legacy chat_done.document payloads.
+    onChat(msg)
+  }
+}
+
 export function initDocumentSubscription(
   docId: string,
-  onChat?: (msg: AppSyncMessage) => void,
+  onChat?: (msg: ChatMessage) => void,
 ): Unsubscribe {
-  return subscribeToChannel(`${docId}/chat`, (msg) => {
-    if (msg.type === 'status') {
-      useDocumentStore.getState().setAgentStatus(msg.status)
-    }
-    if (onChat) onChat(msg)
-  })
+  const unsubscribers = [
+    subscribeToChannel(`${docId}/chat`, (msg) => handleDocumentEvent(msg, onChat)),
+    subscribeToChannel(`${docId}/status`, (msg) => handleDocumentEvent(msg, onChat)),
+    subscribeToChannel(`${docId}/patch`, (msg) => handleDocumentEvent(msg, onChat)),
+  ]
+
+  return () => {
+    for (const unsubscribe of unsubscribers) unsubscribe()
+  }
 }
