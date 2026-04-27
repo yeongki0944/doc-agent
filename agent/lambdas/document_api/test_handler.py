@@ -3,6 +3,7 @@ import json
 from unittest.mock import MagicMock
 
 from agent.lambdas.document_api import handler as document_api
+from agent.lib.storage.dynamodb import VersionConflictError
 
 
 def _event(doc_id: str = "doc-1", user_id: str = "user-1") -> dict:
@@ -23,6 +24,48 @@ def _post_event(path: str, body: dict, user_id: str = "user-1") -> dict:
 
 def _body(response: dict) -> dict:
     return json.loads(response["body"])
+
+
+def _field(user_input=None, ai_recommended=None, calculated=None, status="empty"):
+    return {
+        "user_input": user_input,
+        "ai_recommended": ai_recommended,
+        "calculated": calculated,
+        "status": status,
+        "user_edited": False,
+    }
+
+
+def _doc_item(version: int = 2) -> dict:
+    return {
+        "document_id": "doc-1",
+        "user_id": "user-1",
+        "template": "apn_poc_project_plan",
+        "mode": "architecture_absent",
+        "version": version,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "meta": {
+            "customer": _field(ai_recommended="AI Customer", status="recommended"),
+            "partner": _field(),
+            "date": _field(),
+        },
+        "sections": {},
+        "staffing_plan": {"roles": {}, "grand_total_hours": {"calculated": None}, "grand_total_cost": {"calculated": None}},
+        "completion_score": 0,
+        "blocking_issues": [],
+        "warnings": [],
+    }
+
+
+class FakeConditionalSaver:
+    def __init__(self):
+        self.calls = []
+
+    def save(self, item, expected_version):
+        self.calls.append((item, expected_version))
+        item["version"] = expected_version + 1
+        return item
 
 
 def test_chat_alias_invokes_runtime_proxy_without_document_overwrite(monkeypatch):
@@ -154,6 +197,122 @@ def test_chat_forbidden_does_not_invoke_runtime(monkeypatch):
     assert response["statusCode"] == 403
     invoke_runtime.assert_not_called()
     table.put_item.assert_not_called()
+
+
+def test_user_input_updates_field_value_and_preserves_ai_recommended(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {"Item": _doc_item(version=2)}
+    monkeypatch.setattr(document_api, "table", table)
+    saver = FakeConditionalSaver()
+    monkeypatch.setattr(document_api, "_conditional_save_document", saver.save)
+    published = []
+    monkeypatch.setattr(document_api, "_publish_event", lambda channel, data: published.append((channel, data)))
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/user-input",
+            {"path": "meta.customer.user_input", "value": "User Customer"},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert _body(response) == {"status": "ok", "version": 3}
+    saved, expected_version = saver.calls[0]
+    assert expected_version == 2
+    assert saved["user_id"] == "user-1"
+    assert saved["meta"]["customer"]["user_input"] == "User Customer"
+    assert saved["meta"]["customer"]["ai_recommended"] == "AI Customer"
+    assert saved["meta"]["customer"]["user_edited"] is True
+    assert saved["meta"]["customer"]["status"] == "user_modified"
+    assert published[0][0] == "docs/doc-1/patch"
+    payload = published[0][1]
+    assert payload["type"] == "patch"
+    assert payload["version_before"] == 2
+    assert payload["version_after"] == 3
+    assert {op["path"] for op in payload["operations"]} == {
+        "/meta/customer/user_input",
+        "/meta/customer/user_edited",
+        "/meta/customer/status",
+    }
+
+
+def test_user_input_recalculates_staffing(monkeypatch):
+    item = _doc_item(version=4)
+    item["staffing_plan"] = {
+        "roles": {
+            "sa": {
+                "role_id": "sa",
+                "display_name": "SA",
+                "category": "solution_architect",
+                "count": _field(ai_recommended=1),
+                "allocation_pct": _field(ai_recommended=50),
+                "rate_per_hour": _field(ai_recommended=100),
+                "phase_hours": {
+                    "discovery": _field(ai_recommended=10),
+                    "development": _field(ai_recommended=20),
+                    "testing": _field(ai_recommended=0),
+                },
+                "total_hours": {"calculated": 30},
+                "total_cost": {"calculated": 1500},
+            }
+        },
+        "grand_total_hours": {"calculated": 30},
+        "grand_total_cost": {"calculated": 1500},
+    }
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    saver = FakeConditionalSaver()
+    monkeypatch.setattr(document_api, "_conditional_save_document", saver.save)
+    published = []
+    monkeypatch.setattr(document_api, "_publish_event", lambda channel, data: published.append(data))
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/user-input",
+            {"path": "staffing_plan.roles.sa.phase_hours.testing.user_input", "value": 5},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    saved = saver.calls[0][0]
+    assert saved["staffing_plan"]["roles"]["sa"]["phase_hours"]["testing"]["user_input"] == 5
+    assert saved["staffing_plan"]["roles"]["sa"]["total_hours"]["calculated"] == 35
+    assert saved["staffing_plan"]["roles"]["sa"]["total_cost"]["calculated"] == 1750
+    assert saved["staffing_plan"]["grand_total_hours"]["calculated"] == 35
+    assert saved["staffing_plan"]["grand_total_cost"]["calculated"] == 1750
+    paths = {op["path"] for op in published[0]["operations"]}
+    assert "/staffing_plan/roles/sa/total_hours" in paths
+    assert "/staffing_plan/roles/sa/total_cost" in paths
+    assert "/staffing_plan/grand_total_hours" in paths
+    assert "/staffing_plan/grand_total_cost" in paths
+
+
+def test_user_input_version_conflict_returns_409(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {"Item": _doc_item(version=8)}
+    monkeypatch.setattr(document_api, "table", table)
+
+    def raise_conflict(item, expected_version):
+        raise VersionConflictError("Version conflict: expected 8")
+
+    monkeypatch.setattr(document_api, "_conditional_save_document", raise_conflict)
+    publish = MagicMock()
+    monkeypatch.setattr(document_api, "_publish_event", publish)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/user-input",
+            {"path": "meta.customer.user_input", "value": "User Customer"},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 409
+    assert _body(response)["status"] == "version_conflict"
+    publish.assert_not_called()
 
 
 def test_export_invokes_export_docx_lambda(monkeypatch):

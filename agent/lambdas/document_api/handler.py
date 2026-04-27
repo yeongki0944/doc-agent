@@ -12,9 +12,17 @@ import os
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from copy import deepcopy
 from typing import Any, Optional
 
 import boto3
+from boto3.dynamodb.conditions import Attr
+from pydantic import ValidationError
+
+from agent.lib.calculation.recalculate import recalculate_costs
+from agent.lib.schema.document_state import DocumentState
+from agent.lib.schema.patch import Patch, PatchOperation
+from agent.lib.storage.dynamodb import VersionConflictError
 
 TABLE_NAME = os.environ.get("DOCUMENTS_TABLE", "doc-agent-documents")
 HISTORY_TABLE_NAME = os.environ.get("CONVERSATION_HISTORY_TABLE", "doc-agent-conversation-history")
@@ -134,6 +142,130 @@ def _set_nested(obj: dict, path: str, value: Any) -> None:
         cur = cur.setdefault(p, {})
     if parts:
         cur[parts[-1]] = value
+
+
+def _get_nested(obj: dict, parts: list[str]) -> Any:
+    cur: Any = obj
+    for part in parts:
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _path_parts(path: str) -> list[str]:
+    normalized = path.strip().strip("/")
+    if not normalized:
+        raise ValueError("path is required")
+    return [part for part in normalized.replace("/", ".").split(".") if part]
+
+
+def _is_field_value(value: Any) -> bool:
+    return isinstance(value, dict) and any(
+        key in value
+        for key in ("user_input", "ai_recommended", "calculated", "status")
+    )
+
+
+def _field_value_with_user_input(existing: Any, value: Any) -> dict:
+    if _is_field_value(existing):
+        field = deepcopy(existing)
+    else:
+        field = {
+            "user_input": None,
+            "ai_recommended": None,
+            "calculated": None,
+            "status": "empty",
+        }
+    field["user_input"] = value
+    field["user_edited"] = True
+    field["status"] = "user_modified"
+    return field
+
+
+def _set_user_input_field(doc: dict, path: str, value: Any) -> tuple[str, dict]:
+    parts = _path_parts(path)
+    if parts[0] not in {"meta", "sections", "staffing_plan"}:
+        raise ValueError("path must target meta, sections, or staffing_plan")
+    if any(part in {"version", "document_id", "user_id"} for part in parts):
+        raise ValueError("path targets a protected field")
+
+    target_parts = parts[:-1] if parts[-1] == "user_input" else parts
+    if not target_parts:
+        raise ValueError("path must target a field")
+
+    parent = doc
+    for part in target_parts[:-1]:
+        child = parent.get(part)
+        if child is None:
+            child = {}
+            parent[part] = child
+        if not isinstance(child, dict):
+            raise ValueError(f"path segment is not editable: {part}")
+        parent = child
+
+    field_key = target_parts[-1]
+    existing = parent.get(field_key)
+    updated = _field_value_with_user_input(existing, value)
+    parent[field_key] = updated
+    return "/" + "/".join([*target_parts, "user_input"]), updated
+
+
+def _calculated_patch(doc: dict, path: str, value: Any) -> PatchOperation | None:
+    parts = _path_parts(path)
+    parent = _get_nested(doc, parts[:-1])
+    if not isinstance(parent, dict):
+        return None
+    key = parts[-1]
+    existing = parent.get(key)
+    if isinstance(existing, dict):
+        existing["calculated"] = value
+    else:
+        parent[key] = {"calculated": value}
+    return PatchOperation(op="replace", path="/" + "/".join(parts), value=parent[key])
+
+
+def _staffing_recalculation_patches(doc: dict) -> list[PatchOperation]:
+    if not isinstance(doc.get("staffing_plan"), dict):
+        return []
+
+    result = recalculate_costs(doc["staffing_plan"])
+    operations: list[PatchOperation] = []
+    for role_id, totals in result["roles"].items():
+        for field_name in ("total_hours", "total_cost"):
+            op = _calculated_patch(
+                doc,
+                f"staffing_plan.roles.{role_id}.{field_name}",
+                totals[field_name],
+            )
+            if op:
+                operations.append(op)
+
+    for field_name in ("grand_total_hours", "grand_total_cost"):
+        op = _calculated_patch(
+            doc,
+            f"staffing_plan.{field_name}",
+            result[field_name],
+        )
+        if op:
+            operations.append(op)
+    return operations
+
+
+def _conditional_save_document(item: dict, expected_version: int) -> dict:
+    item["version"] = expected_version + 1
+    item["updated_at"] = _now_iso()
+    raw = _json(item)
+    try:
+        table.put_item(
+            Item=json.loads(raw, parse_float=Decimal),
+            ConditionExpression=Attr("version").eq(expected_version),
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException as exc:
+        raise VersionConflictError(
+            f"Version conflict: expected {expected_version}, stored version differs"
+        ) from exc
+    return item
 
 
 # --- User ID extraction (Phase 3에서 JWT claims로 교체 예정) ---
@@ -715,6 +847,76 @@ def _handle_export(doc_id: str, event: dict) -> dict:
     return _response(200, output)
 
 
+def _handle_user_input(doc_id: str, body: dict, event: dict) -> dict:
+    user_id, err = _require_user(event)
+    if err:
+        return err
+
+    path = body.get("path", "")
+    value = body.get("value")
+    try:
+        _path_parts(path)
+    except ValueError as exc:
+        return _response(400, {"error": str(exc)})
+
+    resp = table.get_item(Key={"document_id": doc_id})
+    item = resp.get("Item")
+    if not item:
+        return _response(404, {"error": "not found"})
+
+    forbidden = _check_ownership(item, user_id)
+    if forbidden:
+        return forbidden
+
+    expected_version = int(item.get("version", 0))
+    doc_dict = json.loads(_json(item))
+
+    try:
+        patch_path, updated_field = _set_user_input_field(doc_dict, path, value)
+    except ValueError as exc:
+        return _response(400, {"error": str(exc)})
+
+    field_path = patch_path.rsplit("/", 1)[0]
+    operations = [
+        PatchOperation(op="replace", path=patch_path, value=value, source="user_input"),
+        PatchOperation(
+            op="replace",
+            path=f"{field_path}/user_edited",
+            value=True,
+            source="user_input",
+        ),
+        PatchOperation(
+            op="replace",
+            path=f"{field_path}/status",
+            value=updated_field["status"],
+            source="user_input",
+        ),
+    ]
+    if patch_path.startswith("/staffing_plan/"):
+        operations.extend(_staffing_recalculation_patches(doc_dict))
+
+    try:
+        DocumentState.model_validate(doc_dict)
+        saved = _conditional_save_document(doc_dict, expected_version)
+    except VersionConflictError as exc:
+        return _response(409, {"error": str(exc), "status": "version_conflict"})
+    except ValidationError as exc:
+        return _response(400, {"error": "invalid document update", "details": exc.errors()})
+
+    patch = Patch(
+        patch_id=f"patch-{uuid.uuid4().hex[:12]}",
+        doc_id=doc_id,
+        agent="document_api",
+        operations=operations,
+        version=saved["version"],
+        version_before=expected_version,
+        version_after=saved["version"],
+    )
+    _publish_event(f"docs/{doc_id}/patch", {"type": "patch", **patch.model_dump(mode="json")})
+
+    return _response(200, {"status": "ok", "version": saved["version"]})
+
+
 def handler(event: dict, context: Any) -> dict:
     rc = event.get("requestContext", {})
     http = rc.get("http", {})
@@ -785,21 +987,8 @@ def handler(event: dict, context: Any) -> dict:
             return _handle_load_history(doc_id, event)
 
         elif method == "POST" and action == "user-input":
-            user_id, err = _require_user(event)
-            if err:
-                return err
             body = json.loads(event.get("body", "{}"))
-            resp = table.get_item(Key={"document_id": doc_id})
-            item = resp.get("Item", {"document_id": doc_id, "version": 0, "user_id": user_id})
-            forbidden = _check_ownership(item, user_id)
-            if forbidden:
-                return forbidden
-            _set_nested(item, body.get("path", ""), body.get("value"))
-            item["version"] = int(item.get("version", 0)) + 1
-            item["user_id"] = user_id
-            item["updated_at"] = _now_iso()
-            _save_to_ddb(item)
-            return _response(200, {"status": "ok", "version": int(item["version"])})
+            return _handle_user_input(doc_id, body, event)
 
         elif method == "POST" and action == "review":
             user_id, err = _require_user(event)
