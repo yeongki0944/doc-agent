@@ -13,8 +13,147 @@ def _event(doc_id: str = "doc-1", user_id: str = "user-1") -> dict:
     }
 
 
+def _post_event(path: str, body: dict, user_id: str = "user-1") -> dict:
+    return {
+        "requestContext": {"http": {"method": "POST", "path": path}},
+        "headers": {"X-User-Id": user_id},
+        "body": json.dumps(body),
+    }
+
+
 def _body(response: dict) -> dict:
     return json.loads(response["body"])
+
+
+def test_chat_alias_invokes_runtime_proxy_without_document_overwrite(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {
+        "Item": {"document_id": "doc-1", "user_id": "user-1", "version": 3}
+    }
+    monkeypatch.setattr(document_api, "table", table)
+
+    calls = []
+
+    def fake_invoke_runtime(payload):
+        calls.append(payload)
+        return {"result": "runtime reply", "version": 4, "status": "ok"}
+
+    monkeypatch.setattr(document_api, "_invoke_runtime", fake_invoke_runtime)
+    monkeypatch.setattr(
+        document_api,
+        "_invoke_bedrock",
+        MagicMock(side_effect=AssertionError("chat must not invoke Bedrock")),
+    )
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/chat",
+            {"message": "hello", "history": [{"role": "user", "content": "hi"}]},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert calls == [{
+        "doc_id": "doc-1",
+        "prompt": "hello",
+        "history": [{"role": "user", "content": "hi"}],
+        "user_id": "user-1",
+    }]
+    assert _body(response) == {
+        "agent_response": "runtime reply",
+        "version": 4,
+        "status": "ok",
+    }
+    table.put_item.assert_not_called()
+
+
+def test_chat_alias_auto_creates_shell_only_when_missing(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {}
+    monkeypatch.setattr(document_api, "table", table)
+    monkeypatch.setattr(
+        document_api,
+        "_invoke_runtime",
+        lambda payload: {"result": "created", "version": 1, "status": "ok"},
+    )
+
+    response = document_api.handler(
+        _post_event("/documents/doc-new/chat", {"message": "start"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    table.put_item.assert_called_once()
+    saved_item = table.put_item.call_args.kwargs["Item"]
+    assert saved_item["document_id"] == "doc-new"
+    assert saved_item["user_id"] == "user-1"
+    assert saved_item["version"] == 0
+    assert saved_item["sections"] == {}
+    assert saved_item["staffing_plan"]["roles"] == {}
+
+
+def test_invocations_invokes_runtime_proxy(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {
+        "Item": {"document_id": "doc-1", "user_id": "user-1", "version": 3}
+    }
+    monkeypatch.setattr(document_api, "table", table)
+
+    calls = []
+
+    def fake_invoke_runtime(payload):
+        calls.append(payload)
+        return {
+            "result": "runtime response",
+            "version": 5,
+            "status": "ok",
+            "actions": ["patched"],
+        }
+
+    monkeypatch.setattr(document_api, "_invoke_runtime", fake_invoke_runtime)
+
+    response = document_api.handler(
+        _post_event(
+            "/invocations",
+            {"doc_id": "doc-1", "prompt": "continue", "history": []},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert calls == [{
+        "doc_id": "doc-1",
+        "prompt": "continue",
+        "history": [],
+        "user_id": "user-1",
+    }]
+    assert _body(response) == {
+        "agent_response": "runtime response",
+        "version": 5,
+        "status": "ok",
+        "actions": ["patched"],
+    }
+    table.put_item.assert_not_called()
+
+
+def test_chat_forbidden_does_not_invoke_runtime(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {
+        "Item": {"document_id": "doc-1", "user_id": "other"}
+    }
+    monkeypatch.setattr(document_api, "table", table)
+    invoke_runtime = MagicMock()
+    monkeypatch.setattr(document_api, "_invoke_runtime", invoke_runtime)
+
+    response = document_api.handler(
+        _post_event("/documents/doc-1/chat", {"message": "hello"}),
+        None,
+    )
+
+    assert response["statusCode"] == 403
+    invoke_runtime.assert_not_called()
+    table.put_item.assert_not_called()
 
 
 def test_export_invokes_export_docx_lambda(monkeypatch):
