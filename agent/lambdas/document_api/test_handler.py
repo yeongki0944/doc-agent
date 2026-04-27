@@ -1,8 +1,10 @@
 import io
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from agent.lambdas.document_api import handler as document_api
+from agent.lambdas.document_api import runtime_proxy
 from agent.lib.storage.dynamodb import VersionConflictError
 
 
@@ -77,16 +79,12 @@ def test_chat_alias_invokes_runtime_proxy_without_document_overwrite(monkeypatch
 
     calls = []
 
-    def fake_invoke_runtime(payload):
-        calls.append(payload)
-        return {"result": "runtime reply", "version": 4, "status": "ok"}
+    class FakeRuntimeProxy:
+        def invoke(self, payload):
+            calls.append(payload)
+            return {"result": "runtime reply", "version": 4, "status": "ok"}
 
-    monkeypatch.setattr(document_api, "_invoke_runtime", fake_invoke_runtime)
-    monkeypatch.setattr(
-        document_api,
-        "_invoke_bedrock",
-        MagicMock(side_effect=AssertionError("chat must not invoke Bedrock")),
-    )
+    monkeypatch.setattr(runtime_proxy, "get_runtime_proxy", lambda: FakeRuntimeProxy())
 
     response = document_api.handler(
         _post_event(
@@ -109,6 +107,15 @@ def test_chat_alias_invokes_runtime_proxy_without_document_overwrite(monkeypatch
         "status": "ok",
     }
     table.put_item.assert_not_called()
+
+
+def test_document_api_handler_has_no_v1_bedrock_chat_code():
+    source = Path(document_api.__file__).read_text(encoding="utf-8")
+    assert "invoke_model(" not in source
+    assert "invoke_model_with_response_stream(" not in source
+    assert "PARENT_SYSTEM" not in source
+    assert "STAFFING_PRESET" not in source
+    assert "PHASE_HOURS" not in source
 
 
 def test_chat_alias_auto_creates_shell_only_when_missing(monkeypatch):

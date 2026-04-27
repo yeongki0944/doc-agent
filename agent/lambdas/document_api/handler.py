@@ -1,9 +1,4 @@
-"""Document API Lambda — Bedrock-powered chat + CRUD.
-
-Models:
-  Parent Orchestrator: global.anthropic.claude-opus-4-6-v1
-  Child agents:        apac.anthropic.claude-3-5-sonnet-20241022-v2:0
-"""
+"""Document API Lambda — CRUD, history, and runtime proxy routing."""
 
 from __future__ import annotations
 
@@ -28,14 +23,11 @@ TABLE_NAME = os.environ.get("DOCUMENTS_TABLE", "doc-agent-documents")
 HISTORY_TABLE_NAME = os.environ.get("CONVERSATION_HISTORY_TABLE", "doc-agent-conversation-history")
 APPSYNC_HTTP_URL = os.environ.get("APPSYNC_HTTP_URL", "")
 REGION = "ap-northeast-2"
-PARENT_MODEL = "global.anthropic.claude-opus-4-6-v1"
-CHILD_MODEL = "apac.anthropic.claude-3-5-sonnet-20241022-v2:0"
 DEFAULT_EXPORT_DOCX_FUNCTION_NAME = "doc-agent-export-docx"
 
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
 table = dynamodb.Table(TABLE_NAME)
 history_table = dynamodb.Table(HISTORY_TABLE_NAME)
-bedrock = boto3.client("bedrock-runtime", region_name=REGION)
 
 # --- AgentCore Memory ---
 AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID", "")
@@ -96,18 +88,6 @@ def _memory_retrieve(customer: str, query: str, top_k: int = 5) -> list[str]:
     except Exception as e:
         print(f"[memory] retrieve failed: {e}")
         return []
-
-# --- Inline preset data ---
-STAFFING_PRESET = {
-    "project_manager": {"display_name": "Project Manager", "count": 1, "alloc": 50, "rate": 81.78},
-    "solutions_architect": {"display_name": "Solutions Architect", "count": 1, "alloc": 60, "rate": 105.00},
-    "ml_engineer": {"display_name": "ML Engineer", "count": 2, "alloc": 100, "rate": 95.00},
-    "backend_developer": {"display_name": "Backend Developer", "count": 2, "alloc": 100, "rate": 75.00},
-    "frontend_developer": {"display_name": "Frontend Developer", "count": 1, "alloc": 80, "rate": 70.00},
-    "qa_engineer": {"display_name": "QA Engineer", "count": 1, "alloc": 60, "rate": 60.00},
-}
-PHASE_HOURS = {"discovery": 40, "development": 120, "testing": 40}
-
 
 # --- Helpers ---
 
@@ -294,33 +274,6 @@ def _check_ownership(item: dict, user_id: str) -> Optional[dict]:
     return None
 
 
-# --- Bedrock ---
-
-def _invoke_bedrock(model_id: str, system: str, user_msg: str, max_tokens: int = 2000, history: list = None) -> str:
-    messages = []
-    if history:
-        for h in history[-20:]:
-            role = h.get("role", "user")
-            content = h.get("content", "")
-            if role in ("user", "assistant") and content:
-                messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": user_msg})
-    body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": messages,
-    }
-    resp = bedrock.invoke_model(
-        modelId=model_id,
-        contentType="application/json",
-        accept="application/json",
-        body=json.dumps(body),
-    )
-    result = json.loads(resp["body"].read())
-    return result["content"][0]["text"]
-
-
 def _publish_event(channel: str, data: dict) -> None:
     """Publish an event to AppSync Events API via HTTP POST."""
     if not APPSYNC_HTTP_URL:
@@ -345,107 +298,6 @@ def _publish_event(channel: str, data: dict) -> None:
         urllib.request.urlopen(req, timeout=5)
     except Exception as e:
         print(f"[appsync publish error] {e}")
-
-
-TRANSLATE_SYSTEM = """You are a professional translator for AWS APN PoC Project Plan documents.
-Translate the given Korean JSON values into natural, professional English suitable for AWS partner documentation.
-
-Rules:
-- Translate ONLY the values, keep all JSON keys exactly as-is
-- Use formal business English appropriate for AWS documentation
-- Keep technical terms (AWS service names, acronyms) unchanged
-- Maintain the same JSON structure
-- Output valid JSON only, no explanation"""
-
-
-def _translate_section(section_data: dict) -> dict:
-    """Translate a section's Korean content to English using Bedrock."""
-    try:
-        prompt = f"Translate the values in this JSON to English:\n{json.dumps(section_data, ensure_ascii=False)}"
-        raw = _invoke_bedrock(CHILD_MODEL, TRANSLATE_SYSTEM, prompt, max_tokens=2000)
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        if start >= 0 and end > start:
-            return json.loads(raw[start:end])
-    except Exception as e:
-        print(f"[translate error] {e}")
-    return {}
-
-
-def _invoke_bedrock_stream(model_id: str, system: str, user_msg: str, channel: str, max_tokens: int = 2000, history: list = None) -> str:
-    """Invoke Bedrock with streaming, publishing chunks to AppSync channel. Returns full text."""
-    messages = []
-    if history:
-        for h in history[-20:]:
-            role = h.get("role", "user")
-            content = h.get("content", "")
-            if role in ("user", "assistant") and content:
-                messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": user_msg})
-    body = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": messages,
-    }
-
-    # Publish "thinking" status
-    _publish_event(channel, {"type": "status", "status": "thinking", "message": "🧠 AI가 분석하고 있습니다..."})
-
-    resp = bedrock.invoke_model_with_response_stream(
-        modelId=model_id,
-        contentType="application/json",
-        accept="application/json",
-        body=json.dumps(body),
-    )
-
-    full_text = ""
-    buffer = ""
-    chunk_count = 0
-
-    for event in resp["body"]:
-        chunk = event.get("chunk")
-        if not chunk:
-            continue
-        payload = json.loads(chunk["bytes"])
-        if payload.get("type") == "content_block_delta":
-            delta = payload.get("delta", {})
-            text = delta.get("text", "")
-            if text:
-                full_text += text
-                buffer += text
-                chunk_count += 1
-                # Publish every ~50 chars or every 3 chunks for smooth streaming
-                if len(buffer) >= 50 or chunk_count % 3 == 0:
-                    _publish_event(channel, {"type": "chat_chunk", "text": buffer})
-                    buffer = ""
-
-    # Flush remaining buffer
-    if buffer:
-        _publish_event(channel, {"type": "chat_chunk", "text": buffer})
-
-    return full_text
-
-
-def _build_staffing() -> dict:
-    roles = {}
-    gh, gc = 0, 0
-    fv = lambda v: {"user_input": None, "ai_recommended": v, "calculated": None, "status": "recommended"}
-    for rid, p in STAFFING_PRESET.items():
-        th = sum(PHASE_HOURS.values())
-        cost = round(p["count"] * (p["alloc"] / 100) * p["rate"] * th, 2)
-        gh += th
-        gc += cost
-        roles[rid] = {
-            "role_id": rid, "display_name": p["display_name"],
-            "count": fv(p["count"]), "allocation_pct": fv(p["alloc"]),
-            "rate_per_hour": fv(p["rate"]),
-            "phase_hours": {ph: fv(h) for ph, h in PHASE_HOURS.items()},
-            "total_hours": {"calculated": th}, "total_cost": {"calculated": cost},
-            "reason": "GenAI 멀티에이전트 PoC preset 기반 추천",
-            "source_patterns": ["preset_genai_multi_agent"],
-        }
-    return {"roles": roles, "grand_total_hours": {"calculated": gh}, "grand_total_cost": {"calculated": round(gc, 2)}}
 
 
 def _save_to_ddb(item: dict) -> None:
@@ -531,44 +383,6 @@ def _handle_runtime_invocation(
         "user_id": user_id,
     })
     return _runtime_response(runtime_result)
-
-
-PARENT_SYSTEM = """당신은 APN PoC Project Plan 문서 생성을 돕는 Parent Orchestrator입니다.
-사용자 메시지를 분석하여 다음 JSON 형식으로 응답하세요:
-
-{
-  "intent": "discovery|staffing|architecture|cost|review|export|general|update_section",
-  "extracted_info": {
-    "customer": "고객사명 또는 null",
-    "partner": "파트너명 또는 null",
-    "project_goal": "프로젝트 목표 또는 null",
-    "scope": "범위 요약 또는 null"
-  },
-  "section_updates": {
-    "cover": {"title": "...", "customer": "...", "partner": "...", "goal": "...", "period": "...", "budget": "...", "version": "...", "date": "...", "aws_services": "..."},
-    "executive_summary": {"summary": "..."},
-    "scope_of_work": {"in_scope": "...", "out_of_scope": "...", "deliverables": "..."},
-    "success_criteria": {"kpi_1": "...", "kpi_2": "...", "acceptance_threshold": "..."},
-    "assumptions": {"assumptions": "...", "risks": "...", "dependencies": "..."},
-    "architecture": {"services": "...", "description": "...", "data_flow": "..."},
-    "milestones": {"phase_1": "...", "phase_2": "...", "phase_3": "..."},
-    "acceptance": {"criteria_1": "...", "criteria_2": "...", "sign_off_process": "..."}
-  },
-  "chat_response": "사용자에게 보여줄 한국어 응답 메시지",
-  "next_question": "다음에 물어볼 질문 또는 null",
-  "should_recommend_staffing": true/false
-}
-
-규칙:
-- 고객사명, 프로젝트 목표, 범위 등 정보를 추출하세요
-- 사용자가 특정 섹션 작성/업데이트를 요청하면 section_updates에 해당 섹션 데이터를 포함하세요
-- 사용자가 "작성해줘", "알아서 작성해줘" 등 요청하면 현재까지 수집된 정보를 바탕으로 해당 섹션을 직접 작성하세요. 정보가 부족해도 합리적인 초안을 작성하세요.
-- section_updates에는 변경이 있는 섹션만 포함하세요. 변경이 없으면 section_updates를 빈 객체 {}로 두세요
-- 정보가 부족하더라도 "더 자세히 알려주세요"라고만 하지 말고, 가능한 범위에서 초안을 작성한 뒤 보완할 부분을 안내하세요
-- 프로젝트 정보가 충분하면 should_recommend_staffing을 true로 설정하세요
-- chat_response는 친절하고 전문적인 한국어로 작성하세요
-- section_updates의 모든 값도 반드시 한국어로 작성하세요. 영어로 작성하지 마세요. (영어 번역은 별도 프로세스에서 처리됩니다)
-- 반드시 유효한 JSON만 출력하세요"""
 
 
 DEFAULT_BOUNDED_WINDOW = 20

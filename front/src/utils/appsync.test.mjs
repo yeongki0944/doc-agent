@@ -55,3 +55,11 @@ assert.equal(useDocumentStore.getState().sections.cover.title, 'Patched Title')
 
 handleDocumentEvent({ type: 'status', status: 'processing' })
 assert.equal(useDocumentStore.getState().agentStatus, 'processing')
+
+useDocumentStore.getState().setDocument({
+  document_id: 'doc-rest',
+  version: 9,
+  sections: { cover: { title: 'REST fallback document' } },
+})
+assert.equal(useDocumentStore.getState().document_id, 'doc-rest')
+assert.equal(useDocumentStore.getState().sections.cover.title, 'REST fallback document')

@@ -156,14 +156,21 @@ class TestChatFlowIntegration:
     Requirements: 4.7, 9.1, 9.2
     """
 
-    def test_invocations_route_calls_runtime_invoke(self):
+    def test_invocations_route_calls_runtime_invoke(self, monkeypatch):
         """POST /invocations routes to AgentCore Runtime invoke()."""
-        from agent.lambdas.document_api.handler import _handle_invocations
+        from agent.lambdas.document_api import handler as document_api
 
-        result = _handle_invocations({
+        table = MagicMock()
+        table.get_item.return_value = {"Item": {"document_id": "doc-int-001", "user_id": "user-1", "version": 3}}
+        monkeypatch.setattr(document_api, "table", table)
+        monkeypatch.setattr(document_api, "_invoke_runtime", lambda payload: {"result": "runtime reply", "version": 4, "status": "ok"})
+
+        result = document_api._handle_invocations({
             "doc_id": "doc-int-001",
             "prompt": "새 프로젝트를 시작합니다",
             "history": [],
+        }, {
+            "headers": {"X-User-Id": "user-1"},
         })
 
         body = json.loads(result["body"])
@@ -172,28 +179,33 @@ class TestChatFlowIntegration:
         assert body["status"] == "ok"
         assert isinstance(body["version"], int)
 
-    def test_invocations_missing_fields_returns_400(self):
+    def test_invocations_missing_fields_returns_400(self, monkeypatch):
         """POST /invocations with missing doc_id returns 400."""
         from agent.lambdas.document_api.handler import _handle_invocations
 
-        result = _handle_invocations({"prompt": "hello"})
+        result = _handle_invocations({"prompt": "hello"}, {"headers": {"X-User-Id": "user-1"}})
         assert result["statusCode"] == 400
 
-    def test_chat_endpoint_backward_compatible(self):
+    def test_chat_endpoint_backward_compatible(self, monkeypatch):
         """POST /documents/{docId}/chat routes through Runtime as alias."""
-        from agent.lambdas.document_api.handler import _handle_chat
+        from agent.lambdas.document_api import handler as document_api
 
-        result = _handle_chat("doc-int-002", {"message": "프로젝트 개요", "history": []})
+        table = MagicMock()
+        table.get_item.return_value = {"Item": {"document_id": "doc-int-002", "user_id": "user-1", "version": 3}}
+        monkeypatch.setattr(document_api, "table", table)
+        monkeypatch.setattr(document_api, "_invoke_runtime", lambda payload: {"result": "runtime reply", "version": 4, "status": "ok"})
+
+        result = document_api._handle_chat("doc-int-002", {"message": "프로젝트 개요", "history": []}, {"headers": {"X-User-Id": "user-1"}})
 
         body = json.loads(result["body"])
         assert result["statusCode"] == 200
         assert "agent_response" in body
 
-    def test_chat_endpoint_missing_message_returns_400(self):
+    def test_chat_endpoint_missing_message_returns_400(self, monkeypatch):
         """POST /documents/{docId}/chat with empty message returns 400."""
         from agent.lambdas.document_api.handler import _handle_chat
 
-        result = _handle_chat("doc-int-003", {"message": ""})
+        result = _handle_chat("doc-int-003", {"message": ""}, {"headers": {"X-User-Id": "user-1"}})
         assert result["statusCode"] == 400
 
     @pytest.mark.asyncio
@@ -233,6 +245,80 @@ class TestChatFlowIntegration:
         assert len(orch._audit_log) > 0
         agents_called = [e["agent"] for e in orch._audit_log]
         assert "discovery_agent" in agents_called
+
+
+class TestV2SourceOfTruthIntegration:
+    """Backend integration checks for the v2 patch-first flow."""
+
+    @pytest.mark.asyncio
+    async def test_apply_patches_updates_expected_version_and_publishes(self):
+        store = DocumentStore()
+        store.put(DocumentState(document_id="doc-v2-001", version=1))
+
+        orch = ParentOrchestrator(document_store=store, memory=None)
+        published = []
+
+        async def fake_publish(doc_id: str, patches: list[Patch]):
+            published.append((doc_id, patches))
+
+        orch.publish_patch = fake_publish
+
+        patch = Patch(
+            patch_id="patch-001",
+            doc_id="doc-v2-001",
+            agent="test",
+            version=1,
+            operations=[PatchOperation(op="replace", path="/completion_score", value=0.42)],
+        )
+
+        new_version = await orch.apply_patches("doc-v2-001", [patch], expected_version=1)
+
+        assert new_version == 2
+        assert store.get("doc-v2-001").version == 2
+        assert len(published) == 1
+        assert published[0][0] == "doc-v2-001"
+        assert published[0][1][0].version_before == 1
+        assert published[0][1][0].version_after == 2
+        assert published[0][1][0].operations[0].path == "/completion_score"
+
+    @pytest.mark.asyncio
+    async def test_runtime_chat_alias_uses_proxy_and_returns_safe_payload(self, monkeypatch):
+        from agent.lambdas.document_api import handler as document_api
+        from agent.lambdas.document_api import runtime_proxy
+
+        table = MagicMock()
+        table.get_item.return_value = {
+            "Item": {"document_id": "doc-1", "user_id": "user-1", "version": 3}
+        }
+        monkeypatch.setattr(document_api, "table", table)
+
+        class FakeRuntimeProxy:
+            def __init__(self):
+                self.calls = []
+
+            def invoke(self, payload):
+                self.calls.append(payload)
+                return {"result": "runtime reply", "version": 4, "status": "ok"}
+
+        proxy = FakeRuntimeProxy()
+        monkeypatch.setattr(runtime_proxy, "get_runtime_proxy", lambda: proxy)
+
+        response = document_api.handler(
+            {
+                "requestContext": {"http": {"method": "POST", "path": "/documents/doc-1/chat"}},
+                "headers": {"X-User-Id": "user-1"},
+                "body": json.dumps({"message": "hello", "history": []}),
+            },
+            None,
+        )
+
+        assert response["statusCode"] == 200
+        assert proxy.calls == [{
+            "doc_id": "doc-1",
+            "prompt": "hello",
+            "history": [],
+            "user_id": "user-1",
+        }]
 
 
 # ===========================================================================
