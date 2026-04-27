@@ -22,6 +22,11 @@ PARENT_MODEL_FALLBACK : str
 CHILD_MODEL_FALLBACK : str
     Fallback inference profile for sub-agents when primary is unavailable.
     Default: ``""`` (empty — degraded mode if primary fails)
+DOCUMENTS_TABLE / DYNAMODB_TABLE : str
+    DynamoDB table used for authoritative Document_State persistence.
+    Default: ``doc-agent-documents``
+AGENTCORE_GATEWAY_ID : str
+    Optional AgentCore Gateway identifier for MCP tool invocation.
 """
 
 from __future__ import annotations
@@ -166,6 +171,57 @@ def invoke(payload: dict) -> dict:
 _orchestrator_instance: "ParentOrchestrator | None" = None
 
 
+def _runtime_region() -> str:
+    return os.environ.get("AWS_REGION", "ap-northeast-2")
+
+
+def _documents_table_name() -> str:
+    return (
+        os.environ.get("DOCUMENTS_TABLE")
+        or os.environ.get("DYNAMODB_TABLE")
+        or "doc-agent-documents"
+    )
+
+
+def _build_document_store(region: str) -> Any:
+    from agent.lib.storage.dynamodb import DynamoDBDocumentStore
+
+    return DynamoDBDocumentStore(
+        table_name=_documents_table_name(),
+        region_name=region,
+    )
+
+
+def _build_memory(region: str) -> Any | None:
+    from agent.lib.memory.agentcore_memory import AgentCoreMemory
+
+    memory_id = os.environ.get("AGENTCORE_MEMORY_ID", "")
+    if not memory_id:
+        logger.info("AGENTCORE_MEMORY_ID not set — running without Memory")
+        return None
+
+    logger.info("AgentCoreMemory initialized with memory_id=%s", memory_id)
+    return AgentCoreMemory(
+        memory_id=memory_id,
+        region=region,
+    )
+
+
+def _build_gateway_client(region: str) -> Any | None:
+    from agent.lib.gateway.agentcore_gateway import AgentCoreGatewayClient
+
+    gateway_id = os.environ.get("AGENTCORE_GATEWAY_ID", "")
+    if not gateway_id:
+        logger.info("AGENTCORE_GATEWAY_ID not set — running without Gateway")
+        return None
+
+    logger.info("AgentCoreGatewayClient initialized with gateway_id=%s", gateway_id)
+    return AgentCoreGatewayClient(
+        gateway_id=gateway_id,
+        region=region,
+    )
+
+
 def _get_orchestrator() -> "ParentOrchestrator":
     """Return a module-level ParentOrchestrator singleton.
 
@@ -179,18 +235,11 @@ def _get_orchestrator() -> "ParentOrchestrator":
     global _orchestrator_instance
     if _orchestrator_instance is None:
         from agent.app.parent.orchestrator import ParentOrchestrator
-        from agent.lib.memory.agentcore_memory import AgentCoreMemory
+        region = _runtime_region()
 
-        memory = None
-        memory_id = os.environ.get("AGENTCORE_MEMORY_ID", "")
-        if memory_id:
-            memory = AgentCoreMemory(
-                memory_id=memory_id,
-                region=os.environ.get("AWS_REGION", "ap-northeast-2"),
-            )
-            logger.info("AgentCoreMemory initialized with memory_id=%s", memory_id)
-        else:
-            logger.info("AGENTCORE_MEMORY_ID not set — running without Memory")
-
-        _orchestrator_instance = ParentOrchestrator(memory=memory)
+        _orchestrator_instance = ParentOrchestrator(
+            document_store=_build_document_store(region),
+            memory=_build_memory(region),
+            gateway_client=_build_gateway_client(region),
+        )
     return _orchestrator_instance

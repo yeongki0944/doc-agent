@@ -1182,7 +1182,7 @@ class TestRuntimeMemoryWiring:
     def test_get_orchestrator_without_memory_id(self):
         """Without AGENTCORE_MEMORY_ID, orchestrator has no memory."""
         import importlib
-        from unittest.mock import patch as mock_patch
+        from unittest.mock import patch as mock_patch, MagicMock
         import agent.app.parent.runtime as runtime_mod
 
         # Reset singleton
@@ -1193,11 +1193,16 @@ class TestRuntimeMemoryWiring:
             import os
             os.environ.pop("AGENTCORE_MEMORY_ID", None)
 
-            importlib.reload(runtime_mod)
-            runtime_mod._orchestrator_instance = None
+            with mock_patch(
+                "agent.lib.storage.dynamodb.boto3"
+            ) as mock_dynamodb_boto3:
+                mock_dynamodb_boto3.resource.return_value.Table.return_value = MagicMock()
 
-            orch = runtime_mod._get_orchestrator()
-            assert orch.memory is None
+                importlib.reload(runtime_mod)
+                runtime_mod._orchestrator_instance = None
+
+                orch = runtime_mod._get_orchestrator()
+                assert orch.memory is None
 
         # Cleanup
         runtime_mod._orchestrator_instance = None
@@ -1218,14 +1223,18 @@ class TestRuntimeMemoryWiring:
             with mock_patch(
                 "agent.lib.memory.agentcore_memory.boto3"
             ) as mock_boto3:
-                mock_boto3.client.return_value = MagicMock()
+                with mock_patch(
+                    "agent.lib.storage.dynamodb.boto3"
+                ) as mock_dynamodb_boto3:
+                    mock_boto3.client.return_value = MagicMock()
+                    mock_dynamodb_boto3.resource.return_value.Table.return_value = MagicMock()
 
-                importlib.reload(runtime_mod)
-                runtime_mod._orchestrator_instance = None
+                    importlib.reload(runtime_mod)
+                    runtime_mod._orchestrator_instance = None
 
-                orch = runtime_mod._get_orchestrator()
-                assert orch.memory is not None
-                assert orch.memory.memory_id == "mem-test-123"
+                    orch = runtime_mod._get_orchestrator()
+                    assert orch.memory is not None
+                    assert orch.memory.memory_id == "mem-test-123"
 
         # Cleanup
         runtime_mod._orchestrator_instance = None

@@ -10,9 +10,37 @@ Validates:
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+
+
+class _FakeRuntimeOrchestrator:
+    async def handle_message(self, doc_id, prompt, history):
+        return SimpleNamespace(
+            chat_response=f"handled {doc_id}: {prompt}",
+            new_version=1,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _stub_runtime_orchestrator(monkeypatch, request):
+    """Keep invoke() response tests independent from AWS-backed runtime wiring."""
+    if "TestRuntimeDependencyWiring" in request.node.nodeid:
+        yield
+        return
+
+    import agent.app.parent.runtime as runtime_mod
+
+    runtime_mod._orchestrator_instance = None
+    monkeypatch.setattr(
+        runtime_mod,
+        "_get_orchestrator",
+        lambda: _FakeRuntimeOrchestrator(),
+    )
+    yield
+    runtime_mod._orchestrator_instance = None
 
 
 class TestInvoke:
@@ -267,3 +295,165 @@ class TestModelConfig:
 
             # Restore defaults
             importlib.reload(runtime_mod)
+
+
+class TestRuntimeDependencyWiring:
+    """Tests for _get_orchestrator dependency construction."""
+
+    def setup_method(self):
+        import agent.app.parent.runtime as runtime_mod
+
+        runtime_mod._orchestrator_instance = None
+
+    def teardown_method(self):
+        import agent.app.parent.runtime as runtime_mod
+
+        runtime_mod._orchestrator_instance = None
+
+    def test_get_orchestrator_wires_dynamodb_store_from_documents_table(
+        self,
+        monkeypatch,
+    ):
+        import agent.app.parent.runtime as runtime_mod
+        from agent.lib.storage.dynamodb import DynamoDBDocumentStore
+
+        calls = []
+        captured = {}
+
+        class FakeDynamoResource:
+            def Table(self, table_name):
+                calls.append(("Table", table_name))
+                return SimpleNamespace()
+
+        def fake_resource(service_name, region_name=None):
+            calls.append(("resource", service_name, region_name))
+            return FakeDynamoResource()
+
+        class FakeParentOrchestrator:
+            def __init__(self, document_store=None, memory=None, gateway_client=None):
+                captured["document_store"] = document_store
+                captured["memory"] = memory
+                captured["gateway_client"] = gateway_client
+
+        monkeypatch.setenv("DOCUMENTS_TABLE", "documents-table")
+        monkeypatch.setenv("DYNAMODB_TABLE", "legacy-table")
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        monkeypatch.delenv("AGENTCORE_MEMORY_ID", raising=False)
+        monkeypatch.delenv("AGENTCORE_GATEWAY_ID", raising=False)
+        monkeypatch.setattr("agent.lib.storage.dynamodb.boto3.resource", fake_resource)
+        monkeypatch.setattr(
+            "agent.app.parent.orchestrator.ParentOrchestrator",
+            FakeParentOrchestrator,
+        )
+
+        runtime_mod._get_orchestrator()
+
+        store = captured["document_store"]
+        assert isinstance(store, DynamoDBDocumentStore)
+        assert store._table_name == "documents-table"
+        assert captured["memory"] is None
+        assert captured["gateway_client"] is None
+        assert calls == [
+            ("resource", "dynamodb", "us-west-2"),
+            ("Table", "documents-table"),
+        ]
+
+    def test_get_orchestrator_defaults_table_region_and_optional_clients(
+        self,
+        monkeypatch,
+    ):
+        import agent.app.parent.runtime as runtime_mod
+
+        captured = {}
+
+        class FakeDynamoDBDocumentStore:
+            def __init__(self, table_name=None, region_name=None):
+                self.table_name = table_name
+                self.region_name = region_name
+
+        class FakeParentOrchestrator:
+            def __init__(self, document_store=None, memory=None, gateway_client=None):
+                captured["document_store"] = document_store
+                captured["memory"] = memory
+                captured["gateway_client"] = gateway_client
+
+        monkeypatch.delenv("DOCUMENTS_TABLE", raising=False)
+        monkeypatch.delenv("DYNAMODB_TABLE", raising=False)
+        monkeypatch.delenv("AWS_REGION", raising=False)
+        monkeypatch.delenv("AGENTCORE_MEMORY_ID", raising=False)
+        monkeypatch.delenv("AGENTCORE_GATEWAY_ID", raising=False)
+        monkeypatch.setattr(
+            "agent.lib.storage.dynamodb.DynamoDBDocumentStore",
+            FakeDynamoDBDocumentStore,
+        )
+        monkeypatch.setattr(
+            "agent.app.parent.orchestrator.ParentOrchestrator",
+            FakeParentOrchestrator,
+        )
+
+        runtime_mod._get_orchestrator()
+
+        assert captured["document_store"].table_name == "doc-agent-documents"
+        assert captured["document_store"].region_name == "ap-northeast-2"
+        assert captured["memory"] is None
+        assert captured["gateway_client"] is None
+
+    def test_get_orchestrator_wires_optional_memory_and_gateway(
+        self,
+        monkeypatch,
+    ):
+        import agent.app.parent.runtime as runtime_mod
+
+        captured = {}
+
+        class FakeDynamoDBDocumentStore:
+            def __init__(self, table_name=None, region_name=None):
+                self.table_name = table_name
+                self.region_name = region_name
+
+        class FakeMemory:
+            def __init__(self, memory_id, region):
+                self.memory_id = memory_id
+                self.region = region
+
+        class FakeGatewayClient:
+            def __init__(self, gateway_id, region):
+                self.gateway_id = gateway_id
+                self.region = region
+
+        class FakeParentOrchestrator:
+            def __init__(self, document_store=None, memory=None, gateway_client=None):
+                captured["document_store"] = document_store
+                captured["memory"] = memory
+                captured["gateway_client"] = gateway_client
+
+        monkeypatch.setenv("DYNAMODB_TABLE", "legacy-table")
+        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+        monkeypatch.setenv("AGENTCORE_MEMORY_ID", "memory-123")
+        monkeypatch.setenv("AGENTCORE_GATEWAY_ID", "gateway-456")
+        monkeypatch.delenv("DOCUMENTS_TABLE", raising=False)
+        monkeypatch.setattr(
+            "agent.lib.storage.dynamodb.DynamoDBDocumentStore",
+            FakeDynamoDBDocumentStore,
+        )
+        monkeypatch.setattr(
+            "agent.lib.memory.agentcore_memory.AgentCoreMemory",
+            FakeMemory,
+        )
+        monkeypatch.setattr(
+            "agent.lib.gateway.agentcore_gateway.AgentCoreGatewayClient",
+            FakeGatewayClient,
+        )
+        monkeypatch.setattr(
+            "agent.app.parent.orchestrator.ParentOrchestrator",
+            FakeParentOrchestrator,
+        )
+
+        runtime_mod._get_orchestrator()
+
+        assert captured["document_store"].table_name == "legacy-table"
+        assert captured["document_store"].region_name == "eu-central-1"
+        assert captured["memory"].memory_id == "memory-123"
+        assert captured["memory"].region == "eu-central-1"
+        assert captured["gateway_client"].gateway_id == "gateway-456"
+        assert captured["gateway_client"].region == "eu-central-1"
