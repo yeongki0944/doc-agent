@@ -12,13 +12,6 @@ from typing import Any, Optional
 
 import boto3
 from boto3.dynamodb.conditions import Attr
-from pydantic import ValidationError
-
-from agent.lib.calculation.recalculate import recalculate_costs
-from agent.lib.schema.document_state import DocumentState
-from agent.lib.schema.patch import Patch, PatchOperation
-from agent.lib.storage.dynamodb import VersionConflictError
-
 TABLE_NAME = os.environ.get("DOCUMENTS_TABLE", "doc-agent-documents")
 HISTORY_TABLE_NAME = os.environ.get("CONVERSATION_HISTORY_TABLE", "doc-agent-conversation-history")
 APPSYNC_HTTP_URL = os.environ.get("APPSYNC_HTTP_URL", "")
@@ -28,6 +21,10 @@ DEFAULT_EXPORT_DOCX_FUNCTION_NAME = "doc-agent-export-docx"
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
 table = dynamodb.Table(TABLE_NAME)
 history_table = dynamodb.Table(HISTORY_TABLE_NAME)
+
+
+class VersionConflictError(Exception):
+    """Raised when a conditional DynamoDB document update loses the version race."""
 
 # --- AgentCore Memory ---
 AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID", "")
@@ -163,6 +160,26 @@ def _field_value_with_user_input(existing: Any, value: Any) -> dict:
     return field
 
 
+def _resolved_number(value: Any) -> float:
+    if isinstance(value, dict):
+        value = value.get("user_input") if value.get("user_input") is not None else (
+            value.get("ai_recommended") if value.get("ai_recommended") is not None else value.get("calculated")
+        )
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _patch_operation(op: str, path: str, value: Any = None, source: str | None = None) -> dict:
+    item = {"op": op, "path": path, "value": value}
+    if source is not None:
+        item["source"] = source
+    return item
+
+
 def _set_user_input_field(doc: dict, path: str, value: Any) -> tuple[str, dict]:
     parts = _path_parts(path)
     if parts[0] not in {"meta", "sections", "staffing_plan"}:
@@ -191,7 +208,7 @@ def _set_user_input_field(doc: dict, path: str, value: Any) -> tuple[str, dict]:
     return "/" + "/".join([*target_parts, "user_input"]), updated
 
 
-def _calculated_patch(doc: dict, path: str, value: Any) -> PatchOperation | None:
+def _calculated_patch(doc: dict, path: str, value: Any) -> dict | None:
     parts = _path_parts(path)
     parent = _get_nested(doc, parts[:-1])
     if not isinstance(parent, dict):
@@ -202,15 +219,35 @@ def _calculated_patch(doc: dict, path: str, value: Any) -> PatchOperation | None
         existing["calculated"] = value
     else:
         parent[key] = {"calculated": value}
-    return PatchOperation(op="replace", path="/" + "/".join(parts), value=parent[key])
+    return _patch_operation("replace", "/" + "/".join(parts), parent[key], "calculated")
 
 
-def _staffing_recalculation_patches(doc: dict) -> list[PatchOperation]:
+def _staffing_recalculation_patches(doc: dict) -> list[dict]:
     if not isinstance(doc.get("staffing_plan"), dict):
         return []
 
-    result = recalculate_costs(doc["staffing_plan"])
-    operations: list[PatchOperation] = []
+    staffing = doc["staffing_plan"]
+    result = {
+        "roles": {},
+        "grand_total_hours": 0.0,
+        "grand_total_cost": 0.0,
+    }
+    for role_id, role in (staffing.get("roles") or {}).items():
+        count = _resolved_number(role.get("count"))
+        allocation = _resolved_number(role.get("allocation_pct")) / 100
+        rate = _resolved_number(role.get("rate_per_hour"))
+        phase_hours = role.get("phase_hours") or {}
+        hours = sum(_resolved_number(v) for v in phase_hours.values())
+        total_hours = round(hours, 2)
+        total_cost = round(count * allocation * rate * total_hours, 2)
+        result["roles"][role_id] = {
+            "total_hours": total_hours,
+            "total_cost": total_cost,
+        }
+        result["grand_total_hours"] += total_hours
+        result["grand_total_cost"] += total_cost
+
+    operations: list[dict] = []
     for role_id, totals in result["roles"].items():
         for field_name in ("total_hours", "total_cost"):
             op = _calculated_patch(
@@ -225,7 +262,7 @@ def _staffing_recalculation_patches(doc: dict) -> list[PatchOperation]:
         op = _calculated_patch(
             doc,
             f"staffing_plan.{field_name}",
-            result[field_name],
+            round(result[field_name], 2),
         )
         if op:
             operations.append(op)
@@ -346,9 +383,19 @@ def _runtime_response(runtime_result: dict) -> dict:
 
 
 def _invoke_runtime(payload: dict) -> dict:
-    from agent.lambdas.document_api.runtime_proxy import get_runtime_proxy
+    try:
+        from agent.lambdas.document_api.runtime_proxy import get_runtime_proxy
 
-    return get_runtime_proxy().invoke(payload)
+        return get_runtime_proxy().invoke(payload)
+    except ModuleNotFoundError:
+        # The deployed document_api Lambda is packaged as a single-file
+        # compatibility layer. It must not mutate documents directly if the
+        # Runtime proxy package is unavailable.
+        return {
+            "result": "runtime proxy is not packaged for document_api Lambda",
+            "version": 0,
+            "status": "error",
+        }
 
 
 def _handle_runtime_invocation(
@@ -692,41 +739,30 @@ def _handle_user_input(doc_id: str, body: dict, event: dict) -> dict:
 
     field_path = patch_path.rsplit("/", 1)[0]
     operations = [
-        PatchOperation(op="replace", path=patch_path, value=value, source="user_input"),
-        PatchOperation(
-            op="replace",
-            path=f"{field_path}/user_edited",
-            value=True,
-            source="user_input",
-        ),
-        PatchOperation(
-            op="replace",
-            path=f"{field_path}/status",
-            value=updated_field["status"],
-            source="user_input",
-        ),
+        _patch_operation("replace", patch_path, value, "user_input"),
+        _patch_operation("replace", f"{field_path}/user_edited", True, "user_input"),
+        _patch_operation("replace", f"{field_path}/status", updated_field["status"], "user_input"),
     ]
     if patch_path.startswith("/staffing_plan/"):
         operations.extend(_staffing_recalculation_patches(doc_dict))
 
     try:
-        DocumentState.model_validate(doc_dict)
         saved = _conditional_save_document(doc_dict, expected_version)
-    except VersionConflictError as exc:
-        return _response(409, {"error": str(exc), "status": "version_conflict"})
-    except ValidationError as exc:
-        return _response(400, {"error": "invalid document update", "details": exc.errors()})
+    except Exception as exc:
+        if "VersionConflict" in type(exc).__name__:
+            return _response(409, {"error": str(exc), "status": "version_conflict"})
+        raise
 
-    patch = Patch(
-        patch_id=f"patch-{uuid.uuid4().hex[:12]}",
-        doc_id=doc_id,
-        agent="document_api",
-        operations=operations,
-        version=saved["version"],
-        version_before=expected_version,
-        version_after=saved["version"],
-    )
-    _publish_event(f"docs/{doc_id}/patch", {"type": "patch", **patch.model_dump(mode="json")})
+    _publish_event(f"docs/{doc_id}/patch", {
+        "type": "patch",
+        "patch_id": f"patch-{uuid.uuid4().hex[:12]}",
+        "doc_id": doc_id,
+        "agent": "document_api",
+        "operations": operations,
+        "version": saved["version"],
+        "version_before": expected_version,
+        "version_after": saved["version"],
+    })
 
     return _response(200, {"status": "ok", "version": saved["version"]})
 
