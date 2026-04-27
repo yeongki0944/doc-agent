@@ -10,12 +10,17 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from agent.lib.schema.document_state import (
+    ArchitectureService,
     AWSServiceCost,
+    BusinessCase,
     CalculatedOnly,
+    CategoryGroup,
+    ClientSignatureSection,
     ContactEntry,
     Contribution,
     ContributionEntry,
@@ -27,11 +32,14 @@ from agent.lib.schema.document_state import (
     DocumentState,
     FieldStatus,
     FieldValue,
+    FundingCalculation,
     Phase,
     PhaseHours,
     RoleCategory,
     RoleCostSummary,
     Sections,
+    ServiceCategory,
+    ScopeTask,
     ServiceBreakdownItem,
     StaffingCost,
     StaffingPlan,
@@ -543,11 +551,91 @@ class TestContributionRoundTrip:
         assert restored.aws.amount.user_input == 10000
 
 
+class TestAPNPoCModelRoundTrip:
+    def test_business_case_round_trip(self):
+        model = BusinessCase(
+            problem_definition=FieldValue(user_input="Manual support is slow"),
+            roi_calculation=FieldValue(ai_recommended="20% cost reduction"),
+            executive_sponsor=FieldValue(user_input="CTO"),
+            production_commitment=FieldValue(user_input="Launch after PoC"),
+        )
+        restored = BusinessCase.model_validate_json(model.model_dump_json())
+        assert restored.problem_definition.user_input == "Manual support is slow"
+        assert restored.production_commitment.user_input == "Launch after PoC"
+
+    def test_category_group_round_trip(self):
+        model = CategoryGroup(
+            category_name=FieldValue(user_input="Business KPIs"),
+            items=[FieldValue(user_input="Reduce handling time by 20%")],
+        )
+        restored = CategoryGroup.model_validate(model.model_dump())
+        assert restored.category_name.user_input == "Business KPIs"
+        assert restored.items[0].user_input == "Reduce handling time by 20%"
+
+    def test_scope_task_round_trip(self):
+        model = ScopeTask(
+            task_category=FieldValue(user_input="Discovery"),
+            schedule=FieldValue(user_input="Week 1"),
+            details=[FieldValue(user_input="Workshop")],
+            personnel=FieldValue(user_input="SA, PM"),
+        )
+        restored = ScopeTask.model_validate_json(model.model_dump_json())
+        assert restored.schedule.user_input == "Week 1"
+        assert restored.details[0].user_input == "Workshop"
+
+    def test_architecture_service_round_trip(self):
+        model = ArchitectureService(
+            service_name=FieldValue(user_input="Amazon Bedrock"),
+            priority=1,
+            category=ServiceCategory.genai_core,
+            description=FieldValue(ai_recommended="LLM orchestration"),
+            sizing_rationale=FieldValue(ai_recommended="Primary GenAI workload"),
+            is_required_for_funding=True,
+        )
+        data = model.model_dump()
+        assert data["category"] == ServiceCategory.genai_core.value
+        restored = ArchitectureService.model_validate_json(model.model_dump_json())
+        assert restored.category == ServiceCategory.genai_core
+        assert restored.is_required_for_funding is True
+
+    def test_funding_calculation_round_trip(self):
+        model = FundingCalculation(
+            yr1_arr=FieldValue(user_input=800000),
+            sow_cost=FieldValue(user_input=180000),
+            funding_25pct_arr=CalculatedOnly(calculated=200000),
+            eligible_amount=CalculatedOnly(calculated=125000),
+            bedrock_included=True,
+            funding_type="cash",
+        )
+        restored = FundingCalculation.model_validate_json(model.model_dump_json())
+        assert restored.funding_cap == 125000
+        assert restored.bedrock_included is True
+        assert restored.eligible_amount.calculated == 125000
+
+    def test_client_signature_round_trip(self):
+        model = ClientSignatureSection(
+            customer_name=FieldValue(user_input="ABC Corp"),
+            authorized_person_name=FieldValue(user_input="Jane Doe"),
+            designation=FieldValue(user_input="CTO"),
+            sign_date=FieldValue(user_input="2026-04-27"),
+        )
+        restored = ClientSignatureSection.model_validate(model.model_dump())
+        assert restored.customer_name.user_input == "ABC Corp"
+        assert restored.designation.user_input == "CTO"
+
+
 class TestRoleCategoryEnum:
     def test_serialization(self):
         assert RoleCategory.solution_architect.value == "solution_architect"
         assert RoleCategory.engineer.value == "engineer"
         assert RoleCategory.other.value == "other"
+
+    def test_service_category_json_serialization(self):
+        service = ArchitectureService(category=ServiceCategory.security)
+        data = service.model_dump()
+        assert data["category"] == "security"
+        restored = ArchitectureService.model_validate_json(service.model_dump_json())
+        assert restored.category == ServiceCategory.security
 
     def test_json_serialization(self):
         role = StaffingRole(role_id="sa", category=RoleCategory.solution_architect)
@@ -556,6 +644,7 @@ class TestRoleCategoryEnum:
         json_str = role.model_dump_json()
         restored = StaffingRole.model_validate_json(json_str)
         assert restored.category == RoleCategory.solution_architect
+        assert restored.role_type.user_input is None
 
 
 class TestDocumentStateFullRoundTripV2:
@@ -582,6 +671,16 @@ class TestDocumentStateFullRoundTripV2:
         )
         doc.sections.executive_summary = ExecutiveSummarySection(
             text=FieldValue(ai_recommended="This PoC validates AI-based automation."),
+            customer_intro=FieldValue(user_input="ABC Corp is modernizing support."),
+            problem_statement=FieldValue(user_input="Manual triage is slow."),
+            proposed_solution=FieldValue(user_input="Agentic support workflow."),
+            phases_overview=[FieldValue(user_input="Discovery"), FieldValue(user_input="Build")],
+            business_case=BusinessCase(
+                problem_definition=FieldValue(user_input="High support cost"),
+                roi_calculation=FieldValue(user_input="20% deflection"),
+                executive_sponsor=FieldValue(user_input="CTO"),
+                production_commitment=FieldValue(user_input="Production after PoC"),
+            ),
         )
         doc.sections.stakeholders = StakeholdersSection(
             executive_sponsors=[ContactEntry(name=FieldValue(user_input="김대표"))],
@@ -591,16 +690,46 @@ class TestDocumentStateFullRoundTripV2:
         )
         doc.sections.success_criteria = SuccessCriteriaSection(
             items=[FieldValue(user_input="응답 정확도 85% 이상")],
+            groups=[
+                CategoryGroup(
+                    category_name=FieldValue(user_input="Technical"),
+                    items=[FieldValue(user_input="Latency under 2s")],
+                )
+            ],
         )
         doc.sections.assumptions = AssumptionsSection(
             items=[FieldValue(user_input="고객 데이터 접근 가능")],
+            groups=[
+                CategoryGroup(
+                    category_name=FieldValue(user_input="Data"),
+                    items=[FieldValue(user_input="Sample data is available")],
+                )
+            ],
         )
         doc.sections.scope_of_work = ScopeOfWorkSection(
             items=[FieldValue(ai_recommended="AI 상담 자동화 파이프라인 구축")],
+            tasks=[
+                ScopeTask(
+                    task_category=FieldValue(user_input="Implementation"),
+                    schedule=FieldValue(user_input="Week 2"),
+                    details=[FieldValue(user_input="Build agent workflow")],
+                    personnel=FieldValue(user_input="GenAI Engineer"),
+                )
+            ],
         )
         doc.sections.architecture = ArchitectureSection(
             description=FieldValue(ai_recommended="Bedrock + Lambda + DynamoDB"),
             tools=[FieldValue(user_input="Amazon Bedrock")],
+            overview=FieldValue(user_input="Serverless GenAI workflow"),
+            services=[
+                ArchitectureService(
+                    service_name=FieldValue(user_input="Amazon Bedrock"),
+                    priority=1,
+                    category=ServiceCategory.genai_core,
+                    is_required_for_funding=True,
+                )
+            ],
+            diagram_image_s3_key="diagrams/doc-phase0-test.png",
         )
         doc.sections.milestones = MilestonesSection(
             phases=[
@@ -611,6 +740,15 @@ class TestDocumentStateFullRoundTripV2:
                 ),
             ],
         )
+        doc.sections.cost_breakdown = CostBreakdownSection(
+            funding_calculation=FundingCalculation(
+                yr1_arr=FieldValue(user_input=800000),
+                sow_cost=FieldValue(user_input=180000),
+                funding_25pct_arr=CalculatedOnly(calculated=200000),
+                eligible_amount=CalculatedOnly(calculated=125000),
+                bedrock_included=True,
+            )
+        )
         doc.sections.acceptance = AcceptanceSection(
             text=FieldValue(ai_recommended="PoC 성공 기준 80% 이상 충족 시 승인"),
         )
@@ -620,34 +758,71 @@ class TestDocumentStateFullRoundTripV2:
                 aws=ContributionEntry(amount=FieldValue(user_input=10000)),
             ),
         )
+        doc.sections.client_signatures = ClientSignatureSection(
+            customer_name=FieldValue(user_input="ABC Corp"),
+            authorized_person_name=FieldValue(user_input="Jane Doe"),
+        )
         doc.staffing_plan.roles["sa"] = StaffingRole(
             role_id="sa",
             display_name="Solutions Architect",
             category=RoleCategory.solution_architect,
+            role_type=FieldValue(user_input="ai_agent_architect"),
         )
 
         json_str = doc.model_dump_json()
         restored = DocumentState.model_validate_json(json_str)
 
         assert restored.sections.executive_summary.text.ai_recommended == "This PoC validates AI-based automation."
+        assert restored.sections.executive_summary.business_case.executive_sponsor.user_input == "CTO"
         assert len(restored.sections.stakeholders.executive_sponsors) == 1
         assert restored.sections.stakeholders.executive_sponsors[0].name.user_input == "김대표"
         assert len(restored.sections.success_criteria.items) == 1
+        assert restored.sections.success_criteria.groups[0].category_name.user_input == "Technical"
+        assert restored.sections.assumptions.groups[0].items[0].user_input == "Sample data is available"
+        assert restored.sections.scope_of_work.tasks[0].personnel.user_input == "GenAI Engineer"
         assert restored.sections.architecture.description.ai_recommended == "Bedrock + Lambda + DynamoDB"
+        assert restored.sections.architecture.services[0].category == ServiceCategory.genai_core
+        assert restored.sections.architecture.diagram_image_s3_key == "diagrams/doc-phase0-test.png"
         assert len(restored.sections.milestones.phases) == 1
+        assert restored.sections.cost_breakdown.funding_calculation.bedrock_included is True
         assert restored.sections.acceptance.text.ai_recommended is not None
         assert restored.sections.resources_cost_estimates.contribution.customer.amount.user_input == 30000
+        assert restored.sections.client_signatures.customer_name.user_input == "ABC Corp"
         assert restored.staffing_plan.roles["sa"].category == RoleCategory.solution_architect
+        assert restored.staffing_plan.roles["sa"].role_type.user_input == "ai_agent_architect"
 
 
 class TestBackwardCompatibility:
     """Existing documents without new fields load without errors."""
 
     def test_empty_sections_load(self):
-        data = {"document_id": "doc-old", "sections": {"stakeholders": {}}}
+        data = {"document_id": "doc-old", "sections": {}}
         doc = DocumentState.model_validate(data)
+        assert doc.sections.cover.model_dump() == {}
         assert doc.sections.stakeholders.executive_sponsors == []
         assert doc.sections.stakeholders.project_team == []
+
+    def test_old_style_executive_summary_with_summary(self):
+        data = {
+            "document_id": "doc-old-summary",
+            "sections": {
+                "executive_summary": {
+                    "summary": {"ai_recommended": "Legacy summary", "status": "recommended"},
+                },
+            },
+        }
+        doc = DocumentState.model_validate(data)
+        assert doc.sections.executive_summary.summary.ai_recommended == "Legacy summary"
+
+    def test_old_style_executive_summary_with_summary_string(self):
+        data = {
+            "document_id": "doc-old-summary-string",
+            "sections": {
+                "executive_summary": {"summary": "Legacy summary text"},
+            },
+        }
+        doc = DocumentState.model_validate(data)
+        assert doc.sections.executive_summary.summary == "Legacy summary text"
 
     def test_legacy_dict_without_new_fields(self):
         data = {
@@ -665,7 +840,9 @@ class TestBackwardCompatibility:
         }
         doc = DocumentState.model_validate(data)
         assert doc.sections.executive_summary.text.user_input is None  # new field defaults
+        assert doc.sections.executive_summary.customer_intro.user_input is None
         assert doc.sections.architecture.description.user_input is None
+        assert doc.sections.architecture.services == []
         assert doc.staffing_plan.roles["pm"].category == RoleCategory.other  # default
         # extra fields preserved
         assert doc.sections.executive_summary.model_extra.get("some_old_field") == "value"
@@ -676,3 +853,40 @@ class TestBackwardCompatibility:
         doc = DocumentState.model_validate(data)
         assert doc.sections.milestones.phases == []
         assert doc.sections.acceptance.text.user_input is None
+        assert doc.sections.client_signatures.customer_name.user_input is None
+
+
+class TestRolePoolPreset:
+    def test_role_pool_loads_expected_categories(self):
+        path = Path(__file__).resolve().parents[2] / "data" / "presets" / "role_pool.json"
+        data = json.loads(path.read_text())
+        assert set(data) == {"solution_architect", "engineer", "other"}
+
+    def test_role_pool_contains_expected_roles(self):
+        path = Path(__file__).resolve().parents[2] / "data" / "presets" / "role_pool.json"
+        data = json.loads(path.read_text())
+        role_ids = {
+            item["role_id"]
+            for options in data.values()
+            for item in options
+        }
+        assert {
+            "solution_architect",
+            "senior_solution_architect",
+            "ai_agent_architect",
+            "ai_data_engineer",
+            "genai_engineer",
+            "ai_service_engineer",
+            "ml_engineer",
+            "backend_engineer",
+            "frontend_engineer",
+            "data_engineer",
+            "web_designer",
+            "junior_engineer",
+            "project_manager",
+            "engagement_partner",
+            "project_qa",
+            "advisor",
+            "security_engineer",
+            "infra_engineer",
+        }.issubset(role_ids)

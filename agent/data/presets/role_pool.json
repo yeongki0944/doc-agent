@@ -1,0 +1,80 @@
+{
+  "solution_architect": [
+    {
+      "role_id": "solution_architect",
+      "display_name": "Solution Architect"
+    },
+    {
+      "role_id": "senior_solution_architect",
+      "display_name": "Senior Solution Architect"
+    },
+    {
+      "role_id": "ai_agent_architect",
+      "display_name": "AI Agent Architect"
+    }
+  ],
+  "engineer": [
+    {
+      "role_id": "ai_data_engineer",
+      "display_name": "AI Data Engineer"
+    },
+    {
+      "role_id": "genai_engineer",
+      "display_name": "GenAI Engineer"
+    },
+    {
+      "role_id": "ai_service_engineer",
+      "display_name": "AI Service Engineer"
+    },
+    {
+      "role_id": "ml_engineer",
+      "display_name": "ML Engineer"
+    },
+    {
+      "role_id": "backend_engineer",
+      "display_name": "Backend Engineer"
+    },
+    {
+      "role_id": "frontend_engineer",
+      "display_name": "Frontend Engineer"
+    },
+    {
+      "role_id": "data_engineer",
+      "display_name": "Data Engineer"
+    },
+    {
+      "role_id": "web_designer",
+      "display_name": "Web Designer"
+    },
+    {
+      "role_id": "junior_engineer",
+      "display_name": "Junior Engineer"
+    },
+    {
+      "role_id": "security_engineer",
+      "display_name": "Security Engineer"
+    },
+    {
+      "role_id": "infra_engineer",
+      "display_name": "Infrastructure Engineer"
+    }
+  ],
+  "other": [
+    {
+      "role_id": "project_manager",
+      "display_name": "Project Manager"
+    },
+    {
+      "role_id": "engagement_partner",
+      "display_name": "Engagement Partner"
+    },
+    {
+      "role_id": "project_qa",
+      "display_name": "Project QA"
+    },
+    {
+      "role_id": "advisor",
+      "display_name": "Advisor"
+    }
+  ]
+}

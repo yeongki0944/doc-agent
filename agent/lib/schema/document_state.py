@@ -45,6 +45,16 @@ class RoleCategory(str, Enum):
     other = "other"
 
 
+class ServiceCategory(str, Enum):
+    """AWS service grouping for APN PoC architecture and funding review."""
+    genai_core = "genai_core"
+    data = "data"
+    compute = "compute"
+    network = "network"
+    security = "security"
+    monitoring = "monitoring"
+
+
 # ---------------------------------------------------------------------------
 # 4-property pattern base types
 # ---------------------------------------------------------------------------
@@ -97,6 +107,38 @@ class Phase(BaseModel):
     deliverables: FieldValue = Field(default_factory=FieldValue)
 
 
+class BusinessCase(BaseModel):
+    """Executive business case for GenAIIC PLD/funding review."""
+    problem_definition: FieldValue = Field(default_factory=FieldValue)
+    roi_calculation: FieldValue = Field(default_factory=FieldValue)
+    executive_sponsor: FieldValue = Field(default_factory=FieldValue)
+    production_commitment: FieldValue = Field(default_factory=FieldValue)
+
+
+class CategoryGroup(BaseModel):
+    """Grouped success criteria, assumptions, risks, or related items."""
+    category_name: FieldValue = Field(default_factory=FieldValue)
+    items: list[FieldValue] = Field(default_factory=list)
+
+
+class ScopeTask(BaseModel):
+    """Scope of work task row."""
+    task_category: FieldValue = Field(default_factory=FieldValue)
+    schedule: FieldValue = Field(default_factory=FieldValue)
+    details: list[FieldValue] = Field(default_factory=list)
+    personnel: FieldValue = Field(default_factory=FieldValue)
+
+
+class ArchitectureService(BaseModel):
+    """AWS service entry with ordering, category, and funding relevance."""
+    service_name: FieldValue = Field(default_factory=FieldValue)
+    priority: int = 99
+    category: ServiceCategory = ServiceCategory.compute
+    description: FieldValue = Field(default_factory=FieldValue)
+    sizing_rationale: FieldValue = Field(default_factory=FieldValue)
+    is_required_for_funding: bool = False
+
+
 class ContributionEntry(BaseModel):
     """Cost contribution 표의 단일 당사자 항목."""
     amount: FieldValue = Field(default_factory=FieldValue)   # USD
@@ -128,6 +170,12 @@ class CoverSection(Section):
 class ExecutiveSummarySection(Section):
     """Executive summary section."""
     text: FieldValue = Field(default_factory=FieldValue)
+    summary: FieldValue | str = Field(default_factory=FieldValue)
+    customer_intro: FieldValue = Field(default_factory=FieldValue)
+    problem_statement: FieldValue = Field(default_factory=FieldValue)
+    proposed_solution: FieldValue = Field(default_factory=FieldValue)
+    phases_overview: list[FieldValue] = Field(default_factory=list)
+    business_case: BusinessCase = Field(default_factory=BusinessCase)
 
 
 class StakeholdersSection(Section):
@@ -141,22 +189,28 @@ class StakeholdersSection(Section):
 class SuccessCriteriaSection(Section):
     """Success criteria / KPIs section."""
     items: list[FieldValue] = Field(default_factory=list)
+    groups: list[CategoryGroup] = Field(default_factory=list)
 
 
 class AssumptionsSection(Section):
     """Assumptions & risks section."""
     items: list[FieldValue] = Field(default_factory=list)
+    groups: list[CategoryGroup] = Field(default_factory=list)
 
 
 class ScopeOfWorkSection(Section):
     """Scope of work section."""
     items: list[FieldValue] = Field(default_factory=list)
+    tasks: list[ScopeTask] = Field(default_factory=list)
 
 
 class ArchitectureSection(Section):
     """Architecture section — diagrams, service list, analysis."""
     description: FieldValue = Field(default_factory=FieldValue)
     tools: list[FieldValue] = Field(default_factory=list)
+    overview: FieldValue = Field(default_factory=FieldValue)
+    services: list[ArchitectureService] = Field(default_factory=list)
+    diagram_image_s3_key: Optional[str] = None
 
 
 class MilestonesSection(Section):
@@ -210,11 +264,23 @@ class DocumentLocalSummary(BaseModel):
         return v.isoformat()
 
 
+class FundingCalculation(BaseModel):
+    """GenAIIC PLD funding eligibility calculation."""
+    yr1_arr: FieldValue = Field(default_factory=FieldValue)
+    sow_cost: FieldValue = Field(default_factory=FieldValue)
+    funding_25pct_arr: CalculatedOnly = Field(default_factory=CalculatedOnly)
+    funding_cap: float = 125000
+    eligible_amount: CalculatedOnly = Field(default_factory=CalculatedOnly)
+    bedrock_included: bool = False
+    funding_type: str = "cash"
+
+
 class CostBreakdownSection(Section):
     """Cost breakdown section — staffing cost + AWS service cost + local summary."""
     staffing_cost: StaffingCost = Field(default_factory=StaffingCost)
     aws_service_cost: AWSServiceCost = Field(default_factory=AWSServiceCost)
     document_local_summary: DocumentLocalSummary = Field(default_factory=DocumentLocalSummary)
+    funding_calculation: FundingCalculation = Field(default_factory=FundingCalculation)
 
 
 class AcceptanceSection(Section):
@@ -225,6 +291,14 @@ class AcceptanceSection(Section):
 class ResourcesCostEstimatesSection(Section):
     """Resources & cost estimates — sub-section of Cost tab."""
     contribution: Contribution = Field(default_factory=Contribution)
+
+
+class ClientSignatureSection(Section):
+    """Client signature block for APN PoC Project Plan approval."""
+    customer_name: FieldValue = Field(default_factory=FieldValue)
+    authorized_person_name: FieldValue = Field(default_factory=FieldValue)
+    designation: FieldValue = Field(default_factory=FieldValue)
+    sign_date: FieldValue = Field(default_factory=FieldValue)
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +320,7 @@ class Sections(BaseModel):
     resources_cost_estimates: ResourcesCostEstimatesSection = Field(
         default_factory=ResourcesCostEstimatesSection
     )
+    client_signatures: ClientSignatureSection = Field(default_factory=ClientSignatureSection)
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +339,7 @@ class StaffingRole(BaseModel):
     role_id: str
     display_name: str = ""
     category: RoleCategory = RoleCategory.other
+    role_type: FieldValue = Field(default_factory=FieldValue)
     count: FieldValue = Field(default_factory=FieldValue)
     allocation_pct: FieldValue = Field(default_factory=FieldValue)
     rate_per_hour: FieldValue = Field(default_factory=FieldValue)
