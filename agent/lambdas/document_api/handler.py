@@ -22,6 +22,7 @@ APPSYNC_HTTP_URL = os.environ.get("APPSYNC_HTTP_URL", "")
 REGION = "ap-northeast-2"
 PARENT_MODEL = "global.anthropic.claude-opus-4-6-v1"
 CHILD_MODEL = "apac.anthropic.claude-3-5-sonnet-20241022-v2:0"
+DEFAULT_EXPORT_DOCX_FUNCTION_NAME = "doc-agent-export-docx"
 
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
 table = dynamodb.Table(TABLE_NAME)
@@ -763,6 +764,94 @@ def _handle_invocations(body: dict, event: dict) -> dict:
         return _handle_chat(doc_id, {"message": prompt, "history": history}, event)
 
 
+def _read_lambda_payload(payload: Any) -> dict:
+    raw = payload.read() if hasattr(payload, "read") else payload
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8")
+    if not raw:
+        return {}
+    return json.loads(raw)
+
+
+def _handle_export(doc_id: str, event: dict) -> dict:
+    user_id, err = _require_user(event)
+    if err:
+        return err
+
+    resp = table.get_item(Key={"document_id": doc_id})
+    item = resp.get("Item")
+    if not item:
+        return _response(404, {"error": "not found"})
+
+    forbidden = _check_ownership(item, user_id)
+    if forbidden:
+        return forbidden
+
+    version = int(item.get("version", 0))
+    print(f"[export] start doc_id={doc_id} version={version}")
+
+    payload = {
+        "doc_id": doc_id,
+        "version": version,
+        "meta": item.get("meta", {}),
+        "sections": item.get("sections", {}),
+        "staffing_plan": item.get("staffing_plan", {}),
+    }
+    function_name = os.environ.get(
+        "EXPORT_DOCX_FUNCTION_NAME",
+        DEFAULT_EXPORT_DOCX_FUNCTION_NAME,
+    )
+
+    try:
+        lambda_client = boto3.client("lambda", region_name=REGION)
+        invoke_resp = lambda_client.invoke(
+            FunctionName=function_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(
+                {"inputPayload": _json(payload)},
+            ).encode("utf-8"),
+        )
+    except Exception as exc:
+        print(f"[export] error stage=invoke error={exc}")
+        return _response(500, {"error": str(exc), "stage": "invoke"})
+
+    try:
+        lambda_body = _read_lambda_payload(invoke_resp.get("Payload"))
+        if invoke_resp.get("FunctionError"):
+            print(f"[export] error stage=lambda error={lambda_body}")
+            return _response(500, {
+                "error": "export lambda failed",
+                "stage": "lambda",
+                "details": lambda_body,
+            })
+
+        output_payload = lambda_body.get("outputPayload", "{}")
+        if isinstance(output_payload, str):
+            output = json.loads(output_payload)
+        elif isinstance(output_payload, dict):
+            output = output_payload
+        else:
+            output = {}
+    except Exception as exc:
+        print(f"[export] error stage=parse_response error={exc}")
+        return _response(500, {"error": str(exc), "stage": "parse_response"})
+
+    if output.get("error"):
+        print(f"[export] error stage={output.get('stage', 'export_docx')} error={output.get('error')}")
+        return _response(500, output)
+
+    if not output.get("download_url"):
+        print(f"[export] error stage=missing_download_url error={output}")
+        return _response(500, {
+            "error": "export did not return download_url",
+            "stage": "missing_download_url",
+            "details": output,
+        })
+
+    print(f"[export] success s3_key={output.get('s3_key')}")
+    return _response(200, output)
+
+
 def handler(event: dict, context: Any) -> dict:
     rc = event.get("requestContext", {})
     http = rc.get("http", {})
@@ -856,10 +945,7 @@ def handler(event: dict, context: Any) -> dict:
             return _response(200, {"status": "review_requested", "doc_id": doc_id})
 
         elif method == "POST" and action == "export":
-            user_id, err = _require_user(event)
-            if err:
-                return err
-            return _response(200, {"status": "export_requested", "doc_id": doc_id})
+            return _handle_export(doc_id, event)
 
         else:
             return _response(400, {"error": f"unknown: {method} {path}"})

@@ -102,6 +102,19 @@ resource "aws_iam_role_policy" "lambda_s3" {
   })
 }
 
+resource "aws_iam_role_policy" "lambda_invoke_export_docx" {
+  name = "${local.project}-lambda-invoke-export-docx"
+  role = aws_iam_role.lambda_exec.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = [aws_lambda_function.export_docx.arn]
+    }]
+  })
+}
+
 resource "aws_iam_role_policy" "lambda_bedrock" {
   name = "${local.project}-lambda-bedrock"
   role = aws_iam_role.lambda_exec.id

@@ -130,6 +130,138 @@ def _build_contribution(resources_cost_estimates: dict[str, Any]) -> dict[str, A
     return {"parties": parties, "rows": rows}
 
 
+def _normalize_contact_entry(entry: Any, label_key: str, fallback_value: str = "") -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        entry = {}
+
+    label_value = _resolve_field(
+        entry.get(label_key, entry.get("role_or_description", entry.get("description", entry.get("stakeholder_for", "")))),
+        fallback_value,
+    )
+    return {
+        "name": _resolve_field(entry.get("name", "")),
+        "title": _resolve_field(entry.get("title", "")),
+        "description": _resolve_field(entry.get("description", label_value)),
+        "stakeholder_for": _resolve_field(entry.get("stakeholder_for", label_value)),
+        "role": _resolve_field(entry.get("role", label_value)),
+        "contact": _resolve_field(entry.get("contact", "")),
+    }
+
+
+def _role_category_key(role: dict[str, Any]) -> str:
+    category = role.get("category", "other")
+    if hasattr(category, "value"):
+        category = category.value
+    category = str(category)
+    if category == "solution_architect":
+        return "sa"
+    if category == "engineer":
+        return "eng"
+    return "other"
+
+
+def _build_phase_hours_table(staffing_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    roles = staffing_plan.get("roles", {})
+    if not isinstance(roles, dict):
+        roles = {}
+
+    phase_names: list[str] = []
+    seen: set[str] = set()
+    for role in roles.values():
+        if not isinstance(role, dict):
+            continue
+        phase_hours = role.get("phase_hours", {})
+        if not isinstance(phase_hours, dict):
+            continue
+        for phase in phase_hours.keys():
+            if phase not in seen:
+                seen.add(phase)
+                phase_names.append(phase)
+
+    preferred_order = ["discovery", "development", "testing"]
+    ordered = [phase for phase in preferred_order if phase in seen]
+    ordered.extend([phase for phase in phase_names if phase not in preferred_order])
+
+    phase_rows: list[dict[str, Any]] = []
+    for phase in ordered:
+        sa_hours = 0
+        eng_hours = 0
+        other_hours = 0
+        for role in roles.values():
+            if not isinstance(role, dict):
+                continue
+            phase_hours = role.get("phase_hours", {})
+            if not isinstance(phase_hours, dict):
+                continue
+            hours = _resolve_field(phase_hours.get(phase, {}), 0)
+            category_key = _role_category_key(role)
+            if category_key == "sa":
+                sa_hours += hours
+            elif category_key == "eng":
+                eng_hours += hours
+            else:
+                other_hours += hours
+        phase_rows.append({
+            "phase": phase,
+            "sa_hours": sa_hours,
+            "eng_hours": eng_hours,
+            "other_hours": other_hours,
+            "total": sa_hours + eng_hours + other_hours,
+        })
+
+    return phase_rows
+
+
+def _build_staffing_totals(staffing_plan: dict[str, Any]) -> dict[str, Any]:
+    roles = staffing_plan.get("roles", {})
+    if not isinstance(roles, dict):
+        roles = {}
+
+    totals = {
+        "sa": {"hours": 0, "cost": 0},
+        "eng": {"hours": 0, "cost": 0},
+        "other": {"hours": 0, "cost": 0},
+    }
+
+    for role in roles.values():
+        if not isinstance(role, dict):
+            continue
+        category_key = _role_category_key(role)
+        totals[category_key]["hours"] += _resolve_field(role.get("total_hours", {}), 0)
+        totals[category_key]["cost"] += _resolve_field(role.get("total_cost", {}), 0)
+
+    total_hours = {
+        "sa": totals["sa"]["hours"],
+        "eng": totals["eng"]["hours"],
+        "other": totals["other"]["hours"],
+        "total": totals["sa"]["hours"] + totals["eng"]["hours"] + totals["other"]["hours"],
+    }
+    total_cost = {
+        "sa": totals["sa"]["cost"],
+        "eng": totals["eng"]["cost"],
+        "other": totals["other"]["cost"],
+        "total": totals["sa"]["cost"] + totals["eng"]["cost"] + totals["other"]["cost"],
+    }
+
+    def _rate(category: str) -> float:
+        hours = totals[category]["hours"]
+        cost = totals[category]["cost"]
+        if hours:
+            return round(cost / hours, 2)
+        return 0
+
+    return {
+        "total_hours": total_hours,
+        "total_cost": total_cost,
+        "rates": {
+            "rate_solution_architect": _rate("sa"),
+            "rate_engineer": _rate("eng"),
+            "rate_other": _rate("other"),
+        },
+        "phase_hours_table": _build_phase_hours_table(staffing_plan),
+    }
+
+
 def _build_context(params: dict[str, Any]) -> dict[str, Any]:
     meta = params.get("meta", {}) if isinstance(params.get("meta", {}), dict) else {}
     sections = params.get("sections", {}) if isinstance(params.get("sections", {}), dict) else {}
@@ -145,6 +277,24 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
     cost_breakdown = _section(sections, "cost_breakdown")
     acceptance = _section(sections, "acceptance")
     resources_cost_estimates = _section(sections, "resources_cost_estimates")
+    stakeholders = _section(sections, "stakeholders")
+    staffing_summary = _build_staffing_totals(staffing_plan)
+    contribution_context = _build_contribution(resources_cost_estimates)
+    executive_sponsors = stakeholders.get("executive_sponsors", [])
+    stakeholder_rows = stakeholders.get("stakeholders", [])
+    project_team = stakeholders.get("project_team", [])
+    escalation_contacts = stakeholders.get("escalation_contacts", [])
+    milestones_rows = milestones.get("phases", [])
+    if not isinstance(executive_sponsors, list):
+        executive_sponsors = []
+    if not isinstance(stakeholder_rows, list):
+        stakeholder_rows = []
+    if not isinstance(project_team, list):
+        project_team = []
+    if not isinstance(escalation_contacts, list):
+        escalation_contacts = []
+    if not isinstance(milestones_rows, list):
+        milestones_rows = []
 
     return {
         "doc_id": params.get("doc_id", "unknown"),
@@ -153,43 +303,41 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
         "partner": _resolve_field(meta.get("partner", cover.get("partner", ""))),
         "date": _resolve_field(meta.get("date", cover.get("date", ""))),
         "cover": {key: _resolve_field(value) for key, value in cover.items()},
-        "executive_summary": {
-            "text": _resolve_field(executive_summary.get("text", executive_summary.get("summary", ""))),
-            "summary": _resolve_field(executive_summary.get("summary", executive_summary.get("text", ""))),
-        },
-        "scope_of_work": {
-            "items": _bullet_join(scope_of_work.get("items", "")),
-            "in_scope": _bullet_join(scope_of_work.get("in_scope", "")),
-            "out_of_scope": _bullet_join(scope_of_work.get("out_of_scope", "")),
-            "deliverables": _bullet_join(scope_of_work.get("deliverables", "")),
-        },
-        "success_criteria": {
-            "items": _bullet_join(success_criteria.get("items", "")),
-            **{key: _resolve_field(value) for key, value in success_criteria.items() if key != "items"},
-        },
-        "assumptions": {
-            "items": _bullet_join(assumptions.get("items", "")),
-            "risks": _bullet_join(assumptions.get("risks", "")),
-            "dependencies": _bullet_join(assumptions.get("dependencies", "")),
-        },
-        "architecture": {
-            "description": _resolve_field(architecture.get("description", "")),
-            "services": _bullet_join(architecture.get("services", "")),
-            "data_flow": _resolve_field(architecture.get("data_flow", "")),
-            "tools": _bullet_join(architecture.get("tools", "")),
-        },
-        "milestones": {
-            "phases": milestones.get("phases", []),
-            **{key: _resolve_field(value) for key, value in milestones.items() if key != "phases"},
+        "executive_summary": _resolve_field(executive_summary.get("text", executive_summary.get("summary", ""))),
+        "scope_of_work": _bullet_join(scope_of_work.get("items", scope_of_work.get("deliverables", ""))),
+        "success_criteria": _bullet_join(success_criteria.get("items", "")),
+        "assumptions": _bullet_join(assumptions.get("items", assumptions.get("risks", assumptions.get("dependencies", "")))),
+        "architecture_description": _resolve_field(architecture.get("description", "")),
+        "architecture_tools": _bullet_join(architecture.get("tools", "")),
+        "acceptance_text": _resolve_field(acceptance.get("text", "")),
+        "executive_sponsors": [_normalize_contact_entry(row, "description") for row in executive_sponsors],
+        "stakeholders": [_normalize_contact_entry(row, "stakeholder_for") for row in stakeholder_rows],
+        "project_team": [_normalize_contact_entry(row, "role") for row in project_team],
+        "escalation_contacts": [_normalize_contact_entry(row, "role") for row in escalation_contacts],
+        "milestones": [
+            {
+                "phase": _resolve_field(row.get("phase", "")),
+                "completion_date": _resolve_field(row.get("completion_date", "")),
+                "deliverables": _resolve_field(row.get("deliverables", "")),
+            }
+            for row in milestones_rows
+            if isinstance(row, dict)
+        ],
+        "phase_hours_table": staffing_summary["phase_hours_table"],
+        "total_hours": staffing_summary["total_hours"],
+        "total_cost": staffing_summary["total_cost"],
+        **staffing_summary["rates"],
+        "aws_monthly_cost_summary": _resolve_field(cost_breakdown.get("aws_service_cost", {}).get("monthly_cost_summary", {}), 0),
+        "aws_calculator_url": _resolve_field(cost_breakdown.get("aws_service_cost", {}).get("calculator_share_url", "")),
+        "contribution": contribution_context["parties"],
+        "resources_cost_estimates": {
+            **resources_cost_estimates,
+            "contribution": contribution_context,
         },
         "cost_breakdown": cost_breakdown,
         "acceptance": {
             "text": _resolve_field(acceptance.get("text", "")),
             **{key: _resolve_field(value) for key, value in acceptance.items() if key != "text"},
-        },
-        "resources_cost_estimates": {
-            **resources_cost_estimates,
-            "contribution": _build_contribution(resources_cost_estimates),
         },
         "staffing": _build_staffing_context(staffing_plan),
     }

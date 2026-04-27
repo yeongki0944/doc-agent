@@ -98,17 +98,43 @@ def test_build_context():
         "sections": {
             "cover": {"title": "PoC Plan"},
             "executive_summary": {"summary": {"ai_recommended": "summary text"}},
+            "stakeholders": {
+                "executive_sponsors": [{"name": "Sponsor", "title": "Director", "description": "Approver", "contact": "sponsor@example.com"}],
+                "stakeholders": [{"name": "Stakeholder", "title": "Manager", "stakeholder_for": "Scope", "contact": "stake@example.com"}],
+                "project_team": [{"name": "Team", "title": "Engineer", "role": "Delivery", "contact": "team@example.com"}],
+                "escalation_contacts": [{"name": "Esc", "title": "Lead", "role": "Escalation", "contact": "esc@example.com"}],
+            },
             "scope_of_work": {"items": [{"user_input": "scope item"}]},
-            "architecture": {"services": ["Lambda", "DynamoDB"]},
+            "success_criteria": {"items": [{"user_input": "criteria item"}]},
+            "assumptions": {"items": [{"user_input": "assumption item"}]},
+            "architecture": {"description": {"ai_recommended": "arch desc"}, "tools": ["Lambda", "DynamoDB"]},
+            "milestones": {"phases": [{"phase": {"user_input": "Phase 1"}, "completion_date": {"user_input": "2026-05-01"}, "deliverables": {"user_input": "Doc"}}]},
+            "acceptance": {"text": {"ai_recommended": "acceptance text"}},
+            "cost_breakdown": {"aws_service_cost": {"monthly_cost_summary": {"calculated": 1234}, "calculator_share_url": "https://calc"}},
             "resources_cost_estimates": {
                 "contribution": {
                     "customer": {"amount": {"user_input": 100}, "pct": {"user_input": 100}},
+                    "partner": {"amount": {"ai_recommended": 0}, "pct": {"ai_recommended": 0}},
+                    "aws": {"amount": {"calculated": 0}, "pct": {"calculated": 0}},
                 }
             },
         },
         "staffing_plan": {
-            "roles": {},
-            "grand_total_cost": {"calculated": 100},
+            "roles": {
+                "sa": {
+                    "category": "solution_architect",
+                    "phase_hours": {"discovery": {"calculated": 5}, "development": {"calculated": 10}, "testing": {"calculated": 0}},
+                    "total_hours": {"calculated": 15},
+                    "total_cost": {"calculated": 1500},
+                },
+                "eng": {
+                    "category": "engineer",
+                    "phase_hours": {"discovery": {"calculated": 3}, "development": {"calculated": 7}, "testing": {"calculated": 2}},
+                    "total_hours": {"calculated": 12},
+                    "total_cost": {"calculated": 1200},
+                },
+            },
+            "grand_total_cost": {"calculated": 2700},
         },
     }
 
@@ -119,11 +145,32 @@ def test_build_context():
     assert context["customer"] == "ACME"
     assert context["partner"] == "MZC"
     assert context["cover"]["title"] == "PoC Plan"
-    assert context["executive_summary"]["summary"] == "summary text"
-    assert context["scope_of_work"]["items"] == "- scope item"
-    assert context["architecture"]["services"] == "- Lambda\n- DynamoDB"
+    assert context["executive_summary"] == "summary text"
+    assert context["scope_of_work"] == "- scope item"
+    assert context["success_criteria"] == "- criteria item"
+    assert context["assumptions"] == "- assumption item"
+    assert context["architecture_description"] == "arch desc"
+    assert context["architecture_tools"] == "- Lambda\n- DynamoDB"
+    assert context["acceptance_text"] == "acceptance text"
+    assert context["contribution"]["customer"]["amount"] == 100
     assert context["resources_cost_estimates"]["contribution"]["parties"]["customer"]["amount"] == 100
-    assert context["staffing"]["grand_total_cost"] == 100
+    assert context["total_hours"] == {"sa": 15, "eng": 12, "other": 0, "total": 27}
+    assert context["total_cost"] == {"sa": 1500, "eng": 1200, "other": 0, "total": 2700}
+    assert context["rate_solution_architect"] == 100
+    assert context["rate_engineer"] == 100
+    assert context["phase_hours_table"] == [
+        {"phase": "discovery", "sa_hours": 5, "eng_hours": 3, "other_hours": 0, "total": 8},
+        {"phase": "development", "sa_hours": 10, "eng_hours": 7, "other_hours": 0, "total": 17},
+        {"phase": "testing", "sa_hours": 0, "eng_hours": 2, "other_hours": 0, "total": 2},
+    ]
+    assert context["executive_sponsors"][0]["description"] == "Approver"
+    assert context["stakeholders"][0]["stakeholder_for"] == "Scope"
+    assert context["project_team"][0]["role"] == "Delivery"
+    assert context["escalation_contacts"][0]["role"] == "Escalation"
+    assert context["milestones"][0]["phase"] == "Phase 1"
+    assert context["aws_monthly_cost_summary"] == 1234
+    assert context["aws_calculator_url"] == "https://calc"
+    assert context["staffing"]["grand_total_cost"] == 2700
 
 
 @patch("agent.lambdas.gateway_tools.export_docx._render_docx")
