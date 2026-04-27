@@ -142,7 +142,15 @@ def invoke(payload: dict) -> dict:
     import asyncio
     from agent.app.parent.orchestrator import ParentOrchestrator
 
-    orchestrator = _get_orchestrator()
+    try:
+        orchestrator = _get_orchestrator()
+    except Exception as exc:
+        logger.exception("orchestrator initialization failed")
+        return {
+            "result": f"runtime initialization failed: {exc}",
+            "version": 0,
+            "status": "error",
+        }
 
     try:
         plan = asyncio.run(
@@ -156,6 +164,13 @@ def invoke(payload: dict) -> dict:
                 asyncio.run,
                 orchestrator.handle_message(doc_id, prompt, history),
             ).result()
+    except Exception as exc:
+        logger.exception("orchestrator invocation failed")
+        return {
+            "result": f"runtime invocation failed: {exc}",
+            "version": 0,
+            "status": "error",
+        }
 
     return {
         "result": plan.chat_response,
@@ -243,3 +258,7 @@ def _get_orchestrator() -> "ParentOrchestrator":
             gateway_client=_build_gateway_client(region),
         )
     return _orchestrator_instance
+
+
+if os.environ.get("DOC_AGENT_DISABLE_APP_RUN") != "1":
+    app.run(host="0.0.0.0")

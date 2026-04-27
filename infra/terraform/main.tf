@@ -129,6 +129,14 @@ resource "aws_iam_role_policy" "lambda_bedrock" {
       {
         Effect = "Allow"
         Action = [
+          "bedrock-agentcore:InvokeAgentRuntime",
+          "bedrock-agentcore:ListAgentRuntimes",
+        ]
+        Resource = ["*"]
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "bedrock-agentcore:CreateEvent",
           "bedrock-agentcore:ListEvents",
           "bedrock-agentcore:BatchCreateMemoryRecords",
@@ -545,6 +553,7 @@ resource "aws_lambda_function" "document_api" {
       CONVERSATION_HISTORY_TABLE = aws_dynamodb_table.conversation_history.name
       APPSYNC_HTTP_URL           = "https://${aws_cloudformation_stack.appsync_events.outputs["HttpDns"]}"
       AGENTCORE_MEMORY_ID        = "doc_agent_memory-o6QiOB8zCT"
+      AGENTCORE_RUNTIME_NAME     = "doc_agent_runtime_demo"
     }
   }
 }

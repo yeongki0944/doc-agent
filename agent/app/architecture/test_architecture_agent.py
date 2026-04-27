@@ -78,7 +78,7 @@ class TestAgentInitialization:
         agent = ArchitectureAgent()
         mock_agent_cls.assert_called_once()
         call_kwargs = mock_agent_cls.call_args.kwargs
-        assert "model_id" in call_kwargs
+        assert "model" in call_kwargs
         assert "system_prompt" in call_kwargs
 
     @patch("agent.app.architecture.architecture_agent.Agent")

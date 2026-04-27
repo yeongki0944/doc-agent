@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 from copy import deepcopy
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Optional
 
 import boto3
@@ -28,6 +29,17 @@ class VersionConflictError(Exception):
 class DocumentNotFoundError(Exception):
     """Raised when a document is not found."""
     pass
+
+
+def _to_dynamodb_value(value: Any) -> Any:
+    """Convert JSON-serializable values to DynamoDB-safe Python values."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, list):
+        return [_to_dynamodb_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _to_dynamodb_value(item) for key, item in value.items()}
+    return value
 
 
 class DocumentStore:
@@ -125,7 +137,7 @@ class DynamoDBDocumentStore:
     def put(self, doc: DocumentState) -> DocumentState:
         """Create or overwrite a document (no version check)."""
         doc.updated_at = datetime.now(timezone.utc)
-        self._table.put_item(Item=doc.model_dump(mode="json"))
+        self._table.put_item(Item=_to_dynamodb_value(doc.model_dump(mode="json")))
         return doc
 
     # ------------------------------------------------------------------
@@ -141,7 +153,7 @@ class DynamoDBDocumentStore:
         """
         doc.version = expected_version + 1
         doc.updated_at = datetime.now(timezone.utc)
-        item = doc.model_dump(mode="json")
+        item = _to_dynamodb_value(doc.model_dump(mode="json"))
 
         try:
             self._table.put_item(

@@ -66,7 +66,7 @@ class TestAgentInitialization:
         agent = DiscoveryAgent()
         mock_agent_cls.assert_called_once()
         call_kwargs = mock_agent_cls.call_args
-        assert "model_id" in call_kwargs.kwargs or len(call_kwargs.args) > 0
+        assert "model" in call_kwargs.kwargs or len(call_kwargs.args) > 0
         # Verify system_prompt is set
         assert "system_prompt" in call_kwargs.kwargs
 

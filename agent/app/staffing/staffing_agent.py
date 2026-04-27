@@ -174,7 +174,7 @@ class StaffingAgent:
 
     def __init__(self) -> None:
         self.agent = Agent(
-            model_id=CHILD_MODEL,
+            model=CHILD_MODEL,
             system_prompt=STAFFING_PROMPT,
         )
         self.role_catalog = _load_json("role_catalog.json")

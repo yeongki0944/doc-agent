@@ -17,6 +17,8 @@ HISTORY_TABLE_NAME = os.environ.get("CONVERSATION_HISTORY_TABLE", "doc-agent-con
 APPSYNC_HTTP_URL = os.environ.get("APPSYNC_HTTP_URL", "")
 REGION = "ap-northeast-2"
 DEFAULT_EXPORT_DOCX_FUNCTION_NAME = "doc-agent-export-docx"
+AGENTCORE_RUNTIME_NAME = os.environ.get("AGENTCORE_RUNTIME_NAME", "doc_agent_runtime_demo")
+AGENTCORE_RUNTIME_ARN = os.environ.get("AGENTCORE_RUNTIME_ARN", "")
 
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
 table = dynamodb.Table(TABLE_NAME)
@@ -29,12 +31,48 @@ class VersionConflictError(Exception):
 # --- AgentCore Memory ---
 AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID", "")
 _agentcore_client = None
+_agentcore_control_client = None
+_agentcore_runtime_arn = AGENTCORE_RUNTIME_ARN
 
 def _get_agentcore_client():
     global _agentcore_client
     if _agentcore_client is None and AGENTCORE_MEMORY_ID:
         _agentcore_client = boto3.client("bedrock-agentcore", region_name=REGION)
     return _agentcore_client
+
+
+def _get_agentcore_runtime_client():
+    global _agentcore_client
+    if _agentcore_client is None:
+        _agentcore_client = boto3.client("bedrock-agentcore", region_name=REGION)
+    return _agentcore_client
+
+
+def _get_agentcore_control_client():
+    global _agentcore_control_client
+    if _agentcore_control_client is None:
+        _agentcore_control_client = boto3.client("bedrock-agentcore-control", region_name=REGION)
+    return _agentcore_control_client
+
+
+def _resolve_agentcore_runtime_arn() -> str:
+    global _agentcore_runtime_arn
+    if _agentcore_runtime_arn:
+        return _agentcore_runtime_arn
+
+    client = _get_agentcore_control_client()
+    resp = client.list_agent_runtimes()
+    for runtime in resp.get("agentRuntimes", resp.get("agentRuntimeSummaries", [])):
+        if runtime.get("agentRuntimeName") == AGENTCORE_RUNTIME_NAME:
+            _agentcore_runtime_arn = runtime.get("agentRuntimeArn", "")
+            if _agentcore_runtime_arn:
+                return _agentcore_runtime_arn
+            runtime_id = runtime.get("agentRuntimeId", "")
+            if runtime_id:
+                account_id = boto3.client("sts", region_name=REGION).get_caller_identity()["Account"]
+                _agentcore_runtime_arn = f"arn:aws:bedrock-agentcore:{REGION}:{account_id}:runtime/{runtime_id}"
+                return _agentcore_runtime_arn
+    raise RuntimeError(f"AgentCore Runtime not found: {AGENTCORE_RUNTIME_NAME}")
 
 def _memory_store_event(session_id: str, actor_id: str, content: str, role: str = "USER") -> bool:
     """Store a conversation event in AgentCore Memory (short-term)."""
@@ -388,14 +426,19 @@ def _invoke_runtime(payload: dict) -> dict:
 
         return get_runtime_proxy().invoke(payload)
     except ModuleNotFoundError:
-        # The deployed document_api Lambda is packaged as a single-file
-        # compatibility layer. It must not mutate documents directly if the
-        # Runtime proxy package is unavailable.
-        return {
-            "result": "runtime proxy is not packaged for document_api Lambda",
-            "version": 0,
-            "status": "error",
-        }
+        runtime_arn = _resolve_agentcore_runtime_arn()
+        resp = _get_agentcore_runtime_client().invoke_agent_runtime(
+            agentRuntimeArn=runtime_arn,
+            contentType="application/json",
+            accept="application/json",
+            payload=json.dumps(payload).encode("utf-8"),
+        )
+        raw = resp["response"].read()
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8")
+        if not raw:
+            return {"result": "", "version": 0, "status": "error"}
+        return json.loads(raw)
 
 
 def _handle_runtime_invocation(

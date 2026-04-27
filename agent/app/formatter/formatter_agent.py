@@ -107,7 +107,7 @@ class FormatterAgent:
 
     def __init__(self) -> None:
         self.agent = Agent(
-            model_id=CHILD_MODEL,
+            model=CHILD_MODEL,
             system_prompt=FORMATTER_PROMPT,
         )
 

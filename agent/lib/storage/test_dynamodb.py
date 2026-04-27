@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -35,6 +36,17 @@ def _make_mock_resource() -> MagicMock:
 
 def _sample_doc(doc_id: str = "doc-001", version: int = 0) -> DocumentState:
     return DocumentState(document_id=doc_id, version=version)
+
+
+def _iter_values(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_values(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_values(item)
+    else:
+        yield value
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +92,19 @@ class TestDynamoDBDocumentStorePut:
         item_arg = table.put_item.call_args[1]["Item"]
         assert item_arg["document_id"] == "doc-001"
         assert result.updated_at >= before
+
+    def test_put_converts_floats_to_decimal(self):
+        resource, table, _ = _make_mock_resource()
+        store = DynamoDBDocumentStore(dynamodb_resource=resource)
+
+        doc = _sample_doc()
+        doc.sections.cost_breakdown.funding_calculation.funding_cap = 125000.5
+        store.put(doc)
+
+        item_arg = table.put_item.call_args[1]["Item"]
+        values = list(_iter_values(item_arg))
+        assert Decimal("125000.5") in values
+        assert not any(isinstance(value, float) for value in values)
 
 
 class TestDynamoDBDocumentStoreUpdate:

@@ -13,8 +13,11 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -91,22 +94,103 @@ def _upload_code_to_s3(s3_client, zip_path: str, bucket: str, key: str) -> None:
     s3_client.upload_file(zip_path, bucket, key)
 
 
+def _install_agent_dependencies(root_dir: str, package_dir: str) -> None:
+    """Install AgentCore Runtime dependencies into the deployment package.
+
+    AgentCore direct code deployment mounts the ZIP at /var/task. It does not
+    install pyproject dependencies for us, so the ZIP must contain Linux arm64
+    wheels alongside the agent package.
+    """
+    pyproject_path = Path(root_dir) / "agent" / "pyproject.toml"
+    if not pyproject_path.exists():
+        return
+
+    with pyproject_path.open("rb") as fh:
+        pyproject = tomllib.load(fh)
+
+    dependencies = pyproject.get("project", {}).get("dependencies", [])
+    if not dependencies:
+        return
+
+    print("[CDK] Installing AgentCore Runtime dependencies")
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--platform",
+            "manylinux2014_aarch64",
+            "--implementation",
+            "cp",
+            "--python-version",
+            "3.12",
+            "--abi",
+            "cp312",
+            "--only-binary=:all:",
+            "--target",
+            package_dir,
+            *dependencies,
+        ]
+    )
+
+
+def _write_agentcore_entrypoint(package_dir: str) -> None:
+    """Write a root-level entrypoint for AgentCore direct code deploy."""
+    entrypoint = Path(package_dir) / "main.py"
+    entrypoint.write_text(
+        "\n".join(
+            [
+                "import os",
+                "import sys",
+                "",
+                "sys.path.insert(0, '/var/task')",
+                "os.environ.setdefault('DOC_AGENT_DISABLE_APP_RUN', '1')",
+                "",
+                "from agent.app.parent.runtime import app",
+                "",
+                "app.run(host='0.0.0.0')",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def _package_agent_code(root_dir: str) -> str:
     agent_dir = Path(root_dir) / "agent"
     if not agent_dir.exists():
         raise FileNotFoundError(f"Agent directory not found: {agent_dir}")
 
     tmp_dir = tempfile.mkdtemp(prefix="agentcore-deploy-")
+    package_dir = os.path.join(tmp_dir, "package")
     zip_path = os.path.join(tmp_dir, "agent-runtime.zip")
 
+    os.makedirs(package_dir, exist_ok=True)
+    _install_agent_dependencies(root_dir, package_dir)
+    _write_agentcore_entrypoint(package_dir)
+    shutil.copytree(
+        agent_dir,
+        os.path.join(package_dir, "agent"),
+        ignore=shutil.ignore_patterns(
+            ".venv",
+            "__pycache__",
+            ".pytest_cache",
+            "node_modules",
+            "*.pyc",
+            "*.pyo",
+        ),
+    )
+
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(agent_dir):
+        for root, dirs, files in os.walk(package_dir):
             dirs[:] = [d for d in dirs if d not in (".venv", "__pycache__", ".pytest_cache", "node_modules")]
             for f in files:
                 if f.endswith((".pyc", ".pyo")):
                     continue
                 full_path = os.path.join(root, f)
-                arcname = os.path.relpath(full_path, root_dir)
+                arcname = os.path.relpath(full_path, package_dir)
                 zf.write(full_path, arcname)
 
     print(f"[CDK] Packaged agent code: {zip_path} ({os.path.getsize(zip_path)} bytes)")
@@ -210,7 +294,7 @@ def create_or_update_runtime(client, s3_client, env: str, zip_path: str, account
                 "codeConfiguration": {
                     "code": {"s3": {"bucket": artifacts_bucket, "prefix": s3_key}},
                     "runtime": "PYTHON_3_12",
-                    "entryPoint": ["agent/app/parent/runtime.py"],
+                    "entryPoint": ["main.py"],
                 }
             },
         )
@@ -225,7 +309,7 @@ def create_or_update_runtime(client, s3_client, env: str, zip_path: str, account
             "codeConfiguration": {
                 "code": {"s3": {"bucket": artifacts_bucket, "prefix": s3_key}},
                 "runtime": "PYTHON_3_12",
-                "entryPoint": ["agent/app/parent/runtime.py"],
+                "entryPoint": ["main.py"],
             }
         },
         networkConfiguration={"networkMode": "PUBLIC"},
