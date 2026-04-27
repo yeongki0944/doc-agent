@@ -56,6 +56,17 @@ ROLE_CATEGORY_MAP = {
     "project_manager": "other",
     "delivery_manager": "other",
     "technical_writer": "other",
+    "project_qa": "other",
+    "advisor": "other",
+    "security_engineer": "other",
+    "infra_engineer": "other",
+}
+
+ROLE_TYPE_ALIASES = {
+    "solutions_architect": "solution_architect",
+    "backend_developer": "backend_engineer",
+    "frontend_developer": "frontend_engineer",
+    "qa_engineer": "project_qa",
 }
 
 # ---------------------------------------------------------------------------
@@ -128,11 +139,22 @@ def categorize_role(role_id: str) -> str:
     rid = role_id.lower()
     if rid in ROLE_CATEGORY_MAP:
         return ROLE_CATEGORY_MAP[rid]
+    if "pm" in rid or "manager" in rid or "advisor" in rid or "qa" in rid or "security" in rid or "infra" in rid:
+        return "other"
     if "architect" in rid:
         return "solution_architect"
-    if "engineer" in rid or "developer" in rid:
+    if "engineer" in rid or "developer" in rid or "designer" in rid:
         return "engineer"
     return "other"
+
+
+def _fv(value: Any) -> dict[str, Any]:
+    return {
+        "user_input": None,
+        "ai_recommended": value,
+        "calculated": None,
+        "status": "recommended",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +178,7 @@ class StaffingAgent:
             system_prompt=STAFFING_PROMPT,
         )
         self.role_catalog = _load_json("role_catalog.json")
+        self.role_pool = _load_json("role_pool.json")
         self.rate_card = _load_json("rate_card.json")
         self.staffing_presets = _load_json("staffing_presets.json")
         self.phase_patterns = _load_json("phase_hour_patterns.json")
@@ -199,6 +222,7 @@ class StaffingAgent:
                 "role_id": role_id,
                 "display_name": catalog_entry.get("display_name", role_id),
                 "category": categorize_role(role_id),
+                "role_type": _fv(self._role_type_for(role_id)),
                 "count": {
                     "user_input": None,
                     "ai_recommended": role_preset.get("count", 1),
@@ -233,6 +257,13 @@ class StaffingAgent:
 
         rec.violations = self.validate_rates(rec)
         return rec
+
+    def _role_type_for(self, role_id: str) -> str:
+        candidate = ROLE_TYPE_ALIASES.get(role_id, role_id)
+        for options in self.role_pool.values():
+            if any(option.get("role_id") == candidate for option in options):
+                return candidate
+        return candidate
 
     def validate_rates(self, rec: StaffingRecommendation) -> list[RateViolation]:
         """Check all recommended rates against rate_card bounds.

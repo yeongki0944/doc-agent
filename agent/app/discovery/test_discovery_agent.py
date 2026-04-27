@@ -235,6 +235,61 @@ class TestCollectInfo:
         assert result.acceptance_text == "Customer sign-off"
         assert result.missing_fields == ["phase_schedule"]
 
+    @pytest.mark.asyncio
+    @patch("agent.app.discovery.discovery_agent.Agent")
+    async def test_collect_info_parses_new_apn_schema_fields(
+        self, mock_agent_cls: MagicMock, empty_doc: DocumentState
+    ) -> None:
+        mock_instance = MagicMock()
+        llm_response = json.dumps({
+            "extracted_fields": {
+                "customer": "ABC Corp",
+                "project_goal": "GenAI PoC",
+                "scope_summary": "Agent workflow",
+                "architecture_available": False,
+            },
+            "executive_summary": {
+                "customer_intro": "ABC Corp runs field support workflows.",
+                "problem_statement": "Manual handoffs delay response.",
+                "proposed_solution": "Use Bedrock agents for triage.",
+                "phases_overview": ["Discover", "Build"],
+                "business_case": {
+                    "problem_definition": "High manual effort",
+                    "roi_calculation": "20% effort reduction",
+                    "executive_sponsor": "VP Operations",
+                    "production_commitment": "Deploy after PoC",
+                },
+            },
+            "success_criteria_groups": [
+                {"category_name": "Project Objective", "items": ["Reduce handling time"]},
+            ],
+            "assumption_groups": [
+                {"category_name": "Business Context", "items": ["SMEs available"]},
+            ],
+            "scope_tasks": [
+                {
+                    "task_category": "Technical Framework Design",
+                    "schedule": "Week 1",
+                    "details": ["Design agent flow"],
+                    "personnel": "SA",
+                },
+            ],
+        })
+        mock_instance.return_value = llm_response
+        mock_agent_cls.return_value = mock_instance
+
+        agent = DiscoveryAgent()
+        result = await agent.collect_info("ABC Corp GenAI PoC", empty_doc)
+
+        assert result.executive_summary == "Use Bedrock agents for triage."
+        assert result.executive_summary_fields["customer_intro"] == "ABC Corp runs field support workflows."
+        assert result.executive_summary_fields["phases_overview"] == ["Discover", "Build"]
+        assert result.business_case["roi_calculation"] == "20% effort reduction"
+        assert result.success_criteria_groups[0]["category_name"] == "Project Objective"
+        assert result.assumption_groups[0]["items"] == ["SMEs available"]
+        assert result.scope_tasks[0]["task_category"] == "Technical Framework Design"
+        assert result.scope_tasks[0]["details"] == ["Design agent flow"]
+
     @patch("agent.app.discovery.discovery_agent.Agent")
     def test_parse_docx_schema_missing_values_default_empty(
         self, mock_agent_cls: MagicMock
@@ -251,6 +306,33 @@ class TestCollectInfo:
         assert parsed["executive_sponsors"] == []
         assert parsed["success_criteria"] == []
         assert parsed["acceptance_text"] == ""
+
+    @pytest.mark.asyncio
+    @patch("agent.app.discovery.discovery_agent.Agent")
+    async def test_collect_info_partial_new_schema_defaults_empty(
+        self, mock_agent_cls: MagicMock, empty_doc: DocumentState
+    ) -> None:
+        mock_instance = MagicMock()
+        mock_instance.return_value = json.dumps({
+            "extracted_fields": {
+                "customer": "ABC Corp",
+                "project_goal": "GenAI PoC",
+                "scope_summary": "Agent workflow",
+                "architecture_available": False,
+            },
+            "executive_summary": {"problem_statement": "Manual work"},
+        })
+        mock_agent_cls.return_value = mock_instance
+
+        agent = DiscoveryAgent()
+        result = await agent.collect_info("ABC Corp GenAI PoC", empty_doc)
+
+        assert result.executive_summary_fields["customer_intro"] == ""
+        assert result.executive_summary_fields["problem_statement"] == "Manual work"
+        assert result.business_case == {}
+        assert result.success_criteria_groups == []
+        assert result.assumption_groups == []
+        assert result.scope_tasks == []
 
     @patch("agent.app.discovery.discovery_agent.Agent")
     def test_parse_omitted_docx_schema_fields_are_not_added(

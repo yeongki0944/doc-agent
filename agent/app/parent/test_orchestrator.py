@@ -25,6 +25,8 @@ from agent.app.parent.orchestrator import (
     Task,
     TaskPlan,
     _apply_operation,
+    _architecture_service_to_field_values,
+    _discovery_schema_patches,
 )
 from agent.lib.schema.document_state import Contribution, DocumentState, BlockingIssue, Warning
 from agent.lib.schema.patch import AgentStatus, Patch, PatchOperation
@@ -419,6 +421,48 @@ class TestDelegateTask:
         assert patches["/sections/success_criteria/items"][0]["ai_recommended"] == "Success"
         assert patches["/sections/acceptance/text"]["ai_recommended"] == "Accepted by customer"
 
+    def test_discovery_schema_patches_include_new_apn_paths(self):
+        from agent.app.discovery.discovery_agent import DiscoveryResult
+
+        result = DiscoveryResult(
+            structured_input={},
+            executive_summary_fields={
+                "customer_intro": "Customer intro",
+                "problem_statement": "Problem",
+                "proposed_solution": "Solution",
+                "phases_overview": ["Discover", "Build"],
+            },
+            business_case={
+                "problem_definition": "Manual work",
+                "roi_calculation": "25% cycle reduction",
+                "executive_sponsor": "VP Operations",
+                "production_commitment": "Production after PoC",
+            },
+            success_criteria_groups=[
+                {"category_name": "Project Objective", "items": ["Success metric"]},
+            ],
+            assumption_groups=[
+                {"category_name": "Business Context", "items": ["SMEs available"]},
+            ],
+            scope_tasks=[
+                {
+                    "task_category": "Technical Framework Design",
+                    "schedule": "Week 1",
+                    "details": ["Design agent workflow"],
+                    "personnel": "SA",
+                },
+            ],
+        )
+
+        patches = {p["path"]: p["value"] for p in _discovery_schema_patches(result)}
+
+        assert patches["/sections/executive_summary/customer_intro"]["ai_recommended"] == "Customer intro"
+        assert patches["/sections/executive_summary/business_case/roi_calculation"]["ai_recommended"] == "25% cycle reduction"
+        assert patches["/sections/executive_summary/phases_overview"][0]["ai_recommended"] == "Discover"
+        assert patches["/sections/success_criteria/groups"][0]["category_name"]["ai_recommended"] == "Project Objective"
+        assert patches["/sections/assumptions/groups"][0]["items"][0]["ai_recommended"] == "SMEs available"
+        assert patches["/sections/scope_of_work/tasks"][0]["details"][0]["ai_recommended"] == "Design agent workflow"
+
     @pytest.mark.asyncio
     async def test_discovery_delegate_does_not_overwrite_omitted_lists(self, orchestrator: ParentOrchestrator):
         from unittest.mock import AsyncMock, MagicMock
@@ -467,6 +511,57 @@ class TestDelegateTask:
         patches = {p["path"]: p["value"] for p in result.patches}
         assert patches["/sections/architecture/description"]["ai_recommended"] == "Architecture description"
         assert patches["/sections/architecture/tools"][0]["ai_recommended"] == "AWS Lambda"
+
+    @pytest.mark.asyncio
+    async def test_architecture_delegate_patches_new_service_schema(self, orchestrator: ParentOrchestrator):
+        from unittest.mock import AsyncMock, MagicMock
+        from agent.app.architecture.architecture_agent import ArchitectureResult
+
+        mock_arch = MagicMock()
+        mock_arch.design_new = AsyncMock(return_value=ArchitectureResult(
+            overview="Bedrock agent architecture",
+            services=[
+                {
+                    "service_name": "Amazon Bedrock",
+                    "service_id": "amazon_bedrock",
+                    "priority": 1,
+                    "category": "genai_core",
+                    "description": "Foundation model orchestration",
+                    "sizing_rationale": "Required for GenAI workload",
+                    "is_required_for_funding": True,
+                },
+            ],
+        ))
+        orchestrator._architecture_agent = mock_arch
+
+        result = await orchestrator.delegate_task(
+            "architecture_agent",
+            Task(agent="architecture_agent", action="design", params={"message": "design"}),
+            DocumentState(document_id="doc-001"),
+        )
+
+        patches = {p["path"]: p["value"] for p in result.patches}
+        service = patches["/sections/architecture/services"][0]
+        assert patches["/sections/architecture/overview"]["ai_recommended"] == "Bedrock agent architecture"
+        assert service["service_name"]["ai_recommended"] == "Amazon Bedrock"
+        assert service["service_id"] == "amazon_bedrock"
+        assert service["category"] == "genai_core"
+        assert service["is_required_for_funding"] is True
+
+    def test_architecture_service_helper_wraps_field_values(self):
+        service = _architecture_service_to_field_values({
+            "service_name": "Amazon S3",
+            "service_id": "amazon_s3",
+            "priority": 11,
+            "category": "data",
+            "description": "Object storage",
+            "sizing_rationale": "Stores artifacts",
+        })
+
+        assert service["service_name"]["ai_recommended"] == "Amazon S3"
+        assert service["description"]["ai_recommended"] == "Object storage"
+        assert service["priority"] == 11
+        assert service["category"] == "data"
 
     @pytest.mark.asyncio
     async def test_architecture_delegate_patches_description_once(self, orchestrator: ParentOrchestrator):

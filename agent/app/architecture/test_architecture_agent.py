@@ -24,6 +24,7 @@ from agent.app.architecture.architecture_agent import (
     DiagramArtifacts,
     ProjectContext,
     ARCHITECTURE_PROMPT,
+    ARCHITECTURE_PRIORITY_RULES,
 )
 
 
@@ -221,7 +222,7 @@ class TestDesignNew:
 
     @pytest.mark.asyncio
     @patch("agent.app.architecture.architecture_agent.Agent")
-    async def test_design_new_llm_failure_returns_empty(
+    async def test_design_new_llm_failure_adds_required_bedrock(
         self,
         mock_agent_cls: MagicMock,
         empty_doc: DocumentState,
@@ -235,7 +236,32 @@ class TestDesignNew:
         result = await agent.design_new(sample_project_context, empty_doc)
 
         assert isinstance(result, ArchitectureResult)
-        assert result.services == []
+        assert result.services[0]["service_id"] == "amazon_bedrock"
+        assert result.services[0]["is_required_for_funding"] is True
+
+    @patch("agent.app.architecture.architecture_agent.Agent")
+    def test_post_process_services_sorts_and_adds_bedrock(
+        self, mock_agent_cls: MagicMock
+    ) -> None:
+        services = ArchitectureAgent._post_process_services([
+            {
+                "service_name": "AWS Lambda",
+                "service_id": "lambda",
+                "description": "API compute",
+                "sizing_rationale": "Serverless PoC",
+            },
+            {"service_name": "Amazon S3", "service_id": "s3"},
+        ])
+
+        service_ids = [service["service_id"] for service in services]
+        priorities = [service["priority"] for service in services]
+
+        assert service_ids[0] == "amazon_bedrock"
+        assert priorities == sorted(priorities)
+        assert services[0]["category"] == "genai_core"
+        assert services[0]["is_required_for_funding"] is True
+        assert service_ids == ["amazon_bedrock", "amazon_s3", "aws_lambda"]
+        assert ARCHITECTURE_PRIORITY_RULES["amazon_bedrock"]["priority"] == 1
 
 
 # ---------------------------------------------------------------------------

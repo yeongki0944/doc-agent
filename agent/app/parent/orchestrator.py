@@ -564,7 +564,15 @@ class ParentOrchestrator:
             patches.append({
                 "op": "replace",
                 "path": "/sections/architecture/services",
-                "value": arch_result.services,
+                "value": [_architecture_service_to_field_values(s) for s in arch_result.services],
+                "source": "ai_recommended",
+            })
+        overview = getattr(arch_result, "overview", "")
+        if overview:
+            patches.append({
+                "op": "replace",
+                "path": "/sections/architecture/overview",
+                "value": _ai_field_value(overview),
                 "source": "ai_recommended",
             })
         if arch_result.analysis:
@@ -1587,12 +1595,52 @@ def _field_value_list(items: list[Any]) -> list[dict[str, Any]]:
     return [_ai_field_value(item) for item in items]
 
 
+def _category_group_to_field_values(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "category_name": _ai_field_value(group.get("category_name", "")),
+        "items": _field_value_list(group.get("items", [])),
+    }
+
+
+def _scope_task_to_field_values(task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_category": _ai_field_value(task.get("task_category", "")),
+        "schedule": _ai_field_value(task.get("schedule", "")),
+        "details": _field_value_list(task.get("details", [])),
+        "personnel": _ai_field_value(task.get("personnel", "")),
+    }
+
+
+def _architecture_service_to_field_values(service: Any) -> dict[str, Any]:
+    if not isinstance(service, dict):
+        service = {"service_name": str(service), "service_id": str(service)}
+    return {
+        "service_name": _ai_field_value(service.get("service_name", "")),
+        "service_id": service.get("service_id", ""),
+        "priority": service.get("priority", 99),
+        "category": service.get("category", "compute"),
+        "description": _ai_field_value(service.get("description", "")),
+        "sizing_rationale": _ai_field_value(service.get("sizing_rationale", "")),
+        "is_required_for_funding": bool(service.get("is_required_for_funding", False)),
+    }
+
+
 def _discovery_schema_patches(discovery_result: Any) -> list[dict]:
     patches: list[dict] = []
     structured_input = getattr(discovery_result, "structured_input", {}) or {}
+    summary_fields = getattr(discovery_result, "executive_summary_fields", {}) or {}
+    business_case = getattr(discovery_result, "business_case", {}) or {}
+
     for path, value in [
         ("/sections/executive_summary/text", discovery_result.executive_summary),
         ("/sections/acceptance/text", discovery_result.acceptance_text),
+        ("/sections/executive_summary/customer_intro", summary_fields.get("customer_intro", "")),
+        ("/sections/executive_summary/problem_statement", summary_fields.get("problem_statement", "")),
+        ("/sections/executive_summary/proposed_solution", summary_fields.get("proposed_solution", "")),
+        ("/sections/executive_summary/business_case/problem_definition", business_case.get("problem_definition", "")),
+        ("/sections/executive_summary/business_case/roi_calculation", business_case.get("roi_calculation", "")),
+        ("/sections/executive_summary/business_case/executive_sponsor", business_case.get("executive_sponsor", "")),
+        ("/sections/executive_summary/business_case/production_commitment", business_case.get("production_commitment", "")),
     ]:
         if value != "":
             patches.append({
@@ -1601,6 +1649,14 @@ def _discovery_schema_patches(discovery_result: Any) -> list[dict]:
                 "value": _ai_field_value(value),
                 "source": "ai_recommended",
             })
+    phases_overview = summary_fields.get("phases_overview", [])
+    if phases_overview:
+        patches.append({
+            "op": "replace",
+            "path": "/sections/executive_summary/phases_overview",
+            "value": _field_value_list(phases_overview),
+            "source": "ai_recommended",
+        })
 
     for path, contacts in [
         ("/sections/stakeholders/executive_sponsors", discovery_result.executive_sponsors),
@@ -1630,6 +1686,25 @@ def _discovery_schema_patches(discovery_result: Any) -> list[dict]:
             "op": "replace",
             "path": path,
             "value": _field_value_list(items),
+            "source": "ai_recommended",
+        })
+    for path, groups in [
+        ("/sections/success_criteria/groups", getattr(discovery_result, "success_criteria_groups", [])),
+        ("/sections/assumptions/groups", getattr(discovery_result, "assumption_groups", [])),
+    ]:
+        if groups:
+            patches.append({
+                "op": "replace",
+                "path": path,
+                "value": [_category_group_to_field_values(group) for group in groups],
+                "source": "ai_recommended",
+            })
+    scope_tasks = getattr(discovery_result, "scope_tasks", [])
+    if scope_tasks:
+        patches.append({
+            "op": "replace",
+            "path": "/sections/scope_of_work/tasks",
+            "value": [_scope_task_to_field_values(task) for task in scope_tasks],
             "source": "ai_recommended",
         })
     return patches

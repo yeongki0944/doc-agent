@@ -47,6 +47,25 @@ AWS_SERVICE_PATTERNS = [
     r"codebuild", r"codepipeline", r"cloudwatch", r"kms",
 ]
 
+ARCHITECTURE_PRIORITY_RULES: dict[str, dict[str, Any]] = {
+    "amazon_bedrock": {"name": "Amazon Bedrock", "priority": 1, "category": "genai_core", "is_required_for_funding": True},
+    "amazon_sagemaker": {"name": "Amazon SageMaker", "priority": 2, "category": "genai_core", "is_required_for_funding": False},
+    "amazon_opensearch": {"name": "Amazon OpenSearch", "priority": 10, "category": "data", "is_required_for_funding": False},
+    "amazon_s3": {"name": "Amazon S3", "priority": 11, "category": "data", "is_required_for_funding": False},
+    "amazon_rds": {"name": "Amazon RDS", "priority": 12, "category": "data", "is_required_for_funding": False},
+    "amazon_dynamodb": {"name": "Amazon DynamoDB", "priority": 13, "category": "data", "is_required_for_funding": False},
+    "aws_lambda": {"name": "AWS Lambda", "priority": 20, "category": "compute", "is_required_for_funding": False},
+    "amazon_ec2": {"name": "Amazon EC2", "priority": 21, "category": "compute", "is_required_for_funding": False},
+    "amazon_ecs": {"name": "Amazon ECS", "priority": 22, "category": "compute", "is_required_for_funding": False},
+    "amazon_api_gateway": {"name": "Amazon API Gateway", "priority": 30, "category": "network", "is_required_for_funding": False},
+    "elastic_load_balancing": {"name": "Elastic Load Balancing", "priority": 31, "category": "network", "is_required_for_funding": False},
+    "amazon_vpc": {"name": "Amazon VPC", "priority": 32, "category": "network", "is_required_for_funding": False},
+    "aws_iam": {"name": "AWS IAM", "priority": 40, "category": "security", "is_required_for_funding": False},
+    "aws_kms": {"name": "AWS KMS", "priority": 41, "category": "security", "is_required_for_funding": False},
+    "aws_waf": {"name": "AWS WAF", "priority": 42, "category": "security", "is_required_for_funding": False},
+    "amazon_cloudwatch": {"name": "Amazon CloudWatch", "priority": 50, "category": "monitoring", "is_required_for_funding": False},
+}
+
 # ---------------------------------------------------------------------------
 # System prompt for the Architecture Agent
 # ---------------------------------------------------------------------------
@@ -74,7 +93,15 @@ ARCHITECTURE_PROMPT: str = """당신은 AWS 아키텍처 분석 및 설계 전�
 
 ```json
 {
-  "services": ["서비스1", "서비스2"],
+  "overview": "overall architecture overview",
+  "services": [
+    {
+      "service_name": "Amazon Bedrock",
+      "service_id": "amazon_bedrock",
+      "description": "service role",
+      "sizing_rationale": "why this size/service is appropriate"
+    }
+  ],
   "analysis": "아키텍처 분석 요약",
   "recommendations": ["보완 사항1", "보완 사항2"],
   "architecture_description": "전체 아키텍처 설명",
@@ -102,11 +129,12 @@ class ProjectContext:
 @dataclass
 class ArchitectureResult:
     """Result of architecture analysis or design."""
-    services: list[str] = field(default_factory=list)
     analysis: str = ""
     recommendations: list[str] = field(default_factory=list)
     architecture_description: str = ""
     description: str = ""
+    overview: str = ""
+    services: list[Any] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
     drawio_s3_path: Optional[str] = None
     preview_s3_path: Optional[str] = None
@@ -165,7 +193,7 @@ class ArchitectureAgent:
 
         # Merge LLM analysis with extracted services
         result = ArchitectureResult(
-            services=llm_result.get("services", services),
+            services=self._post_process_services(llm_result.get("services", services)),
             analysis=llm_result.get(
                 "analysis",
                 f"{len(services)}개 AWS 서비스 식별됨",
@@ -178,6 +206,7 @@ class ArchitectureAgent:
                 "architecture_description", ""
             ),
             description=llm_result.get("description", ""),
+            overview=llm_result.get("overview", ""),
             tools=llm_result.get("tools", []),
         )
 
@@ -201,13 +230,14 @@ class ArchitectureAgent:
         llm_result = await self._llm_design(prompt)
 
         result = ArchitectureResult(
-            services=llm_result.get("services", []),
+            services=self._post_process_services(llm_result.get("services", [])),
             analysis=llm_result.get("analysis", ""),
             recommendations=llm_result.get("recommendations", []),
             architecture_description=llm_result.get(
                 "architecture_description", ""
             ),
             description=llm_result.get("description", ""),
+            overview=llm_result.get("overview", ""),
             tools=llm_result.get("tools", []),
         )
 
@@ -343,6 +373,96 @@ class ArchitectureAgent:
         except (json.JSONDecodeError, ValueError):
             logger.warning("Failed to parse LLM response as JSON")
             return {}
+
+    @staticmethod
+    def _normalize_service_id(value: Any) -> str:
+        raw = str(value or "").lower()
+        raw = raw.replace("amazon web services", "aws")
+        raw = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+        aliases = {
+            "bedrock": "amazon_bedrock",
+            "amazon_bedrock": "amazon_bedrock",
+            "sagemaker": "amazon_sagemaker",
+            "amazon_sagemaker": "amazon_sagemaker",
+            "opensearch": "amazon_opensearch",
+            "amazon_opensearch": "amazon_opensearch",
+            "s3": "amazon_s3",
+            "amazon_s3": "amazon_s3",
+            "rds": "amazon_rds",
+            "amazon_rds": "amazon_rds",
+            "dynamodb": "amazon_dynamodb",
+            "amazon_dynamodb": "amazon_dynamodb",
+            "lambda": "aws_lambda",
+            "aws_lambda": "aws_lambda",
+            "ec2": "amazon_ec2",
+            "amazon_ec2": "amazon_ec2",
+            "ecs": "amazon_ecs",
+            "amazon_ecs": "amazon_ecs",
+            "api_gateway": "amazon_api_gateway",
+            "amazon_api_gateway": "amazon_api_gateway",
+            "elastic_load_balancing": "elastic_load_balancing",
+            "elb": "elastic_load_balancing",
+            "vpc": "amazon_vpc",
+            "amazon_vpc": "amazon_vpc",
+            "iam": "aws_iam",
+            "aws_iam": "aws_iam",
+            "kms": "aws_kms",
+            "aws_kms": "aws_kms",
+            "waf": "aws_waf",
+            "aws_waf": "aws_waf",
+            "cloudwatch": "amazon_cloudwatch",
+            "amazon_cloudwatch": "amazon_cloudwatch",
+        }
+        return aliases.get(raw, raw)
+
+    @classmethod
+    def _service_name_from_id(cls, service_id: str, fallback: str = "") -> str:
+        return ARCHITECTURE_PRIORITY_RULES.get(service_id, {}).get("name", fallback or service_id.replace("_", " ").title())
+
+    @classmethod
+    def _post_process_services(cls, services: Any) -> list[dict[str, Any]]:
+        if not isinstance(services, list):
+            services = []
+
+        normalized: dict[str, dict[str, Any]] = {}
+        for service in services:
+            if isinstance(service, dict):
+                name = service.get("service_name") or service.get("name") or service.get("service_id") or ""
+                service_id = cls._normalize_service_id(service.get("service_id") or name)
+                description = service.get("description", "")
+                sizing_rationale = service.get("sizing_rationale", "")
+            else:
+                name = str(service)
+                service_id = cls._normalize_service_id(name)
+                description = ""
+                sizing_rationale = ""
+
+            if not service_id:
+                continue
+            rule = ARCHITECTURE_PRIORITY_RULES.get(service_id, {})
+            normalized[service_id] = {
+                "service_name": cls._service_name_from_id(service_id, str(name)),
+                "service_id": service_id,
+                "priority": rule.get("priority", 99),
+                "category": rule.get("category", "compute"),
+                "description": description,
+                "sizing_rationale": sizing_rationale,
+                "is_required_for_funding": rule.get("is_required_for_funding", False),
+            }
+
+        if "amazon_bedrock" not in normalized:
+            rule = ARCHITECTURE_PRIORITY_RULES["amazon_bedrock"]
+            normalized["amazon_bedrock"] = {
+                "service_name": rule["name"],
+                "service_id": "amazon_bedrock",
+                "priority": rule["priority"],
+                "category": rule["category"],
+                "description": "Core GenAI foundation model service required for GenAIIC funding review.",
+                "sizing_rationale": "Required GenAI workload foundation service.",
+                "is_required_for_funding": True,
+            }
+
+        return sorted(normalized.values(), key=lambda item: (item["priority"], item["service_name"]))
 
     # ------------------------------------------------------------------
     # Rule-based fallbacks

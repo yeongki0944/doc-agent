@@ -81,6 +81,8 @@ DISCOVERY_PROMPT: str = """당신은 APN PoC Project Plan 문서 생성을 위�
 - assumptions: 가정 사항 목록
 - scope_of_work: 작업 범위 목록
 - acceptance_text: 검수/승인 문구
+- executive_summary.customer_intro/problem_statement/proposed_solution/phases_overview/business_case
+- success_criteria.groups, assumptions.groups, scope_of_work.tasks
 
 ## 응답 형식
 반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트를 포함하지 마세요.
@@ -98,7 +100,18 @@ DISCOVERY_PROMPT: str = """당신은 APN PoC Project Plan 문서 생성을 위�
     "phase_schedule": "추출된 일정 또는 null",
     "cost_resources": "추출된 비용 정보 또는 null"
   },
-  "executive_summary": "single paragraph text",
+  "executive_summary": {
+    "customer_intro": "...",
+    "problem_statement": "...",
+    "proposed_solution": "...",
+    "phases_overview": ["..."],
+    "business_case": {
+      "problem_definition": "...",
+      "roi_calculation": "...",
+      "executive_sponsor": "...",
+      "production_commitment": "..."
+    }
+  },
   "executive_sponsors": [
     {"name": "...", "title": "...", "description": "...", "contact": "..."}
   ],
@@ -112,8 +125,11 @@ DISCOVERY_PROMPT: str = """당신은 APN PoC Project Plan 문서 생성을 위�
     {"name": "...", "title": "...", "role": "...", "contact": "..."}
   ],
   "success_criteria": ["item1", "item2"],
+  "success_criteria_groups": [{"category_name": "Project Objective", "items": ["..."]}],
   "assumptions": ["item1", "item2"],
+  "assumption_groups": [{"category_name": "Business Context", "items": ["..."]}],
   "scope_of_work": ["item1", "item2"],
+  "scope_tasks": [{"task_category": "...", "schedule": "...", "details": ["..."], "personnel": "..."}],
   "acceptance_text": "single paragraph acceptance text, or empty string",
   "missing_fields": ["fields to ask user"],
   "follow_up_questions": ["누락된 필수 항목에 대한 재질문 목록"]
@@ -136,6 +152,22 @@ _FOLLOW_UP_TEMPLATES: dict[str, str] = {
     "phase_schedule": "단계별 일정 정보를 입력해주세요.",
     "cost_resources": "비용 및 리소스 정보를 입력해주세요.",
 }
+
+SUCCESS_CRITERIA_GROUP_LABELS = [
+    "Strategy Development & Planning",
+    "Technical Framework Design",
+    "Implementation Roadmap",
+    "Knowledge Transfer",
+    "Project Objective",
+]
+
+ASSUMPTION_GROUP_LABELS = [
+    "Business Context",
+    "Technical Environment",
+    "Project Execution",
+    "Scope Boundaries",
+    "Future Considerations",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +198,11 @@ class DiscoveryResult:
     scope_of_work: list[str] = field(default_factory=list)
     acceptance_text: str = ""
     missing_fields: list[str] = field(default_factory=list)
+    executive_summary_fields: dict[str, Any] = field(default_factory=dict)
+    business_case: dict[str, Any] = field(default_factory=dict)
+    success_criteria_groups: list[dict[str, Any]] = field(default_factory=list)
+    assumption_groups: list[dict[str, Any]] = field(default_factory=list)
+    scope_tasks: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +262,7 @@ class DiscoveryAgent:
             missing=missing,
             follow_up_questions=questions,
             can_generate_draft=can_draft,
-            executive_summary=_string_value(structured.get("executive_summary")),
+            executive_summary=_executive_summary_text(structured.get("executive_summary")),
             executive_sponsors=_contact_list(structured.get("executive_sponsors")),
             stakeholders=_contact_list(structured.get("stakeholders")),
             project_team=_contact_list(structured.get("project_team")),
@@ -235,6 +272,17 @@ class DiscoveryAgent:
             scope_of_work=_string_list(structured.get("scope_of_work")),
             acceptance_text=_string_value(structured.get("acceptance_text")),
             missing_fields=_string_list(structured.get("missing_fields")),
+            executive_summary_fields=_executive_summary_fields(structured.get("executive_summary")),
+            business_case=_business_case(structured.get("executive_summary"), structured.get("business_case")),
+            success_criteria_groups=_category_groups(
+                structured.get("success_criteria_groups") or structured.get("success_criteria"),
+                SUCCESS_CRITERIA_GROUP_LABELS,
+            ),
+            assumption_groups=_category_groups(
+                structured.get("assumption_groups") or structured.get("assumptions"),
+                ASSUMPTION_GROUP_LABELS,
+            ),
+            scope_tasks=_scope_tasks(structured.get("scope_tasks") or structured.get("scope_of_work")),
         )
 
     def classify_missing_fields(
@@ -388,6 +436,78 @@ def _string_list(value: Any) -> list[str]:
     return [_string_value(value)]
 
 
+def _executive_summary_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return _string_value(
+            value.get("summary")
+            or value.get("text")
+            or value.get("proposed_solution")
+            or value.get("problem_statement")
+        )
+    return _string_value(value)
+
+
+def _executive_summary_fields(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "customer_intro": _string_value(value.get("customer_intro")),
+        "problem_statement": _string_value(value.get("problem_statement")),
+        "proposed_solution": _string_value(value.get("proposed_solution")),
+        "phases_overview": _string_list(value.get("phases_overview")),
+    }
+
+
+def _business_case(summary_value: Any, explicit_value: Any = None) -> dict[str, Any]:
+    source = explicit_value
+    if source is None and isinstance(summary_value, dict):
+        source = summary_value.get("business_case")
+    if not isinstance(source, dict):
+        return {}
+    return {
+        "problem_definition": _string_value(source.get("problem_definition")),
+        "roi_calculation": _string_value(source.get("roi_calculation")),
+        "executive_sponsor": _string_value(source.get("executive_sponsor")),
+        "production_commitment": _string_value(source.get("production_commitment")),
+    }
+
+
+def _category_groups(value: Any, default_labels: list[str]) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, list) and all(isinstance(item, dict) for item in value):
+        groups = []
+        for index, item in enumerate(value):
+            groups.append({
+                "category_name": _string_value(item.get("category_name") or item.get("name") or default_labels[min(index, len(default_labels) - 1)]),
+                "items": _string_list(item.get("items")),
+            })
+        return groups
+    items = _string_list(value)
+    if not items:
+        return []
+    return [{"category_name": default_labels[0], "items": items}]
+
+
+def _scope_tasks(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, list) and all(isinstance(item, dict) for item in value):
+        return [
+            {
+                "task_category": _string_value(item.get("task_category") or item.get("category")),
+                "schedule": _string_value(item.get("schedule")),
+                "details": _string_list(item.get("details")),
+                "personnel": _string_value(item.get("personnel")),
+            }
+            for item in value
+        ]
+    items = _string_list(value)
+    if not items:
+        return []
+    return [{"task_category": "Scope Boundaries", "schedule": "", "details": items, "personnel": ""}]
+
+
 def _contact_list(value: Any) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
@@ -416,6 +536,9 @@ def _normalize_extracted(extracted: dict[str, Any]) -> dict[str, Any]:
         "success_criteria",
         "assumptions",
         "scope_of_work",
+        "success_criteria_groups",
+        "assumption_groups",
+        "scope_tasks",
         "missing_fields",
     }
     string_fields = {"executive_summary", "acceptance_text"}

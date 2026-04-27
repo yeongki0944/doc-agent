@@ -50,6 +50,7 @@ class TestAgentInitialization:
     def test_presets_loaded(self, mock_agent_cls: MagicMock) -> None:
         agent = StaffingAgent()
         assert len(agent.role_catalog) > 0
+        assert len(agent.role_pool) > 0
         assert len(agent.rate_card) > 0
         assert len(agent.staffing_presets) > 0
 
@@ -128,6 +129,16 @@ class TestRecommend:
         assert rec.roles["solutions_architect"]["category"] == "solution_architect"
         assert rec.roles["ml_engineer"]["category"] == "engineer"
         assert rec.roles["project_manager"]["category"] == "other"
+
+    @patch("agent.app.staffing.staffing_agent.Agent")
+    def test_recommend_sets_role_type_from_role_pool(self, mock_agent_cls: MagicMock) -> None:
+        agent = StaffingAgent()
+        rec = agent.recommend("에이전트 프로젝트")
+
+        assert rec.roles["solutions_architect"]["role_type"]["ai_recommended"] == "solution_architect"
+        assert rec.roles["backend_developer"]["role_type"]["ai_recommended"] == "backend_engineer"
+        assert rec.roles["frontend_developer"]["role_type"]["ai_recommended"] == "frontend_engineer"
+        assert rec.roles["qa_engineer"]["role_type"]["ai_recommended"] == "project_qa"
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +224,9 @@ class TestCategorizeRole:
     def test_fallback_matching(self) -> None:
         assert categorize_role("principal_architect") == "solution_architect"
         assert categorize_role("java_developer") == "engineer"
+        assert categorize_role("web_designer") == "engineer"
+        assert categorize_role("security_engineer") == "other"
+        assert categorize_role("infra_engineer") == "other"
         assert categorize_role("business_analyst") == "other"
 
 
