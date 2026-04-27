@@ -1,8 +1,10 @@
-import { useState } from 'react'
-import { useDocumentStore } from '../../store/documentStore'
+import { useMemo, useState } from 'react'
+import { useDocumentStore, type ArchitectureService } from '../../store/documentStore'
 import { apiFetch } from '../../auth/api'
 import { useSessionStore } from '../../store/sessionStore'
 import { color } from '../../styles/tokens'
+import { resolveFieldValue } from '../AiBadge'
+import { isBedrockService, sortArchitectureServices } from '../../utils/frontendSchema'
 
 export function ArchitectureSection() {
   const DOC_ID = useSessionStore(s => s.currentDocId) || ''
@@ -10,22 +12,15 @@ export function ArchitectureSection() {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Read preview URL from store sections.architecture if available
   const archSection = useDocumentStore(s => s.sections?.architecture) as Record<string, any> | undefined
   const previewUrl = archSection?.preview_url ?? null
   const drawioUrl = archSection?.drawio_url ?? null
-
-  // Text data fields (exclude upload-related keys)
-  const uploadKeys = new Set(['preview_url', 'drawio_url'])
-  const textEntries = archSection
-    ? Object.entries(archSection).filter(([k, v]) => !uploadKeys.has(k) && v)
-    : []
+  const services = useMemo(() => sortArchitectureServices((archSection?.services ?? []) as ArchitectureService[]), [archSection?.services])
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
-    // Validate file extension
     if (!file.name.endsWith('.drawio') && !file.name.endsWith('.xml')) {
       setError('.drawio 또는 .xml 파일만 업로드 가능합니다.')
       return
@@ -47,10 +42,7 @@ export function ArchitectureSection() {
       if (!res.ok) {
         throw new Error(`Upload failed: ${res.status}`)
       }
-
-      // Response may contain preview_url and drawio_url
-      // Actual state update will come via AppSync patch channel
-    } catch (err) {
+    } catch {
       setError('업로드 중 오류가 발생했습니다. 다시 시도해주세요.')
     } finally {
       setUploading(false)
@@ -82,13 +74,60 @@ export function ArchitectureSection() {
         {error && <div style={{ color: color.error, fontSize: 13, marginTop: 4 }}>{error}</div>}
       </div>
 
-      {textEntries.length > 0 && (
+      {archSection?.overview && (
+        <div style={{ marginBottom: 16, padding: 12, borderRadius: 8, background: color.bgPrimary, border: `1px solid ${color.border}` }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: color.textMuted, marginBottom: 4 }}>Overview</div>
+          <div>{String(resolveFieldValue(archSection.overview))}</div>
+        </div>
+      )}
+
+      {services.length > 0 ? (
+        <div style={{ display: 'grid', gap: 12, marginBottom: 16 }}>
+          {services.map(service => (
+            <div key={`${service.service_id ?? resolveFieldValue(service.service_name)}`} style={serviceCard}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <strong>{String(resolveFieldValue(service.service_name))}</strong>
+                    <span style={chipStyle}>#{service.priority}</span>
+                    <span style={chipStyle}>{service.category}</span>
+                    {isBedrockService(service) && (
+                      <span style={{ ...chipStyle, background: '#fef3c7', color: '#92400e', borderColor: '#fcd34d' }}>Funding required</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: color.textMuted, marginTop: 4 }}>
+                    {service.service_id || ''}
+                  </div>
+                </div>
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <div style={label}>Description</div>
+                <div>{String(resolveFieldValue(service.description) || '—')}</div>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <div style={label}>Sizing rationale</div>
+                <div>{String(resolveFieldValue(service.sizing_rationale) || '—')}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ marginBottom: 16, padding: 16, background: '#f9fafb', borderRadius: 8, textAlign: 'center', color: color.textMuted }}>
+          {uploading
+            ? '다이어그램 분석 중...'
+            : fileName
+              ? '다이어그램 처리 대기 중... (AppSync 패치로 업데이트됩니다)'
+              : '아키텍처 다이어그램이 아직 업로드되지 않았습니다.'}
+        </div>
+      )}
+
+      {!services.length && archSection && Object.keys(archSection).length > 0 && (
         <div style={{ marginBottom: 16 }}>
-          {textEntries.map(([key, val]) => (
+          {Object.entries(archSection).filter(([k, v]) => !['preview_url', 'drawio_url', 'services', 'overview'].includes(k) && v).map(([key, val]) => (
             <div key={key} style={{ marginBottom: 8, padding: 8, background: color.aiBadgeBg, borderRadius: 4 }}>
               <span style={{ fontWeight: 600 }}>{key}: </span>
               {String(val)}
-              <span style={{ padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700, color: color.aiBadgeText, background: color.aiBadgeBg, border: `1px solid ${color.aiBadgeBorder}`, marginLeft: 8 }}>AI</span>
+              <span style={badgeStyle}>AI</span>
             </div>
           ))}
         </div>
@@ -112,15 +151,38 @@ export function ArchitectureSection() {
             </a>
           </div>
         </div>
-      ) : (
-        <div style={{ padding: 32, background: '#f9fafb', borderRadius: 8, textAlign: 'center', color: color.textMuted }}>
-          {uploading
-            ? '다이어그램 분석 중...'
-            : fileName
-              ? '다이어그램 처리 대기 중... (AppSync 패치로 업데이트됩니다)'
-              : '아키텍처 다이어그램이 아직 업로드되지 않았습니다.'}
-        </div>
-      )}
+      ) : null}
     </div>
   )
 }
+
+const serviceCard: React.CSSProperties = {
+  padding: 12,
+  border: `1px solid ${color.border}`,
+  borderRadius: 8,
+  background: color.bgSurface,
+}
+
+const chipStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  padding: '2px 8px',
+  borderRadius: 999,
+  border: `1px solid ${color.border}`,
+  background: color.bgPrimary,
+  fontSize: 11,
+  color: color.textSecondary,
+}
+
+const badgeStyle: React.CSSProperties = {
+  padding: '1px 5px',
+  borderRadius: 4,
+  fontSize: 9,
+  fontWeight: 700,
+  color: color.aiBadgeText,
+  background: color.aiBadgeBg,
+  border: `1px solid ${color.aiBadgeBorder}`,
+  marginLeft: 8,
+}
+
+const label: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: color.textMuted, marginBottom: 2 }

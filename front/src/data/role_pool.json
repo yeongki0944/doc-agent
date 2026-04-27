@@ -1,0 +1,26 @@
+{
+  "solution_architect": [
+    { "role_id": "solution_architect", "display_name": "Solution Architect", "rate_default": 105 },
+    { "role_id": "senior_solution_architect", "display_name": "Senior Solution Architect", "rate_default": 130 },
+    { "role_id": "ai_agent_architect", "display_name": "AI Agent Architect", "rate_default": 120 }
+  ],
+  "engineer": [
+    { "role_id": "ai_data_engineer", "display_name": "AI Data Engineer", "rate_default": 100 },
+    { "role_id": "genai_engineer", "display_name": "GenAI Engineer", "rate_default": 95 },
+    { "role_id": "ai_service_engineer", "display_name": "AI Service Engineer", "rate_default": 90 },
+    { "role_id": "ml_engineer", "display_name": "ML Engineer", "rate_default": 95 },
+    { "role_id": "backend_engineer", "display_name": "Backend Engineer", "rate_default": 75 },
+    { "role_id": "frontend_engineer", "display_name": "Frontend Engineer", "rate_default": 70 },
+    { "role_id": "data_engineer", "display_name": "Data Engineer", "rate_default": 80 },
+    { "role_id": "web_designer", "display_name": "Web Designer", "rate_default": 65 },
+    { "role_id": "junior_engineer", "display_name": "Junior Engineer", "rate_default": 45 },
+    { "role_id": "security_engineer", "display_name": "Security Engineer", "rate_default": 110 },
+    { "role_id": "infra_engineer", "display_name": "Infrastructure Engineer", "rate_default": 100 }
+  ],
+  "other": [
+    { "role_id": "project_manager", "display_name": "Project Manager", "rate_default": 81.78 },
+    { "role_id": "engagement_partner", "display_name": "Engagement Partner", "rate_default": 140 },
+    { "role_id": "project_qa", "display_name": "Project QA", "rate_default": 60 },
+    { "role_id": "advisor", "display_name": "Advisor", "rate_default": 130 }
+  ]
+}

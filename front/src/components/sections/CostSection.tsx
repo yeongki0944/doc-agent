@@ -1,16 +1,41 @@
+import { useMemo } from 'react'
 import { useDocumentStore } from '../../store/documentStore'
 import { AiHighlight, resolveFieldValue } from '../AiBadge'
 import { color } from '../../styles/tokens'
+import { formatMoney, isBedrockService } from '../../utils/frontendSchema'
 
 export function CostSection() {
   const roles = useDocumentStore(s => s.staffing_plan?.roles ?? {})
   const grandTotal = useDocumentStore(s => s.staffing_plan?.grand_total_cost?.calculated ?? null)
   const costBreakdown = useDocumentStore(s => s.sections?.cost_breakdown)
+  const architecture = useDocumentStore(s => s.sections?.architecture)
   const entries = Object.values(roles)
+
+  const funding = useMemo(() => {
+    const calc = (costBreakdown?.funding_calculation ?? {}) as Record<string, any>
+    const annual = resolveFieldValue(calc.yr1_arr)
+    const sow = resolveFieldValue(calc.sow_cost)
+    const eligible = resolveFieldValue(calc.eligible_amount)
+    return {
+      yr1_arr: formatMoney(annual),
+      sow_cost: formatMoney(sow),
+      eligible_amount: formatMoney(eligible),
+      bedrock_included: architecture?.services ? architecture.services.some(service => isBedrockService(service as any)) : Boolean(resolveFieldValue(calc.bedrock_included)),
+    }
+  }, [architecture?.services, costBreakdown?.funding_calculation])
 
   return (
     <div>
       <h2 style={{ marginBottom: 16 }}>Cost Breakdown</h2>
+
+      <div style={fundingCard}>
+        <div style={fundingGrid}>
+          <FundingMetric label="Year 1 ARR" value={funding.yr1_arr} />
+          <FundingMetric label="SOW Cost" value={funding.sow_cost} />
+          <FundingMetric label="Eligible funding" value={funding.eligible_amount} />
+          <FundingMetric label="Bedrock included" value={funding.bedrock_included ? 'Yes' : 'No'} />
+        </div>
+      </div>
 
       <h3 style={{ marginBottom: 8 }}>인건비 요약</h3>
       {entries.length > 0 ? (
@@ -83,6 +108,36 @@ export function CostSection() {
       )}
     </div>
   )
+}
+
+function FundingMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={metricCard}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: color.textMuted, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 600 }}>{value}</div>
+    </div>
+  )
+}
+
+const fundingCard: React.CSSProperties = {
+  padding: 12,
+  marginBottom: 16,
+  border: `1px solid ${color.border}`,
+  borderRadius: 8,
+  background: color.bgPrimary,
+}
+
+const fundingGrid: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+  gap: 8,
+}
+
+const metricCard: React.CSSProperties = {
+  padding: 12,
+  borderRadius: 8,
+  background: color.bgSurface,
+  border: `1px solid ${color.border}`,
 }
 
 const td: React.CSSProperties = { padding: '8px 6px', borderBottom: `1px solid ${color.border}` }
