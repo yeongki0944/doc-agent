@@ -19,6 +19,15 @@ def test_resolve_field_priority_and_literals():
     assert export_docx._resolve_field(None) == ""
 
 
+def test_helper_formatting_functions():
+    assert export_docx.resolve_field_value({"user_input": "", "ai_recommended": "ai"}) == "ai"
+    assert export_docx.join_field_values(["alpha", {"ai_recommended": "beta"}]) == "alpha\nbeta"
+    assert export_docx.money_format(1234567) == "1,234,567"
+    assert export_docx.money_format({"calculated": 1234567.5}) == "1,234,567.5"
+    assert export_docx.bool_status(True) == "Yes"
+    assert export_docx.bool_status(False, "On", "Off") == "Off"
+
+
 def test_bullet_join_handles_lists_fields_and_scalars():
     assert export_docx._bullet_join([
         {"user_input": "first"},
@@ -97,20 +106,81 @@ def test_build_context():
         },
         "sections": {
             "cover": {"title": "PoC Plan"},
-            "executive_summary": {"summary": {"ai_recommended": "summary text"}},
+            "executive_summary": {
+                "summary": {"ai_recommended": "summary text"},
+                "customer_intro": {"ai_recommended": "Customer intro"},
+                "problem_statement": {"ai_recommended": "Problem statement"},
+                "proposed_solution": {"ai_recommended": "Proposed solution"},
+                "phases_overview": [
+                    {"ai_recommended": "Discovery"},
+                    {"ai_recommended": "Build"},
+                ],
+                "business_case": {
+                    "problem_definition": {"ai_recommended": "Business problem"},
+                    "roi_calculation": {"ai_recommended": "ROI model"},
+                    "executive_sponsor": {"ai_recommended": "Executive sponsor"},
+                    "production_commitment": {"ai_recommended": "Production commitment"},
+                },
+            },
             "stakeholders": {
                 "executive_sponsors": [{"name": "Sponsor", "title": "Director", "description": "Approver", "contact": "sponsor@example.com"}],
                 "stakeholders": [{"name": "Stakeholder", "title": "Manager", "stakeholder_for": "Scope", "contact": "stake@example.com"}],
                 "project_team": [{"name": "Team", "title": "Engineer", "role": "Delivery", "contact": "team@example.com"}],
                 "escalation_contacts": [{"name": "Esc", "title": "Lead", "role": "Escalation", "contact": "esc@example.com"}],
             },
-            "scope_of_work": {"items": [{"user_input": "scope item"}]},
-            "success_criteria": {"items": [{"user_input": "criteria item"}]},
-            "assumptions": {"items": [{"user_input": "assumption item"}]},
-            "architecture": {"description": {"ai_recommended": "arch desc"}, "tools": ["Lambda", "DynamoDB"]},
+            "scope_of_work": {
+                "items": [{"user_input": "scope item"}],
+                "tasks": [
+                    {
+                        "task_category": {"ai_recommended": "Planning"},
+                        "schedule": {"ai_recommended": "Week 1"},
+                        "details": [{"ai_recommended": "Task detail"}],
+                        "personnel": {"ai_recommended": "SA"},
+                    }
+                ],
+            },
+            "success_criteria": {
+                "items": [{"user_input": "criteria item"}],
+                "groups": [
+                    {"category_name": {"ai_recommended": "Project Objective"}, "items": [{"ai_recommended": "Goal 1"}]},
+                ],
+            },
+            "assumptions": {
+                "items": [{"user_input": "assumption item"}],
+                "groups": [
+                    {"category_name": {"ai_recommended": "Business Context"}, "items": [{"ai_recommended": "Assumption 1"}]},
+                ],
+            },
+            "architecture": {
+                "overview": {"ai_recommended": "arch overview"},
+                "description": {"ai_recommended": "arch desc"},
+                "services": [
+                    {
+                        "service_name": {"ai_recommended": "Amazon S3"},
+                        "service_id": "amazon_s3",
+                        "priority": 11,
+                        "description": {"ai_recommended": "Object storage"},
+                        "sizing_rationale": {"ai_recommended": "Artifacts"},
+                    },
+                    {
+                        "service_name": {"ai_recommended": "Amazon Bedrock"},
+                        "service_id": "amazon_bedrock",
+                        "priority": 1,
+                        "description": {"ai_recommended": "Foundation model"},
+                        "sizing_rationale": {"ai_recommended": "Required"},
+                    },
+                ],
+                "tools": ["Lambda", "DynamoDB"],
+            },
             "milestones": {"phases": [{"phase": {"user_input": "Phase 1"}, "completion_date": {"user_input": "2026-05-01"}, "deliverables": {"user_input": "Doc"}}]},
             "acceptance": {"text": {"ai_recommended": "acceptance text"}},
             "cost_breakdown": {"aws_service_cost": {"monthly_cost_summary": {"calculated": 1234}, "calculator_share_url": "https://calc"}},
+            "client_signatures": {
+                "customer_name": {"ai_recommended": "ACME"},
+                "authorized_person_name": {"ai_recommended": "Jane"},
+                "designation": {"ai_recommended": "Director"},
+                "sign_date": {"ai_recommended": "2026-04-26"},
+            },
             "resources_cost_estimates": {
                 "contribution": {
                     "customer": {"amount": {"user_input": 100}, "pct": {"user_input": 100}},
@@ -146,12 +216,34 @@ def test_build_context():
     assert context["partner"] == "MZC"
     assert context["cover"]["title"] == "PoC Plan"
     assert context["executive_summary"] == "summary text"
+    assert context["customer_intro"] == "Customer intro"
+    assert context["problem_statement"] == "Problem statement"
+    assert context["proposed_solution"] == "Proposed solution"
+    assert context["phases_overview"] == [{"ai_recommended": "Discovery"}, {"ai_recommended": "Build"}]
+    assert context["business_case_problem"] == "Business problem"
+    assert context["business_case_roi"] == "ROI model"
+    assert context["business_case_sponsor"] == "Executive sponsor"
+    assert context["business_case_commitment"] == "Production commitment"
     assert context["scope_of_work"] == "- scope item"
     assert context["success_criteria"] == "- criteria item"
+    assert context["success_criteria_groups"][0]["category_name"] == "Project Objective"
+    assert context["success_criteria_groups"][0]["items_text"] == "- Goal 1"
     assert context["assumptions"] == "- assumption item"
+    assert context["assumptions_groups"][0]["category_name"] == "Business Context"
+    assert context["scope_tasks"][0]["task_category"] == "Planning"
+    assert context["scope_tasks"][0]["details_text"] == "- Task detail"
+    assert context["architecture_overview"] == "arch overview"
+    assert [s["service_id"] for s in context["architecture_services"]] == ["amazon_bedrock", "amazon_s3"]
     assert context["architecture_description"] == "arch desc"
     assert context["architecture_tools"] == "- Lambda\n- DynamoDB"
     assert context["acceptance_text"] == "acceptance text"
+    assert context["yr1_arr"] == "14,808"
+    assert context["sow_cost"] == "17,508"
+    assert context["funding_eligible"] == "Eligible"
+    assert context["bedrock_status"] == "Included"
+    assert context["eligible_amount"] == "3,702"
+    assert context["signature_customer_name"] == "ACME"
+    assert context["signature_person_name"] == "Jane"
     assert context["contribution"]["customer"]["amount"] == 100
     assert context["resources_cost_estimates"]["contribution"]["parties"]["customer"]["amount"] == 100
     assert context["total_hours"] == {"sa": 15, "eng": 12, "other": 0, "total": 27}
@@ -171,6 +263,71 @@ def test_build_context():
     assert context["aws_monthly_cost_summary"] == 1234
     assert context["aws_calculator_url"] == "https://calc"
     assert context["staffing"]["grand_total_cost"] == 2700
+
+
+def test_build_context_handles_missing_optional_fields():
+    context = export_docx._build_context({
+        "doc_id": "doc-2",
+        "sections": {},
+        "staffing_plan": {},
+    })
+
+    assert context["customer_intro"] == ""
+    assert context["problem_statement"] == ""
+    assert context["proposed_solution"] == ""
+    assert context["success_criteria_groups"] == []
+    assert context["assumptions_groups"] == []
+    assert context["scope_tasks"] == []
+    assert context["architecture_services"] == []
+    assert context["signature_customer_name"] == ""
+    assert context["funding_eligible"] == "Not eligible"
+
+
+def test_build_context_supports_old_schema_compatibility():
+    context = export_docx._build_context({
+        "doc_id": "legacy-doc",
+        "sections": {
+            "executive_summary": {"summary": {"ai_recommended": "legacy summary"}},
+            "success_criteria": {"items": [{"ai_recommended": "legacy criteria"}]},
+            "assumptions": {"items": [{"ai_recommended": "legacy assumption"}]},
+            "scope_of_work": {"items": [{"ai_recommended": "legacy scope"}]},
+            "architecture": {"description": {"ai_recommended": "legacy arch"}},
+        },
+        "staffing_plan": {},
+    })
+
+    assert context["executive_summary"] == "legacy summary"
+    assert context["success_criteria"] == "- legacy criteria"
+    assert context["assumptions"] == "- legacy assumption"
+    assert context["scope_of_work"] == "- legacy scope"
+    assert context["architecture_description"] == "legacy arch"
+
+
+def test_architecture_service_sorting_and_funding_formatting():
+    context = export_docx._build_context({
+        "sections": {
+            "architecture": {
+                "services": [
+                    {"service_name": "Amazon S3", "service_id": "amazon_s3", "priority": 11, "description": "Storage", "sizing_rationale": "Keep artifacts"},
+                    {"service_name": "Amazon Bedrock", "service_id": "amazon_bedrock", "priority": 1, "description": "LLM", "sizing_rationale": "Required"},
+                ]
+            },
+            "cost_breakdown": {
+                "funding_calculation": {
+                    "yr1_arr": {"calculated": 1000000},
+                    "sow_cost": {"calculated": 250000},
+                    "eligible_amount": {"calculated": 125000},
+                },
+                "aws_service_cost": {"monthly_cost_summary": {"calculated": 1234}},
+            },
+        },
+        "staffing_plan": {"grand_total_cost": {"calculated": 100000}},
+    })
+
+    assert [service["service_name"] for service in context["architecture_services"]] == ["Amazon Bedrock", "Amazon S3"]
+    assert context["yr1_arr"] == "1,000,000"
+    assert context["sow_cost"] == "250,000"
+    assert context["eligible_amount"] == "125,000"
 
 
 @patch("agent.lambdas.gateway_tools.export_docx._render_docx")

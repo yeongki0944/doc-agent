@@ -8,6 +8,7 @@ Each handler follows the contract:
 
 from __future__ import annotations
 
+import io
 import json
 from unittest.mock import patch, MagicMock
 
@@ -269,11 +270,14 @@ class TestGenerateDiagram:
 # ---------------------------------------------------------------------------
 
 class TestExportDocx:
+    @patch("agent.lambdas.gateway_tools.export_docx._render_docx")
     @patch("agent.lambdas.gateway_tools.export_docx.boto3")
-    def test_generates_and_uploads(self, mock_boto3):
+    def test_generates_and_uploads(self, mock_boto3, mock_render_docx):
         mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {"Body": io.BytesIO(b"template-bytes")}
         mock_s3.generate_presigned_url.return_value = "https://presigned.url"
         mock_boto3.client.return_value = mock_s3
+        mock_render_docx.return_value = b"rendered-docx"
 
         result = _invoke(docx_handler, {
             "doc_id": "doc-001",
@@ -285,6 +289,7 @@ class TestExportDocx:
         assert result["s3_key"] == "docs/doc-001/exports/doc-001-v5.docx"
         assert result["bucket"] == "doc-agent-artifacts"
         assert result["download_url"] == "https://presigned.url"
+        mock_render_docx.assert_called_once()
         mock_s3.put_object.assert_called_once()
 
     def test_error_on_invalid_input(self):
