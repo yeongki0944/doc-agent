@@ -16,6 +16,7 @@ from typing import Any
 
 from strands import Agent
 
+from agent.app.funding import FundingValidationResult, FundingValidator
 from agent.lib.schema.document_state import DocumentState, BlockingIssue, Warning
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ class ReviewResult:
     blocking_issues: list[BlockingIssue] = field(default_factory=list)
     warnings: list[Warning] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
+    funding_validation: FundingValidationResult | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +146,11 @@ class ReviewerAgent:
                 section="cost_breakdown",
             ))
 
+        funding_validation = FundingValidator().validate(doc_state)
+        result.funding_validation = funding_validation
+        self._extend_unique_by_code(result.blocking_issues, funding_validation.blocking_issues)
+        self._extend_unique_by_code(result.warnings, funding_validation.warnings)
+
         # 4. Completion score
         result.completion_score = self.calculate_completion_score(doc_state)
 
@@ -161,6 +168,15 @@ class ReviewerAgent:
         self.classify_issues(all_issues)
 
         return result
+
+    @staticmethod
+    def _extend_unique_by_code(target: list[Any], additions: list[Any]) -> None:
+        seen = {getattr(item, "code", None) for item in target}
+        for item in additions:
+            code = getattr(item, "code", None)
+            if code not in seen:
+                target.append(item)
+                seen.add(code)
 
     def calculate_completion_score(self, doc_state: DocumentState) -> float:
         """Section-level required field fill ratio → 0.0~1.0.

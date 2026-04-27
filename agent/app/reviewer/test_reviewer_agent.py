@@ -17,6 +17,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from agent.lib.schema.document_state import (
+    ArchitectureService,
     DocumentState,
     Sections,
     StaffingPlan,
@@ -28,6 +29,7 @@ from agent.lib.schema.document_state import (
     BlockingIssue,
     Warning as DocWarning,
     CoverSection,
+    ServiceCategory,
 )
 from agent.app.reviewer.reviewer_agent import (
     ReviewerAgent,
@@ -286,3 +288,29 @@ class TestReview:
         assert isinstance(result.blocking_issues, list)
         assert isinstance(result.warnings, list)
         assert isinstance(result.suggestions, list)
+
+    @patch("agent.app.reviewer.reviewer_agent.Agent")
+    def test_review_includes_funding_validation(self, mock_agent_cls: MagicMock, populated_doc: DocumentState) -> None:
+        agent = ReviewerAgent()
+
+        result = agent.review(populated_doc)
+
+        assert result.funding_validation is not None
+        codes = {issue.code for issue in result.blocking_issues}
+        assert "BEDROCK_MISSING" in codes
+
+    @patch("agent.app.reviewer.reviewer_agent.Agent")
+    def test_review_does_not_duplicate_funding_issue_codes(self, mock_agent_cls: MagicMock, populated_doc: DocumentState) -> None:
+        populated_doc.sections.architecture.services = [
+            ArchitectureService(
+                service_name=FieldValue(user_input="Amazon Bedrock"),
+                category=ServiceCategory.genai_core,
+            )
+        ]
+        agent = ReviewerAgent()
+
+        first = agent.review(populated_doc)
+        second = agent.review(populated_doc)
+
+        assert len([i for i in first.blocking_issues if i.code == "CALCULATOR_URL_MISSING"]) == 1
+        assert len([i for i in second.blocking_issues if i.code == "CALCULATOR_URL_MISSING"]) == 1
