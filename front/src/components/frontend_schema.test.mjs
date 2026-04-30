@@ -25,6 +25,7 @@ const {
   createRoleDraft,
   buildStaffingEditPath,
   getRoleOptions,
+  resolveDisplayText,
   sortStaffingRoles,
   sortArchitectureServices,
   isBedrockService,
@@ -46,6 +47,7 @@ const sortedRoles = sortStaffingRoles({
   a: { ...draft, role_id: 'a', display_name: 'Alpha' },
 })
 assert.deepEqual(sortedRoles.map(role => role.display_name), ['Alpha', 'Beta'])
+assert.equal(resolveDisplayText({ user_input: null, ai_recommended: 'Field Role', calculated: null, status: 'recommended' }), 'Field Role')
 
 const services = sortArchitectureServices([
   {

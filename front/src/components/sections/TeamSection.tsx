@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useDocumentStore, type FieldValue, type RoleCategory, type StaffingRole } from '../../store/documentStore'
 import { useSessionStore } from '../../store/sessionStore'
 import { saveUserInput } from '../../utils/api'
-import { createRoleDraft, buildStaffingEditPath, getRoleOptions, sortStaffingRoles } from '../../utils/frontendSchema'
+import { createRoleDraft, buildStaffingEditPath, getRoleOptions, resolveDisplayText, sortStaffingRoles } from '../../utils/frontendSchema'
 import { emitUserEdit } from '../../utils/userEditEvent'
 import { color } from '../../styles/tokens'
 const DEFAULT_PHASES = ['discovery', 'development', 'testing'] as const
@@ -200,6 +200,7 @@ function RoleRow({
   const updateNumericField = (field: keyof Pick<StaffingRole, 'count' | 'allocation_pct' | 'rate_per_hour'>, value: string) => {
     const num = Number(value)
     if (Number.isNaN(num)) return
+    const roleName = resolveDisplayText(role.display_name, role.role_id)
     onEdit(role.role_id, {
       [field]: {
         ...(role[field] as FieldValue),
@@ -209,7 +210,7 @@ function RoleRow({
       },
     } as Partial<StaffingRole>)
     saveField(field, value)
-    emitUserEdit('Team', `${role.display_name} > ${field}`, String(resolveValue(role[field] as FieldValue)), value)
+    emitUserEdit('Team', `${roleName} > ${field}`, String(resolveValue(role[field] as FieldValue)), value)
   }
 
   const updatePhaseField = (phase: typeof phaseFields[number], value: string) => {
@@ -227,7 +228,7 @@ function RoleRow({
       },
     })
     saveField(`phase_hours.${phase}`, value)
-    emitUserEdit('Team', `${role.display_name} > ${phase}`, String(resolveValue(role.phase_hours[phase])), value)
+    emitUserEdit('Team', `${resolveDisplayText(role.display_name, role.role_id)} > ${phase}`, String(resolveValue(role.phase_hours[phase])), value)
   }
 
   const updateDisplayName = (value: string) => {
@@ -235,14 +236,16 @@ function RoleRow({
       display_name: value,
     })
     saveField('display_name', value)
-    emitUserEdit('Team', 'display_name', role.display_name, value)
+    emitUserEdit('Team', 'display_name', resolveDisplayText(role.display_name, role.role_id), value)
   }
+
+  const displayName = resolveDisplayText(role.display_name, role.role_id)
 
   return (
     <tr>
       <td style={td}>
         <EditableTextCell
-          value={role.display_name}
+          value={displayName}
           onSave={updateDisplayName}
           ariaLabel={`${role.role_id}-display-name`}
         />

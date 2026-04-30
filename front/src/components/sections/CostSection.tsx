@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useDocumentStore } from '../../store/documentStore'
 import { AiHighlight, resolveFieldValue } from '../AiBadge'
 import { color } from '../../styles/tokens'
-import { formatMoney, isBedrockService } from '../../utils/frontendSchema'
+import { formatMoney, isBedrockService, resolveDisplayText } from '../../utils/frontendSchema'
 
 export function CostSection() {
   const roles = useDocumentStore(s => s.staffing_plan?.roles ?? {})
@@ -50,7 +50,7 @@ export function CostSection() {
           <tbody>
             {entries.map(r => (
               <tr key={r.role_id}>
-                <td style={td}>{r.display_name}</td>
+                <td style={td}>{resolveDisplayText(r.display_name, r.role_id)}</td>
                 <td style={td}>{r.total_hours?.calculated ?? '—'}</td>
                 <td style={td}>
                   <AiHighlight field={r.rate_per_hour}>

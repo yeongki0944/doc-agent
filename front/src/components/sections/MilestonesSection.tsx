@@ -5,6 +5,7 @@ import { EditableField } from '../EditableField'
 import { saveUserInput } from '../../utils/api'
 import { emitUserEdit } from '../../utils/userEditEvent'
 import { color } from '../../styles/tokens'
+import { resolveDisplayText } from '../../utils/frontendSchema'
 
 const PHASES = [
   { id: 'discovery', name: 'Discovery', deliverables: '요구사항 문서, 아키텍처 초안' },
@@ -74,7 +75,7 @@ export function MilestonesSection() {
               <tr key={p.id}>
                 <td style={td}>{p.name}</td>
                 <td style={td}>{p.deliverables}</td>
-                <td style={td}>{Object.values(roles).map(r => r.display_name).join(', ')}</td>
+                <td style={td}>{Object.values(roles).map(r => resolveDisplayText(r.display_name, r.role_id)).join(', ')}</td>
               </tr>
             ))}
           </tbody>

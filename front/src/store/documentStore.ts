@@ -120,7 +120,7 @@ export interface DocumentSections extends Record<string, any> {
 
 export interface StaffingRole {
   role_id: string
-  display_name: string
+  display_name: string | FieldValue
   category: RoleCategory
   role_type: FieldValue
   rate_default: FieldValue

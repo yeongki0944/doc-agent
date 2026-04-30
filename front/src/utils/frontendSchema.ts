@@ -25,6 +25,11 @@ const resolve = (value: any): string => {
   return String(value ?? '')
 }
 
+export function resolveDisplayText(value: any, fallback = ''): string {
+  const text = resolve(value)
+  return text || fallback
+}
+
 export function getRoleOptions(category: RoleCategory): RolePoolOption[] {
   return ROLE_POOL[category] ?? []
 }
@@ -62,7 +67,7 @@ export function buildStaffingEditPath(roleId: string, field: string, subfield?: 
 }
 
 export function sortStaffingRoles(roles: Record<string, StaffingRole>): StaffingRole[] {
-  return Object.values(roles).sort((a, b) => a.display_name.localeCompare(b.display_name))
+  return Object.values(roles).sort((a, b) => resolveDisplayText(a.display_name).localeCompare(resolveDisplayText(b.display_name)))
 }
 
 export function sortArchitectureServices(services: ArchitectureService[]): ArchitectureService[] {
