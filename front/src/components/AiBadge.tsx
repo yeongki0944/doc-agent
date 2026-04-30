@@ -13,9 +13,24 @@ export function isAiRecommended(f: FieldValue | undefined | null): boolean {
 }
 
 /** Resolve display value from FieldValue with priority: user_input > ai_recommended > calculated */
-export function resolveFieldValue(f: FieldValue | undefined | null): any {
-  if (!f) return null
-  return f.user_input ?? f.ai_recommended ?? f.calculated ?? null
+export function resolveFieldValue(f: FieldValue | undefined | null | any): any {
+  const resolved = unwrapFieldValue(f)
+  if (resolved == null) return null
+  if (Array.isArray(resolved)) {
+    return resolved.map(item => unwrapFieldValue(item)).filter(item => item != null).join('\n')
+  }
+  if (typeof resolved === 'object') {
+    return JSON.stringify(resolved)
+  }
+  return resolved
+}
+
+function unwrapFieldValue(value: any): any {
+  if (!value || typeof value !== 'object') return value ?? null
+  if ('user_input' in value || 'ai_recommended' in value || 'calculated' in value) {
+    return unwrapFieldValue(value.user_input ?? value.ai_recommended ?? value.calculated ?? null)
+  }
+  return value
 }
 
 /** Small "AI" badge */

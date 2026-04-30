@@ -5,10 +5,18 @@ import { saveUserInput } from '../../utils/api'
 import { createRoleDraft, buildStaffingEditPath, getRoleOptions, resolveDisplayText, sortStaffingRoles } from '../../utils/frontendSchema'
 import { emitUserEdit } from '../../utils/userEditEvent'
 import { color } from '../../styles/tokens'
+import { resolveFieldValue } from '../AiBadge'
 const DEFAULT_PHASES = ['discovery', 'development', 'testing'] as const
 
 function resolveValue(f: FieldValue | undefined | null) {
-  return f?.user_input ?? f?.ai_recommended ?? f?.calculated ?? ''
+  return resolveFieldValue(f) ?? ''
+}
+
+function formatCalculated(value: any) {
+  const resolved = resolveFieldValue(value)
+  if (resolved == null || resolved === '') return '—'
+  const num = Number(resolved)
+  return Number.isNaN(num) ? String(resolved) : num.toLocaleString()
 }
 
 export function TeamSection() {
@@ -251,7 +259,7 @@ function RoleRow({
         />
       </td>
       <td style={td}>
-        <span style={pillStyle}>{role.category}</span>
+        <span style={pillStyle}>{resolveDisplayText(role.category, 'other')}</span>
       </td>
       <td style={td}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -270,8 +278,8 @@ function RoleRow({
           ariaLabel={`${role.role_id}-${phase}`}
         />
       ))}
-      <td style={td}>{role.total_hours.calculated ?? '—'}</td>
-      <td style={td}>{role.total_cost.calculated != null ? role.total_cost.calculated.toLocaleString() : '—'}</td>
+      <td style={td}>{formatCalculated(role.total_hours?.calculated)}</td>
+      <td style={td}>{formatCalculated(role.total_cost?.calculated)}</td>
     </tr>
   )
 }

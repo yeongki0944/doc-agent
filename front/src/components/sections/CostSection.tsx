@@ -51,13 +51,13 @@ export function CostSection() {
             {entries.map(r => (
               <tr key={r.role_id}>
                 <td style={td}>{resolveDisplayText(r.display_name, r.role_id)}</td>
-                <td style={td}>{r.total_hours?.calculated ?? '—'}</td>
+                <td style={td}>{formatCalculated(r.total_hours?.calculated)}</td>
                 <td style={td}>
                   <AiHighlight field={r.rate_per_hour}>
                     {resolveFieldValue(r.rate_per_hour) ?? '—'}
                   </AiHighlight>
                 </td>
-                <td style={td}>{r.total_cost?.calculated != null ? `${r.total_cost.calculated.toLocaleString()}` : '—'}</td>
+                <td style={td}>{formatCalculated(r.total_cost?.calculated)}</td>
               </tr>
             ))}
           </tbody>
@@ -108,6 +108,13 @@ export function CostSection() {
       )}
     </div>
   )
+}
+
+function formatCalculated(value: any) {
+  const resolved = resolveFieldValue(value)
+  if (resolved == null || resolved === '') return '—'
+  const num = Number(resolved)
+  return Number.isNaN(num) ? String(resolved) : num.toLocaleString()
 }
 
 function FundingMetric({ label, value }: { label: string; value: string }) {

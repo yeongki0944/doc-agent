@@ -48,6 +48,7 @@ const sortedRoles = sortStaffingRoles({
 })
 assert.deepEqual(sortedRoles.map(role => role.display_name), ['Alpha', 'Beta'])
 assert.equal(resolveDisplayText({ user_input: null, ai_recommended: 'Field Role', calculated: null, status: 'recommended' }), 'Field Role')
+assert.equal(resolveDisplayText({ user_input: { user_input: null, ai_recommended: 'Nested Role', calculated: null, status: 'recommended' }, ai_recommended: null, calculated: null, status: 'user_modified' }), 'Nested Role')
 
 const services = sortArchitectureServices([
   {

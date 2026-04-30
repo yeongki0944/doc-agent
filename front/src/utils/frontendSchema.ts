@@ -19,10 +19,21 @@ const makeFieldValue = (aiRecommended: any = null, status = 'recommended'): Fiel
 })
 
 const resolve = (value: any): string => {
-  if (value && typeof value === 'object') {
-    return String(value.user_input ?? value.ai_recommended ?? value.calculated ?? '')
+  const resolved = unwrapFieldValue(value)
+  if (resolved == null) return ''
+  if (Array.isArray(resolved)) {
+    return resolved.map(item => resolve(item)).filter(Boolean).join('\n')
   }
-  return String(value ?? '')
+  if (typeof resolved === 'object') return JSON.stringify(resolved)
+  return String(resolved)
+}
+
+function unwrapFieldValue(value: any): any {
+  if (!value || typeof value !== 'object') return value ?? null
+  if ('user_input' in value || 'ai_recommended' in value || 'calculated' in value) {
+    return unwrapFieldValue(value.user_input ?? value.ai_recommended ?? value.calculated ?? null)
+  }
+  return value
 }
 
 export function resolveDisplayText(value: any, fallback = ''): string {
