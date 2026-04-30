@@ -74,6 +74,9 @@ export function createRoleDraft(category: RoleCategory, roleTypeId: string): Sta
 
 export function buildStaffingEditPath(roleId: string, field: string, subfield?: string) {
   const tail = subfield ? `${field}.${subfield}` : field
+  if (field === 'display_name' || field === 'category' || field === 'role_id') {
+    return `staffing_plan.roles.${roleId}.${tail}`
+  }
   return `staffing_plan.roles.${roleId}.${tail}.user_input`
 }
 

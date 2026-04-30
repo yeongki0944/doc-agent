@@ -41,6 +41,8 @@ assert.equal(draft.role_type.ai_recommended, 'backend_engineer')
 assert.equal(draft.display_name, 'Backend Engineer')
 assert.equal(draft.rate_default.ai_recommended, 75)
 assert.equal(buildStaffingEditPath('role-1', 'rate_per_hour'), 'staffing_plan.roles.role-1.rate_per_hour.user_input')
+assert.equal(buildStaffingEditPath('role-1', 'display_name'), 'staffing_plan.roles.role-1.display_name')
+assert.equal(buildStaffingEditPath('role-1', 'category'), 'staffing_plan.roles.role-1.category')
 
 const sortedRoles = sortStaffingRoles({
   b: { role_id: 'b', display_name: 'Beta', category: 'engineer', role_type: draft.role_type, rate_default: draft.rate_default, count: draft.count, allocation_pct: draft.allocation_pct, rate_per_hour: draft.rate_per_hour, phase_hours: draft.phase_hours, total_hours: draft.total_hours, total_cost: draft.total_cost },

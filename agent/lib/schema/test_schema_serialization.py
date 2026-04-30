@@ -848,6 +848,55 @@ class TestBackwardCompatibility:
         assert doc.sections.executive_summary.model_extra.get("some_old_field") == "value"
         assert doc.sections.architecture.model_extra.get("preview_url") == "https://example.com/img.png"
 
+    def test_staffing_role_scalar_fields_saved_as_field_values(self):
+        data = {
+            "document_id": "doc-legacy-staffing",
+            "staffing_plan": {
+                "roles": {
+                    "ai_service_engineer": {
+                        "display_name": {
+                            "user_input": "AI Service Engineer",
+                            "ai_recommended": None,
+                            "calculated": None,
+                            "status": "user_modified",
+                            "user_edited": True,
+                        },
+                        "category": {
+                            "user_input": "engineer",
+                            "ai_recommended": None,
+                            "calculated": None,
+                            "status": "user_modified",
+                            "user_edited": True,
+                        },
+                        "role_type": {
+                            "user_input": "ai_service_engineer",
+                            "status": "user_modified",
+                        },
+                    },
+                    "ai_agent_architect": {
+                        "display_name": {
+                            "user_input": "AI Agent Architect",
+                            "status": "user_modified",
+                        },
+                        "category": {
+                            "user_input": "solution_architect",
+                            "status": "user_modified",
+                        },
+                    }
+                }
+            },
+        }
+
+        doc = DocumentState.model_validate(data)
+        role = doc.staffing_plan.roles["ai_service_engineer"]
+        assert role.role_id == "ai_service_engineer"
+        assert role.display_name == "AI Service Engineer"
+        assert role.category == RoleCategory.engineer
+        keyed_role = doc.staffing_plan.roles["ai_agent_architect"]
+        assert keyed_role.role_id == "ai_agent_architect"
+        assert keyed_role.display_name == "AI Agent Architect"
+        assert keyed_role.category == RoleCategory.solution_architect
+
     def test_no_sections_at_all(self):
         data = {"document_id": "doc-minimal"}
         doc = DocumentState.model_validate(data)

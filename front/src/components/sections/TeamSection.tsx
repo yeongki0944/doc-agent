@@ -61,7 +61,7 @@ export function TeamSection() {
       saveUserInput(docId, buildStaffingEditPath(roleId, 'role_type'), selectedOption.role_id),
       saveUserInput(docId, buildStaffingEditPath(roleId, 'display_name'), selectedOption.display_name),
       saveUserInput(docId, buildStaffingEditPath(roleId, 'rate_default'), String(selectedOption.rate_default)),
-      saveUserInput(docId, `staffing_plan.roles.${roleId}.category.user_input`, selectedCategory),
+      saveUserInput(docId, buildStaffingEditPath(roleId, 'category'), selectedCategory),
       saveUserInput(docId, buildStaffingEditPath(roleId, 'count'), '1'),
       saveUserInput(docId, buildStaffingEditPath(roleId, 'allocation_pct'), '100'),
       saveUserInput(docId, buildStaffingEditPath(roleId, 'rate_per_hour'), String(selectedOption.rate_default)),

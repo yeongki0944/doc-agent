@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -350,12 +350,64 @@ class StaffingRole(BaseModel):
     source_patterns: list[str] = Field(default_factory=list)
     user_edited: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_scalar_fields(cls, data: Any) -> Any:
+        """Accept saved roles where scalar fields were accidentally FieldValue-shaped."""
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        for field_name in ("display_name", "category"):
+            value = normalized.get(field_name)
+            if isinstance(value, dict) and (
+                "user_input" in value or "ai_recommended" in value or "calculated" in value
+            ):
+                normalized[field_name] = (
+                    value.get("user_input")
+                    or value.get("ai_recommended")
+                    or value.get("calculated")
+                    or ""
+                )
+
+        if not normalized.get("role_id"):
+            role_type = normalized.get("role_type")
+            if isinstance(role_type, dict):
+                normalized["role_id"] = (
+                    role_type.get("user_input")
+                    or role_type.get("ai_recommended")
+                    or role_type.get("calculated")
+                    or ""
+                )
+        return normalized
+
 
 class StaffingPlan(BaseModel):
     """Top-level staffing plan with roles and grand totals."""
     roles: dict[str, StaffingRole] = Field(default_factory=dict)
     grand_total_hours: CalculatedOnly = Field(default_factory=CalculatedOnly)
     grand_total_cost: CalculatedOnly = Field(default_factory=CalculatedOnly)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_role_ids(cls, data: Any) -> Any:
+        """Accept saved role maps where the role_id only exists as the dict key."""
+        if not isinstance(data, dict):
+            return data
+
+        roles = data.get("roles")
+        if not isinstance(roles, dict):
+            return data
+
+        normalized = dict(data)
+        normalized_roles: dict[str, Any] = {}
+        for role_id, role in roles.items():
+            if isinstance(role, dict) and not role.get("role_id"):
+                normalized_roles[role_id] = {**role, "role_id": role_id}
+            else:
+                normalized_roles[role_id] = role
+        normalized["roles"] = normalized_roles
+        return normalized
 
 
 # ---------------------------------------------------------------------------
