@@ -3,7 +3,7 @@ import { apiFetch } from '../auth/api'
 
 export interface DocumentSummary {
   document_id: string
-  title: string
+  title: any
   updated_at?: string
   created_at?: string
   completion_score?: number

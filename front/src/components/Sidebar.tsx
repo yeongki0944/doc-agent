@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useSessionStore } from '../store/sessionStore'
 import { useAuth } from '../auth/AuthContext'
 import { color, font, space, radius, shadow } from '../styles/tokens'
+import { resolveDisplayText } from '../utils/frontendSchema'
 
 export function Sidebar() {
   const { user, logout } = useAuth()
@@ -80,7 +81,7 @@ export function Sidebar() {
                 fontSize: 13, fontWeight: currentDocId === doc.document_id ? 600 : 400,
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
               }}>
-                {doc.title || '제목 없음'}
+                {resolveDisplayText(doc.title, '제목 없음')}
               </div>
               {doc.updated_at && (
                 <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2 }}>
