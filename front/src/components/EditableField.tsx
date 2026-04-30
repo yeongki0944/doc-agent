@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { color, radius } from '../styles/tokens'
+import { resolveDisplayText } from '../utils/frontendSchema'
 
 interface EditableFieldProps {
-  value: string
+  value: any
   isAi?: boolean
   onSave: (newValue: string) => void
   placeholder?: string
@@ -16,12 +17,13 @@ interface EditableFieldProps {
  * type="date" renders a native date picker.
  */
 export function EditableField({ value, isAi, onSave, placeholder, multiline, type = 'text' }: EditableFieldProps) {
+  const textValue = resolveDisplayText(value)
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(value)
+  const [draft, setDraft] = useState(textValue)
   const [hover, setHover] = useState(false)
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null)
 
-  useEffect(() => { setDraft(value) }, [value])
+  useEffect(() => { setDraft(textValue) }, [textValue])
   useEffect(() => {
     if (editing && inputRef.current) {
       inputRef.current.focus()
@@ -32,14 +34,14 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
   const save = () => {
     const trimmed = draft.trim()
     setEditing(false)
-    if (trimmed && trimmed !== value) {
+    if (trimmed && trimmed !== textValue) {
       onSave(trimmed)
     } else {
-      setDraft(value)
+      setDraft(textValue)
     }
   }
 
-  const cancel = () => { setDraft(value); setEditing(false) }
+  const cancel = () => { setDraft(textValue); setEditing(false) }
 
   if (editing) {
     const style: React.CSSProperties = {
@@ -56,7 +58,7 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
           onChange={e => {
             setDraft(e.target.value)
             // Auto-save on date selection
-            if (e.target.value && e.target.value !== value) {
+            if (e.target.value && e.target.value !== textValue) {
               onSave(e.target.value)
             }
             setEditing(false)
@@ -98,7 +100,7 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
     )
   }
 
-  const displayValue = value || placeholder || '-'
+  const displayValue = textValue || placeholder || '-'
 
   return (
     <span
@@ -115,7 +117,7 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
       }}
       title="더블클릭하여 수정"
     >
-      <span style={{ color: value ? 'inherit' : color.textMuted }}>{displayValue}</span>
+      <span style={{ color: textValue ? 'inherit' : color.textMuted }}>{displayValue}</span>
       {isAi && (
         <span style={{
           padding: '1px 5px', borderRadius: 4, fontSize: 9, fontWeight: 700,

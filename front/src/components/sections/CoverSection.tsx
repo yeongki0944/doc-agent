@@ -5,6 +5,7 @@ import { resolveFieldValue, isAiRecommended } from '../AiBadge'
 import { EditableField } from '../EditableField'
 import { saveUserInput } from '../../utils/api'
 import { emitUserEdit } from '../../utils/userEditEvent'
+import { resolveDisplayText } from '../../utils/frontendSchema'
 import { useDocLang } from '../LangContext'
 import { color, font, size, space } from '../../styles/tokens'
 
@@ -91,13 +92,14 @@ function MetaRow({ label, field, onSave, type }: { label: string; field: FieldVa
 }
 
 function CoverRow({ label, value, onSave }: { label: string; value: string; onSave: (v: string) => void }) {
+  const textValue = resolveDisplayText(value)
   return (
     <tr>
       <td style={tdLabel}>{label}</td>
       <td style={tdValue}>
         <EditableField
-          value={value}
-          isAi={!!value}
+          value={textValue}
+          isAi={!!textValue}
           onSave={onSave}
           placeholder={`${label} 입력`}
         />
