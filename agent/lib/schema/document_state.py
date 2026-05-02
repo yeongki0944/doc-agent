@@ -439,6 +439,8 @@ class DocumentState(BaseModel):
     """
 
     document_id: str = ""
+    user_id: str = ""
+    title: str = ""
     template: str = "apn_poc_project_plan"
     mode: DocumentMode = DocumentMode.architecture_absent
     version: int = 0
