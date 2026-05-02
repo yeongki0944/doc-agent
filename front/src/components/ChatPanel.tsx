@@ -121,7 +121,10 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       { id: '0', role: 'agent', text: '안녕하세요! APN PoC Project Plan 문서 생성을 도와드리겠습니다. 프로젝트에 대해 알려주세요.' },
     ])
     setHistoryLoaded(false)
-  }, [docId])
+    setLoading(false)
+    setAgentStatus('idle')
+    streamMsgIdRef.current = null
+  }, [docId, setAgentStatus])
 
   // Listen for user direct edits on document fields → inject as user message for LLM context
   useEffect(() => {

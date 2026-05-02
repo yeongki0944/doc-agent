@@ -732,8 +732,44 @@ def _handle_async_chat(payload: dict) -> dict:
         if updated_doc:
             updated_doc = json.loads(_json(updated_doc))
 
-        # Step 4: Publish final result via AppSync
+        # Step 4: Save agent response to conversation history (source of truth)
         agent_response = runtime_result.get("result", "")
+        now = _now_iso()
+        agent_msg = {
+            "id": f"agent-{uuid.uuid4().hex[:8]}",
+            "role": "agent",
+            "content": agent_response or "처리 완료",
+            "timestamp": now,
+        }
+        # Append to existing history
+        try:
+            hist_resp = history_table.get_item(Key={"document_id": doc_id, "session_id": "default"})
+            hist_item = hist_resp.get("Item", {})
+            existing_msgs = hist_item.get("messages", [])
+            # Also save the user message if not already there
+            user_msg_exists = any(m.get("content") == message for m in existing_msgs[-3:])
+            if not user_msg_exists:
+                existing_msgs.append({
+                    "id": f"user-{uuid.uuid4().hex[:8]}",
+                    "role": "user",
+                    "content": message,
+                    "timestamp": now,
+                })
+            existing_msgs.append(agent_msg)
+            history_item = {
+                "document_id": doc_id,
+                "session_id": "default",
+                "user_id": user_id,
+                "messages": existing_msgs,
+                "bounded_window": DEFAULT_BOUNDED_WINDOW,
+                "total_count": len(existing_msgs),
+                "updated_at": now,
+            }
+            history_table.put_item(Item=json.loads(_json(history_item), parse_float=Decimal))
+        except Exception as hist_err:
+            print(f"[async_chat] history save failed: {hist_err}")
+
+        # Step 5: Publish final result via AppSync
         _publish_event(chat_channel, {
             "type": "chat_done",
             "text": agent_response or "처리 완료",
