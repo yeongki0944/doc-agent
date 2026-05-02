@@ -66,11 +66,14 @@ export function DocumentPanel({ docId }: { docId: string }) {
 
 function Header({ completionScore, blockingIssues, docId, lang, onLangChange }: { completionScore: number; blockingIssues: any[]; docId: string; lang: DocLang; onLangChange: (l: DocLang) => void }) {
   const exportEnabled = blockingIssues.length === 0
+  const docTitle = useDocumentStore(s => (s as any).title || '')
 
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px', borderBottom: `1px solid ${color.border}` }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontWeight: 600, fontSize: 15 }}>APN PoC Project Plan</span>
+        <span style={{ fontWeight: 600, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 400 }} title={docTitle}>
+          {docTitle || 'APN PoC Project Plan'}
+        </span>
         <CompletionBadge score={completionScore} />
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

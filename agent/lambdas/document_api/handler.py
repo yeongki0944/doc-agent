@@ -511,7 +511,10 @@ def _handle_create_document(event: dict) -> dict:
         return err
 
     body = json.loads(event.get("body") or "{}")
-    title = body.get("title") or "새 문서"
+    today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    year = datetime.now(timezone.utc).strftime("%Y")
+    default_title = f"{year} APN PoC Project Plan_미정_미정_{today_str}"
+    title = body.get("title") or default_title
 
     doc_id = f"doc-{uuid.uuid4().hex[:12]}"
     now = _now_iso()
@@ -809,6 +812,21 @@ def _handle_async_chat(payload: dict) -> dict:
         updated_resp = table.get_item(Key={"document_id": doc_id})
         updated_doc = updated_resp.get("Item")
         if updated_doc:
+            # Auto-generate title: {년도} APN PoC Project Plan_{고객사}_{프로젝트명}_{YYYYMMDD}
+            meta = updated_doc.get("meta", {})
+            cover = updated_doc.get("sections", {}).get("cover", {})
+            customer = meta.get("customer", {}).get("user_input") or "미정"
+            project_name = cover.get("title") or cover.get("goal") or "미정"
+            year = datetime.now(timezone.utc).strftime("%Y")
+            today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+            new_title = f"{year} APN PoC Project Plan_{customer}_{project_name}_{today_str}"
+            if updated_doc.get("title") != new_title:
+                table.update_item(
+                    Key={"document_id": doc_id},
+                    UpdateExpression="SET title = :t",
+                    ExpressionAttributeValues={":t": new_title},
+                )
+                updated_doc["title"] = new_title
             updated_doc = json.loads(_json(updated_doc))
 
         # Step 6: Save agent response to conversation history (source of truth)
