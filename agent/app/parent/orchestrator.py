@@ -414,10 +414,13 @@ class ParentOrchestrator:
         result = AgentResult(success=True)
 
         try:
+            logger.info("delegate_task: agent=%s action=%s params=%s", agent_name, task.action, {k: v for k, v in task.params.items() if k != "message"})
             if agent_name == "discovery_agent":
                 result = await self._delegate_discovery(task, doc_state)
             elif agent_name == "conversation_agent":
                 result = self._delegate_conversation(task)
+            elif agent_name == "section_writer_agent":
+                result = await self._delegate_section_writer(task, doc_state)
             elif agent_name == "architecture_agent":
                 result = await self._delegate_architecture(task, doc_state)
             elif agent_name == "staffing_agent":
@@ -543,6 +546,141 @@ class ParentOrchestrator:
             patches=patches,
             chat_response="\n".join(chat_parts),
         )
+
+    async def _delegate_section_writer(
+        self, task: Task, doc_state: DocumentState
+    ) -> AgentResult:
+        """Generate or update a document section using Bedrock LLM.
+
+        The section_writer_agent handles requests like "Assumptions 작성해줘",
+        "Scope 작성해줘", etc. It uses the current document context to generate
+        appropriate section content.
+        """
+        import json as _json
+        section_name = task.params.get("section", "")
+        message = task.params.get("message", "")
+
+        if not section_name:
+            # Try to infer section from message
+            section_map = {
+                "overview": "executive_summary", "summary": "executive_summary",
+                "executive": "executive_summary", "요약": "executive_summary",
+                "scope": "scope_of_work", "범위": "scope_of_work",
+                "success": "success_criteria", "kpi": "success_criteria",
+                "성공": "success_criteria",
+                "assumptions": "assumptions", "가정": "assumptions",
+                "리스크": "assumptions", "risk": "assumptions",
+                "milestones": "milestones", "마일스톤": "milestones",
+                "일정": "milestones",
+                "acceptance": "acceptance", "인수": "acceptance",
+                "수락": "acceptance",
+            }
+            msg_lower = message.lower()
+            for keyword, sec in section_map.items():
+                if keyword in msg_lower:
+                    section_name = sec
+                    break
+
+        if not section_name:
+            return AgentResult(
+                success=False,
+                chat_response="어떤 섹션을 작성할지 지정해주세요. (예: Overview, Scope, Assumptions, Success Criteria, Milestones, Acceptance)",
+            )
+
+        logger.info("section_writer: generating section=%s", section_name)
+
+        # Build context from current document state
+        meta = doc_state.meta
+        context_parts = []
+        if meta.customer.user_input:
+            context_parts.append(f"고객사: {meta.customer.user_input}")
+        if meta.partner.user_input:
+            context_parts.append(f"파트너: {meta.partner.user_input}")
+        cover = doc_state.sections.cover
+        if hasattr(cover, 'model_extra') and cover.model_extra:
+            for k, v in cover.model_extra.items():
+                if v:
+                    context_parts.append(f"{k}: {v}")
+
+        doc_context = "\n".join(context_parts) if context_parts else "프로젝트 정보가 아직 부족합니다."
+
+        section_display_names = {
+            "executive_summary": "Executive Summary",
+            "scope_of_work": "Scope of Work",
+            "success_criteria": "Success Criteria / KPIs",
+            "assumptions": "Assumptions & Risks",
+            "milestones": "Milestones & Deliverables",
+            "acceptance": "Acceptance Criteria",
+        }
+        display_name = section_display_names.get(section_name, section_name)
+
+        system_prompt = f"""당신은 APN PoC Project Plan 문서의 '{display_name}' 섹션을 작성하는 전문가입니다.
+현재까지 수집된 프로젝트 정보를 바탕으로 해당 섹션의 내용을 한국어로 작성하세요.
+
+프로젝트 정보:
+{doc_context}
+
+규칙:
+- 반드시 한국어로 작성하세요
+- 정보가 부족하더라도 합리적인 초안을 작성하세요
+- 구체적이고 전문적인 내용으로 작성하세요
+- JSON 형식으로 응답하세요: {{"items": {{"key1": "내용1", "key2": "내용2", ...}}}}
+- key는 항목의 제목 (예: "가정사항_1", "리스크_1", "KPI_1" 등)
+- 3~5개 항목을 작성하세요"""
+
+        try:
+            fallback = self.child_fallback
+            model_id = fallback.primary or "apac.anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+            bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+            resp = bedrock.invoke_model(
+                modelId=model_id,
+                contentType="application/json",
+                accept="application/json",
+                body=_json.dumps({
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 2000,
+                    "system": system_prompt,
+                    "messages": [{"role": "user", "content": message}],
+                }),
+            )
+            raw = _json.loads(resp["body"].read())["content"][0]["text"]
+            logger.info("section_writer raw response length=%d", len(raw))
+
+            # Parse JSON from response
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start >= 0 and end > start:
+                parsed = _json.loads(raw[start:end])
+                items = parsed.get("items", parsed)
+            else:
+                items = {"content": raw}
+
+            # Build patches for the section
+            patches = []
+            for key, value in items.items():
+                patches.append({
+                    "op": "add",
+                    "path": f"/sections/{section_name}/{key}",
+                    "value": value,
+                })
+
+            chat_response = f"{display_name} 섹션을 작성했습니다.\n\n"
+            for key, value in items.items():
+                chat_response += f"**{key}**: {value}\n\n"
+
+            return AgentResult(
+                success=True,
+                patches=patches,
+                chat_response=chat_response,
+            )
+        except Exception as exc:
+            logger.exception("section_writer failed for section=%s", section_name)
+            return AgentResult(
+                success=False,
+                chat_response=f"{display_name} 섹션 작성 중 오류가 발생했습니다: {exc}",
+                error=str(exc),
+            )
 
     async def _delegate_architecture(
         self, task: Task, doc_state: DocumentState
