@@ -272,7 +272,7 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
     const incomingAgentStatus = (doc as any).agent_status as AgentStatus | undefined
     const agentStatus = incomingAgentStatus || s.agentStatus
 
-    return { ...s, ...doc, meta: safeMeta, staffing_plan: safeSp, agentStatus }
+    return { ...s, ...doc, meta: safeMeta, staffing_plan: safeSp, agentStatus, agent_active: (doc as any).agent_active || '', agent_message: (doc as any).agent_message || '' }
   }),
 
   applyPatches: (operations) => set((s) => {

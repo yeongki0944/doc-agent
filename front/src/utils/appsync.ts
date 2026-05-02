@@ -223,7 +223,16 @@ export function handleDocumentEvent(
   if (onChat) onChat(msg)
 
   if (msg.type === 'status') {
-    store.setAgentStatus((msg as StatusMessage).status)
+    const statusMsg = msg as StatusMessage
+    store.setAgentStatus(statusMsg.status)
+    // Update agent_active and agent_message from status event
+    const extra = msg as any
+    if (extra.agent_active !== undefined || extra.message !== undefined) {
+      store.setDocument({
+        agent_active: extra.agent_active || '',
+        agent_message: extra.message || '',
+      } as any)
+    }
   }
 }
 
