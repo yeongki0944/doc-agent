@@ -1,158 +1,212 @@
 /**
- * AppSync Events API WebSocket client.
- * Protocol: https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html
+ * AppSync Events API — Singleton WebSocket client with dynamic subscriptions.
+ *
+ * One WebSocket connection for the entire app lifetime.
+ * Document switches only send unsubscribe/subscribe messages (no reconnect).
+ * Auto-reconnect with exponential backoff restores all active subscriptions.
  */
 
 import { useDocumentStore, type AgentStatus, type PatchOperation } from '../store/documentStore'
 
+// ---------------------------------------------------------------------------
+// Message types
+// ---------------------------------------------------------------------------
+
 export interface ChatChunkMessage { type: 'chat_chunk'; text: string }
-export interface ChatDoneMessage { type: 'chat_done'; actions?: string[]; document?: unknown }
+export interface ChatDoneMessage { type: 'chat_done'; text?: string; actions?: string[]; document?: any; status?: string }
 export interface StatusMessage { type: 'status'; status: AgentStatus; message?: string }
-export interface PatchMessage {
-  type: 'patch'
-  version_before: number
-  version_after: number
-  operations: PatchOperation[]
-}
+export interface PatchMessage { type: 'patch'; operations: PatchOperation[] }
 export type ChatMessage = ChatChunkMessage | ChatDoneMessage
 export type AppSyncMessage = ChatMessage | StatusMessage | PatchMessage
 
 type MessageHandler = (msg: AppSyncMessage) => void
 type Unsubscribe = () => void
 
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
 const APPSYNC_HTTP_URL = (import.meta.env.VITE_APPSYNC_HTTP_URL as string) || ''
 const APPSYNC_WS_URL = (import.meta.env.VITE_APPSYNC_WS_URL as string) || ''
 const APPSYNC_API_KEY = (import.meta.env.VITE_APPSYNC_API_KEY as string) || ''
 
+const HTTP_HOST = APPSYNC_HTTP_URL ? new URL(APPSYNC_HTTP_URL).host : ''
+
 function base64url(obj: object): string {
-  return btoa(JSON.stringify(obj))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '')
+  return btoa(JSON.stringify(obj)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-export function subscribeToChannel(channel: string, onMessage: MessageHandler): Unsubscribe {
-  if (!APPSYNC_WS_URL || !APPSYNC_API_KEY) {
-    console.warn('[appsync] Missing config, stub mode')
-    return () => {}
+// ---------------------------------------------------------------------------
+// Singleton WebSocket Manager
+// ---------------------------------------------------------------------------
+
+interface Subscription {
+  channel: string
+  handler: MessageHandler
+}
+
+class AppSyncClient {
+  private ws: WebSocket | null = null
+  private connected = false
+  private intentionallyClosed = false
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectDelay = 1000
+  private subscriptions = new Map<string, Subscription>() // subId → {channel, handler}
+  private pendingSubscribes: string[] = [] // subIds to subscribe after connection_ack
+
+  connect(): void {
+    if (!APPSYNC_WS_URL || !APPSYNC_API_KEY || this.ws) return
+    this.intentionallyClosed = false
+    this._doConnect()
   }
 
-  let ws: WebSocket | null = null
-  let closed = false
-  let subId: string | null = null
-
-  // Derive HTTP host for auth headers
-  const httpHost = APPSYNC_HTTP_URL
-    ? new URL(APPSYNC_HTTP_URL).host
-    : APPSYNC_WS_URL.replace('wss://', '').replace('/event/realtime', '').replace('realtime-api', 'api')
-
-  const connect = () => {
-    if (closed) return
+  private _doConnect(): void {
     try {
-      const authHeader = base64url({ host: httpHost, 'x-api-key': APPSYNC_API_KEY })
-      // URL must end with /event/realtime
+      const authHeader = base64url({ host: HTTP_HOST, 'x-api-key': APPSYNC_API_KEY })
       let wsUrl = APPSYNC_WS_URL
       if (!wsUrl.endsWith('/event/realtime')) {
         wsUrl = wsUrl.replace(/\/$/, '') + '/event/realtime'
       }
 
-      console.log('[appsync] connecting to:', wsUrl)
-      console.log('[appsync] httpHost:', httpHost)
+      this.ws = new WebSocket(wsUrl, [`header-${authHeader}`, 'aws-appsync-event-ws'])
 
-      ws = new WebSocket(wsUrl, [`header-${authHeader}`, 'aws-appsync-event-ws'])
-
-      ws.onopen = () => {
-        console.log('[appsync] WebSocket opened, sending connection_init')
-        ws?.send(JSON.stringify({ type: 'connection_init' }))
+      this.ws.onopen = () => {
+        this.reconnectDelay = 1000 // reset backoff
+        this.ws?.send(JSON.stringify({ type: 'connection_init' }))
       }
 
-      ws.onmessage = (evt) => {
+      this.ws.onmessage = (evt) => {
         try {
           const data = JSON.parse(evt.data)
-          console.log('[appsync] message:', data.type, data)
-
-          if (data.type === 'connection_ack') {
-            subId = `sub-${Date.now()}`
-            ws?.send(JSON.stringify({
-              type: 'subscribe',
-              id: subId,
-              channel: `/docs/${channel}`,
-              authorization: {
-                'x-api-key': APPSYNC_API_KEY,
-                host: httpHost,
-              },
-            }))
-          }
-
-          if (data.type === 'subscribe_success') {
-            console.log('[appsync] subscribed:', channel)
-            useDocumentStore.getState().setAppsyncConnected(true)
-          }
-
-          if (data.type === 'data') {
-            // AppSync Events: data.event can be a single JSON string or an array
-            const raw = data.event || data.events
-            let events: string[]
-            if (Array.isArray(raw)) {
-              events = raw
-            } else if (typeof raw === 'string') {
-              events = [raw]
-            } else {
-              events = []
-            }
-            for (const e of events) {
-              try {
-                const parsed = typeof e === 'string' ? JSON.parse(e) : e
-                console.log('[appsync] parsed event:', parsed.type)
-                onMessage(parsed)
-              } catch (err) {
-                console.error('[appsync] event parse error:', err)
-              }
-            }
-          }
-
-          // keep-alive — no action needed
+          this._handleMessage(data)
         } catch { /* ignore */ }
       }
 
-      ws.onclose = (evt) => {
-        console.log('[appsync] WebSocket closed:', evt.code, evt.reason)
-        useDocumentStore.getState().setAppsyncConnected(false)
-        if (!closed) setTimeout(connect, 3000)
+      this.ws.onclose = () => {
+        this.ws = null
+        this._setConnected(false)
+        if (!this.intentionallyClosed) {
+          // Exponential backoff reconnect
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 10000)
+            this._doConnect()
+          }, this.reconnectDelay)
+        }
       }
 
-      ws.onerror = (evt) => {
-        console.error('[appsync] WebSocket error:', evt)
-        ws?.close()
+      this.ws.onerror = () => { this.ws?.close() }
+    } catch {
+      if (!this.intentionallyClosed) {
+        setTimeout(() => this._doConnect(), this.reconnectDelay)
       }
-    } catch (e) {
-      console.error('[appsync] connect error:', e)
-      if (!closed) setTimeout(connect, 5000)
     }
   }
 
-  connect()
-
-  return () => {
-    closed = true
-    if (ws && subId) {
-      try { ws.send(JSON.stringify({ type: 'unsubscribe', id: subId })) } catch { /* */ }
+  private _handleMessage(data: any): void {
+    if (data.type === 'connection_ack') {
+      this._setConnected(true)
+      // Re-subscribe all active subscriptions
+      for (const [subId, sub] of this.subscriptions) {
+        this._sendSubscribe(subId, sub.channel)
+      }
+      // Subscribe any pending
+      for (const subId of this.pendingSubscribes) {
+        const sub = this.subscriptions.get(subId)
+        if (sub) this._sendSubscribe(subId, sub.channel)
+      }
+      this.pendingSubscribes = []
     }
-    try { ws?.close() } catch { /* */ }
-    useDocumentStore.getState().setAppsyncConnected(false)
+
+    if (data.type === 'subscribe_success') {
+      console.log('[appsync] subscribed:', data.id)
+    }
+
+    if (data.type === 'data') {
+      // Find which subscription this data belongs to
+      const subId = data.id as string
+      const sub = this.subscriptions.get(subId)
+      if (!sub) return
+
+      // Parse event payload
+      const raw = data.event
+      const events: string[] = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []
+      for (const e of events) {
+        try {
+          const parsed = typeof e === 'string' ? JSON.parse(e) : e
+          sub.handler(parsed)
+        } catch { /* skip */ }
+      }
+    }
+
+    // keep-alive — no action needed
   }
+
+  private _sendSubscribe(subId: string, channel: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    this.ws.send(JSON.stringify({
+      type: 'subscribe',
+      id: subId,
+      channel: `/docs/${channel}`,
+      authorization: { 'x-api-key': APPSYNC_API_KEY, host: HTTP_HOST },
+    }))
+  }
+
+  private _sendUnsubscribe(subId: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+    try {
+      this.ws.send(JSON.stringify({ type: 'unsubscribe', id: subId }))
+    } catch { /* ignore */ }
+  }
+
+  subscribe(channel: string, handler: MessageHandler): Unsubscribe {
+    const subId = `sub-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    this.subscriptions.set(subId, { channel, handler })
+
+    if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
+      this._sendSubscribe(subId, channel)
+    } else {
+      this.pendingSubscribes.push(subId)
+    }
+
+    return () => {
+      this._sendUnsubscribe(subId)
+      this.subscriptions.delete(subId)
+    }
+  }
+
+  private _setConnected(value: boolean): void {
+    this.connected = value
+    useDocumentStore.getState().setAppsyncConnected(value)
+  }
+
+  destroy(): void {
+    this.intentionallyClosed = true
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.subscriptions.clear()
+    this.ws?.close()
+    this.ws = null
+    this._setConnected(false)
+  }
+}
+
+// Singleton instance
+const client = new AppSyncClient()
+
+// Auto-connect on module load
+if (APPSYNC_WS_URL && APPSYNC_API_KEY) {
+  client.connect()
+}
+
+// ---------------------------------------------------------------------------
+// Public API (unchanged interface for consumers)
+// ---------------------------------------------------------------------------
+
+export function subscribeToChannel(channel: string, onMessage: MessageHandler): Unsubscribe {
+  return client.subscribe(channel, onMessage)
 }
 
 function isPatchMessage(msg: AppSyncMessage): msg is PatchMessage {
   return msg.type === 'patch' && Array.isArray((msg as PatchMessage).operations)
-}
-
-function isStatusMessage(msg: AppSyncMessage): msg is StatusMessage {
-  return msg.type === 'status'
-}
-
-function isChatMessage(msg: AppSyncMessage): msg is ChatMessage {
-  return msg.type === 'chat_chunk' || msg.type === 'chat_done'
 }
 
 export function handleDocumentEvent(
@@ -166,13 +220,10 @@ export function handleDocumentEvent(
     return
   }
 
-  // Forward all messages (status, chat_chunk, chat_done) to the callback
-  if (onChat) {
-    onChat(msg)
-  }
+  if (onChat) onChat(msg)
 
-  if (isStatusMessage(msg)) {
-    store.setAgentStatus(msg.status)
+  if (msg.type === 'status') {
+    store.setAgentStatus((msg as StatusMessage).status)
   }
 }
 
@@ -180,13 +231,13 @@ export function initDocumentSubscription(
   docId: string,
   onChat?: (msg: AppSyncMessage) => void,
 ): Unsubscribe {
-  const unsubscribers = [
-    subscribeToChannel(`${docId}/chat`, (msg) => handleDocumentEvent(msg, onChat)),
-    subscribeToChannel(`${docId}/status`, (msg) => handleDocumentEvent(msg, onChat)),
-    subscribeToChannel(`${docId}/patch`, (msg) => handleDocumentEvent(msg, onChat)),
+  const handler = (msg: AppSyncMessage) => handleDocumentEvent(msg, onChat)
+
+  const unsubs = [
+    client.subscribe(`${docId}/chat`, handler),
+    client.subscribe(`${docId}/status`, handler),
+    client.subscribe(`${docId}/patch`, handler),
   ]
 
-  return () => {
-    for (const unsubscribe of unsubscribers) unsubscribe()
-  }
+  return () => { unsubs.forEach(fn => fn()) }
 }
