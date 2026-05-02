@@ -44,3 +44,9 @@
 - **증상:** `aws_appsync_api` 리소스 타입 없음
 - **원인:** AppSync Events API는 aws provider v6.x에서 추가됨
 - **해결:** `aws_cloudformation_stack`으로 CloudFormation 경유 생성
+
+
+## Lambda handler.py에서 agent 패키지 import 불가
+- **증상:** `No module named 'agent'` 에러
+- **원인:** Lambda는 `handler.py` 단일 파일로 배포됨. `agent/` 디렉토리는 AgentCore Runtime에만 존재.
+- **규칙:** handler.py에서 `from agent.*` import 절대 금지. agent 패키지의 기능이 필요하면 handler.py에 인라인으로 구현하거나, Runtime을 통해 호출.

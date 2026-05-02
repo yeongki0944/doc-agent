@@ -25,10 +25,42 @@ interface Message {
   id: string
   role: 'user' | 'agent'
   text: string
+  thinking?: string[]  // progress steps (collapsible)
 }
 
 function toHistoryMessage(m: Message): HistoryMessage {
   return { id: m.id, role: m.role, content: m.text, timestamp: new Date().toISOString() }
+}
+
+function ThinkingBlock({ steps, latestStep }: { steps: string[]; latestStep: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const isDone = latestStep.includes('✅')
+
+  return (
+    <div style={{
+      marginBottom: 8, padding: '6px 12px', borderRadius: 8,
+      background: color.bgPrimary, border: `1px solid ${color.border}`,
+      maxWidth: '85%', fontSize: 13,
+    }}>
+      <div
+        onClick={() => setExpanded(!expanded)}
+        style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, color: color.textSecondary }}
+      >
+        <span style={{ fontSize: 10 }}>{expanded ? '▼' : '▶'}</span>
+        <span>{isDone ? '✅ Thinking 완료' : `⏳ ${latestStep}`}</span>
+        <span style={{ fontSize: 11, color: color.textMuted, marginLeft: 'auto' }}>{steps.length}단계</span>
+      </div>
+      {expanded && (
+        <div style={{ marginTop: 6, paddingLeft: 16, borderLeft: `2px solid ${color.border}` }}>
+          {steps.map((step, i) => (
+            <div key={i} style={{ fontSize: 12, color: color.textMuted, padding: '2px 0' }}>
+              {step}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function ChatPanel({ docId }: ChatPanelProps) {
@@ -42,6 +74,7 @@ export function ChatPanel({ docId }: ChatPanelProps) {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const streamMsgIdRef = useRef<string | null>(null)
+  const thinkingStepsRef = useRef<string[]>([])
 
   // Initialize AppSync subscription on mount
   useEffect(() => {
@@ -51,13 +84,20 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       if (msg.type === 'status') {
         const statusMsg = (msg as any).message || ''
         if (statusMsg) {
+          thinkingStepsRef.current = [...thinkingStepsRef.current, statusMsg]
           setMessages(prev => {
-            const statusId = 'status-indicator'
-            const existing = prev.find(m => m.id === statusId)
-            if (existing) {
-              return prev.map(m => m.id === statusId ? { ...m, text: statusMsg } : m)
+            const thinkingId = 'thinking-block'
+            const thinkingMsg: Message = {
+              id: thinkingId,
+              role: 'agent',
+              text: statusMsg,
+              thinking: [...thinkingStepsRef.current],
             }
-            return [...prev, { id: statusId, role: 'agent', text: statusMsg }]
+            const existing = prev.find(m => m.id === thinkingId)
+            if (existing) {
+              return prev.map(m => m.id === thinkingId ? thinkingMsg : m)
+            }
+            return [...prev, thinkingMsg]
           })
         }
       }
@@ -66,15 +106,20 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         const progressMsg = msg as any
         const text = progressMsg.message || ''
         if (text) {
+          thinkingStepsRef.current = [...thinkingStepsRef.current, text]
           setMessages(prev => {
-            // Replace existing progress indicator or add new one
-            const progressId = 'progress-indicator'
-            const existing = prev.find(m => m.id === progressId)
-            if (existing) {
-              return prev.map(m => m.id === progressId ? { ...m, text } : m)
+            const thinkingId = 'thinking-block'
+            const thinkingMsg: Message = {
+              id: thinkingId,
+              role: 'agent',
+              text,
+              thinking: [...thinkingStepsRef.current],
             }
-            // Remove status-indicator and add progress
-            return [...prev.filter(m => m.id !== 'status-indicator'), { id: progressId, role: 'agent', text }]
+            const existing = prev.find(m => m.id === thinkingId)
+            if (existing) {
+              return prev.map(m => m.id === thinkingId ? thinkingMsg : m)
+            }
+            return [...prev.filter(m => m.id !== 'status-indicator' && m.id !== 'progress-indicator'), thinkingMsg]
           })
         }
       }
@@ -97,14 +142,25 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         streamMsgIdRef.current = null
         const doneMsg = msg as any
         const text = doneMsg.text || ''
+        const steps = [...thinkingStepsRef.current]
+        thinkingStepsRef.current = []
 
-        // Remove status/progress indicators and add final message
         setMessages(prev => {
-          const filtered = prev.filter(m => m.id !== 'status-indicator' && m.id !== 'progress-indicator')
-          // If streaming already added a message, keep it. Otherwise add the final text.
+          // Convert thinking-block to final form with all steps
+          let filtered = prev.filter(m => m.id !== 'status-indicator' && m.id !== 'progress-indicator')
+
+          // Update thinking block to final state
+          filtered = filtered.map(m => {
+            if (m.id === 'thinking-block') {
+              return { ...m, text: '✅ 완료', thinking: [...steps, '✅ 완료'] }
+            }
+            return m
+          })
+
+          // Add final agent response
           const hasStream = filtered.some(m => m.id.startsWith('stream-'))
           if (!hasStream && text) {
-            return [...filtered, { id: `done-${Date.now()}`, role: 'agent', text }]
+            filtered = [...filtered, { id: `done-${Date.now()}`, role: 'agent' as const, text }]
           }
           return filtered
         })
@@ -138,6 +194,7 @@ export function ChatPanel({ docId }: ChatPanelProps) {
     setHistoryLoaded(false)
     setLoading(false)
     streamMsgIdRef.current = null
+    thinkingStepsRef.current = []
   }, [docId])
 
   // Listen for user direct edits on document fields → inject as user message for LLM context
@@ -259,17 +316,21 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       <StatusBar />
       <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
         {messages.map(m => (
-          <div key={m.id} style={{
-            marginBottom: 8, padding: '8px 12px', borderRadius: 8,
-            background: m.role === 'user' ? color.bgSubtle : color.bgSurface,
-            border: m.role === 'agent' ? `1px solid ${color.border}` : undefined,
-            maxWidth: '85%', marginLeft: m.role === 'user' ? 'auto' : 0,
-          }}>
-            <div style={{ fontSize: 11, color: color.textMuted, marginBottom: 2 }}>
-              {m.role === 'user' ? '나' : 'Agent'}
+          m.thinking ? (
+            <ThinkingBlock key={m.id} steps={m.thinking} latestStep={m.text} />
+          ) : (
+            <div key={m.id} style={{
+              marginBottom: 8, padding: '8px 12px', borderRadius: 8,
+              background: m.role === 'user' ? color.bgSubtle : color.bgSurface,
+              border: m.role === 'agent' ? `1px solid ${color.border}` : undefined,
+              maxWidth: '85%', marginLeft: m.role === 'user' ? 'auto' : 0,
+            }}>
+              <div style={{ fontSize: 11, color: color.textMuted, marginBottom: 2 }}>
+                {m.role === 'user' ? '나' : 'Agent'}
+              </div>
+              {m.text}
             </div>
-            {m.text}
-          </div>
+          )
         ))}
         {loading && (
           <div style={{ padding: '8px 12px', color: color.textMuted, fontSize: 13 }}>
