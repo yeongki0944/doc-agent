@@ -408,7 +408,7 @@ def _document_shell(doc_id: str, user_id: str) -> dict:
     }
 
 
-def _runtime_response(runtime_result: dict) -> dict:
+def _runtime_response(runtime_result: dict, document: dict | None = None) -> dict:
     body = {
         "agent_response": runtime_result.get("result", ""),
         "version": runtime_result.get("version", 0),
@@ -416,7 +416,10 @@ def _runtime_response(runtime_result: dict) -> dict:
     }
     if "actions" in runtime_result:
         body["actions"] = runtime_result["actions"]
+    if document:
+        body["document"] = document
     status_code = 200 if body["status"] == "ok" else 500
+    print(f"[runtime_response] status={body['status']} response_len={len(body['agent_response'])} has_document={document is not None}")
     return _response(status_code, body)
 
 
@@ -472,7 +475,17 @@ def _handle_runtime_invocation(
         "history": history,
         "user_id": user_id,
     })
-    return _runtime_response(runtime_result)
+    print(f"[runtime] result keys={list(runtime_result.keys())} status={runtime_result.get('status')} result_len={len(runtime_result.get('result', ''))} result_preview={runtime_result.get('result', '')[:200]}")
+
+    # Re-fetch document from DynamoDB after Runtime processing
+    # Runtime may have updated the document via patches
+    updated_resp = table.get_item(Key={"document_id": doc_id})
+    updated_doc = updated_resp.get("Item")
+    if updated_doc:
+        # Convert Decimal to JSON-safe format
+        updated_doc = json.loads(_json(updated_doc))
+
+    return _runtime_response(runtime_result, document=updated_doc)
 
 
 DEFAULT_BOUNDED_WINDOW = 20

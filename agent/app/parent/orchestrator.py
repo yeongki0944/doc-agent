@@ -233,92 +233,30 @@ class ParentOrchestrator:
 
             # Step 3: Build task plan (intent classification)
             plan = build_task_plan(user_message)
-
-            # Dual-entry mode detection
-            msg_lower = user_message.lower()
-            has_architecture = any(
-                kw in msg_lower
-                for kw in [".drawio", "아키텍처 파일", "architecture file"]
-            )
+            logger.info("Task plan: %d tasks — %s", len(plan.tasks), [(t.agent, t.action) for t in plan.tasks])
 
             # --- PLANNING → DELEGATING ---
             self._transition(OrchestratorState.DELEGATING)
 
-            if has_architecture:
-                plan.tasks.insert(
-                    0,
-                    Task(
-                        agent="architecture_agent",
-                        action="analyze_existing",
-                        params={"message": user_message},
-                    ),
-                )
-            else:
-                if (
-                    not any(t.agent == "discovery_agent" for t in plan.tasks)
-                    and not any(t.agent == "conversation_agent" for t in plan.tasks)
-                ):
-                    plan.tasks.insert(
-                        0,
-                        Task(
-                            agent="discovery_agent",
-                            action="collect_info",
-                            params={"message": user_message},
-                        ),
-                    )
-
             # Step 4: Delegate tasks to sub-agents and collect results
+            # All routing is handled by LLM-based task_planner — no keyword overrides
             all_patches: list[Patch] = []
             chat_parts: list[str] = [plan.chat_response] if plan.chat_response else []
 
-            # Check for review/export intents (Task 10.2)
-            is_review = self._detect_review_intent(user_message)
-            is_export = self._detect_export_intent(user_message)
-
-            if is_review:
-                review_result = await self._handle_review_request(
-                    doc_id, doc_state
-                )
-                if review_result.chat_response:
-                    chat_parts.append(review_result.chat_response)
-                if review_result.patches:
+            for task in plan.tasks:
+                logger.info("Executing task: agent=%s action=%s", task.agent, task.action)
+                result = await self.delegate_task(task.agent, task, doc_state)
+                if result.chat_response:
+                    chat_parts.append(result.chat_response)
+                if result.patches:
                     from agent.app.parent.patch_builder import build_patch
                     patch = build_patch(
                         doc_id=doc_id,
-                        agent="reviewer_agent",
+                        agent=task.agent,
                         version=current_version,
-                        operations=review_result.patches,
+                        operations=result.patches,
                     )
                     all_patches.append(patch)
-            elif is_export:
-                export_result = await self._handle_export_request(
-                    doc_id, doc_state
-                )
-                if export_result.chat_response:
-                    chat_parts.append(export_result.chat_response)
-                if export_result.patches:
-                    from agent.app.parent.patch_builder import build_patch
-                    patch = build_patch(
-                        doc_id=doc_id,
-                        agent="formatter_agent",
-                        version=current_version,
-                        operations=export_result.patches,
-                    )
-                    all_patches.append(patch)
-            else:
-                for task in plan.tasks:
-                    result = await self.delegate_task(task.agent, task, doc_state)
-                    if result.chat_response:
-                        chat_parts.append(result.chat_response)
-                    if result.patches:
-                        from agent.app.parent.patch_builder import build_patch
-                        patch = build_patch(
-                            doc_id=doc_id,
-                            agent=task.agent,
-                            version=current_version,
-                            operations=result.patches,
-                        )
-                        all_patches.append(patch)
 
             # Milestone sync trigger (Task 10.1 — Req 14.1)
             # After staffing/scope changes, rebuild milestones
