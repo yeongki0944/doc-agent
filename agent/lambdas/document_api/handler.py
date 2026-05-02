@@ -750,7 +750,7 @@ def _handle_async_chat(payload: dict) -> dict:
             "history": history,
             "user_id": user_id,
         })
-        print(f"[async_chat] runtime result: status={runtime_result.get('status')} result_len={len(runtime_result.get('result', ''))}")
+        print(f"[async_chat] runtime result: status={runtime_result.get('status')} result_len={len(runtime_result.get('result', ''))} keys={list(runtime_result.keys())} execution_log_type={type(runtime_result.get('execution_log')).__name__}")
 
         # Step 3: Extract execution log and build detailed thinking steps
         agent_response = runtime_result.get("result", "")
