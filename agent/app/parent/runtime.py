@@ -176,6 +176,7 @@ def invoke(payload: dict) -> dict:
         "result": plan.chat_response,
         "version": plan.new_version,
         "status": "ok",
+        "execution_log": plan.execution_log,
     }
 
 

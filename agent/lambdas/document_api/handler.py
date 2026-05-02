@@ -783,12 +783,36 @@ def _handle_async_chat(payload: dict) -> dict:
         })
         print(f"[async_chat] runtime result: status={runtime_result.get('status')} result_len={len(runtime_result.get('result', ''))}")
 
-        # Step 4: Runtime complete — summarize
+        # Step 4: Runtime complete — extract execution log
         agent_response = runtime_result.get("result", "")
-        step4 = "✅ 작업 완료 — 결과를 정리하고 있습니다..."
-        thinking_steps.append(step4)
+        execution_log = runtime_result.get("execution_log", [])
+
+        # Convert execution_log to detailed thinking steps
+        agent_labels = {
+            "discovery_agent": "📋 정보 수집",
+            "section_writer_agent": "✏️ 섹션 작성",
+            "staffing_agent": "👥 팀 구성",
+            "cost_agent": "💰 비용 산정",
+            "architecture_agent": "🏗️ 아키텍처",
+            "reviewer_agent": "🔎 리뷰",
+            "formatter_agent": "📄 DOCX",
+            "conversation_agent": "💬 대화",
+        }
+        for entry in execution_log:
+            agent_name = entry.get("agent", "")
+            label = agent_labels.get(agent_name, agent_name)
+            action = entry.get("action", "")
+            success = entry.get("success", True)
+            patches = entry.get("patches_count", 0)
+            if success:
+                thinking_steps.append(f"  ├─ {label}: {action} 완료 ✅ ({patches}건 변경)")
+            else:
+                thinking_steps.append(f"  └─ {label}: {action} 실패 ⚠️")
+
+        thinking_steps.append("✅ 작업 완료")
         _publish_event(chat_channel, {
-            "type": "progress", "agent": "runtime", "step": "complete", "message": step4,
+            "type": "progress", "agent": "runtime", "step": "complete",
+            "message": "✅ 작업 완료 — 결과를 정리하고 있습니다...",
         })
 
         # Step 5: Saving results

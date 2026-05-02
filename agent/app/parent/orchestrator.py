@@ -86,6 +86,7 @@ class TaskPlan:
     chat_response: str = ""
     status_updates: list[AgentStatus] = field(default_factory=list)
     new_version: int = 0
+    execution_log: list[dict] = field(default_factory=list)
 
 
 
@@ -298,6 +299,9 @@ class ParentOrchestrator:
             await self._detect_and_store_long_term_facts(doc_id, user_message, doc_state)
 
             await self.publish_status(doc_id, AgentStatus.idle)
+
+            # Include execution log in plan for handler.py
+            plan.execution_log = self._audit_log.copy()
 
         except VersionConflictError as exc:
             logger.warning("Version conflict for doc_id=%s: %s", doc_id, exc)

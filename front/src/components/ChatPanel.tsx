@@ -258,15 +258,8 @@ export function ChatPanel({ docId }: ChatPanelProps) {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => {
       const historyMsgs = msgs
-        .filter(m => m.id !== '0')
-        .map(m => {
-          const hm = toHistoryMessage(m)
-          if (m.thinking && m.thinking.length > 0) {
-            ;(hm as any).type = 'thinking'
-            ;(hm as any).thinking_steps = m.thinking
-          }
-          return hm
-        })
+        .filter(m => m.id !== '0' && !m.id.startsWith('thinking-'))
+        .map(toHistoryMessage)
       saveHistoryToServer(API_BASE, docId, SESSION_ID, historyMsgs, BOUNDED_WINDOW)
     }, 1000)
   }
