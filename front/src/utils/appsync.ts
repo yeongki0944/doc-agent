@@ -56,15 +56,20 @@ export function subscribeToChannel(channel: string, onMessage: MessageHandler): 
         wsUrl = wsUrl.replace(/\/$/, '') + '/event/realtime'
       }
 
+      console.log('[appsync] connecting to:', wsUrl)
+      console.log('[appsync] httpHost:', httpHost)
+
       ws = new WebSocket(wsUrl, [`header-${authHeader}`, 'aws-appsync-event-ws'])
 
       ws.onopen = () => {
+        console.log('[appsync] WebSocket opened, sending connection_init')
         ws?.send(JSON.stringify({ type: 'connection_init' }))
       }
 
       ws.onmessage = (evt) => {
         try {
           const data = JSON.parse(evt.data)
+          console.log('[appsync] message:', data.type, data)
 
           if (data.type === 'connection_ack') {
             subId = `sub-${Date.now()}`
@@ -98,12 +103,16 @@ export function subscribeToChannel(channel: string, onMessage: MessageHandler): 
         } catch { /* ignore */ }
       }
 
-      ws.onclose = () => {
+      ws.onclose = (evt) => {
+        console.log('[appsync] WebSocket closed:', evt.code, evt.reason)
         useDocumentStore.getState().setAppsyncConnected(false)
         if (!closed) setTimeout(connect, 3000)
       }
 
-      ws.onerror = () => { ws?.close() }
+      ws.onerror = (evt) => {
+        console.error('[appsync] WebSocket error:', evt)
+        ws?.close()
+      }
     } catch (e) {
       console.error('[appsync] connect error:', e)
       if (!closed) setTimeout(connect, 5000)
