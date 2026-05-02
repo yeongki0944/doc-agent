@@ -725,31 +725,52 @@ def _handle_async_chat(payload: dict) -> dict:
     chat_channel = f"/docs/{doc_id}/chat"
 
     try:
-        # Step 1: Intent analysis
+        # Step 1: Analyze message intent
         _update_agent_status(doc_id, "processing", "task_planner", "🔍 메시지 의도 분석 중...")
         _publish_event(chat_channel, {
-            "type": "status",
-            "status": "processing",
-            "agent_active": "task_planner",
-            "message": "🔍 메시지 의도를 분석하고 있습니다...",
+            "type": "progress",
+            "agent": "task_planner",
+            "step": "start",
+            "message": f"🔍 \"{message[:50]}{'...' if len(message) > 50 else ''}\" 분석 중...",
         })
 
-        # Step 2: Determine which agents will run (via LLM router in Runtime)
-        _update_agent_status(doc_id, "processing", "runtime", "📋 작업 계획을 수립하고 있습니다...")
-        _publish_event(chat_channel, {
-            "type": "status",
-            "status": "processing",
-            "agent_active": "runtime",
-            "message": "📋 작업 계획을 수립하고 있습니다...",
-        })
+        # Step 2: Determine intent via LLM router (quick call)
+        from agent.app.parent.task_planner import build_task_plan as _local_build_plan
+        try:
+            plan = _local_build_plan(message)
+            agent_names = [t.agent for t in plan.tasks]
+            agent_labels = {
+                "discovery_agent": "📋 정보 수집",
+                "section_writer_agent": "✏️ 섹션 작성",
+                "staffing_agent": "👥 팀 구성",
+                "cost_agent": "💰 비용 산정",
+                "architecture_agent": "🏗️ 아키텍처",
+                "reviewer_agent": "🔎 리뷰",
+                "formatter_agent": "📄 DOCX",
+                "conversation_agent": "💬 대화",
+            }
+            plan_desc = ", ".join(agent_labels.get(a, a) for a in agent_names)
+            _publish_event(chat_channel, {
+                "type": "progress",
+                "agent": "task_planner",
+                "step": "planned",
+                "message": f"📋 작업 계획: {plan_desc}",
+            })
+        except Exception:
+            _publish_event(chat_channel, {
+                "type": "progress",
+                "agent": "task_planner",
+                "step": "planned",
+                "message": "📋 작업 계획 수립 완료",
+            })
 
-        # Step 3: Invoke Runtime (sub-agents execute here)
-        _update_agent_status(doc_id, "processing", "runtime", "🧠 서브에이전트가 작업을 수행하고 있습니다...")
+        # Step 3: Execute via Runtime
+        _update_agent_status(doc_id, "processing", "runtime", "🧠 에이전트 실행 중...")
         _publish_event(chat_channel, {
-            "type": "status",
-            "status": "processing",
-            "agent_active": "runtime",
-            "message": "🧠 서브에이전트가 작업을 수행하고 있습니다...",
+            "type": "progress",
+            "agent": "runtime",
+            "step": "executing",
+            "message": "🧠 에이전트가 작업을 수행하고 있습니다...",
         })
         runtime_result = _invoke_runtime({
             "doc_id": doc_id,
@@ -759,14 +780,17 @@ def _handle_async_chat(payload: dict) -> dict:
         })
         print(f"[async_chat] runtime result: status={runtime_result.get('status')} result_len={len(runtime_result.get('result', ''))}")
 
-        # Step 4: Saving results
-        _update_agent_status(doc_id, "processing", "saving", "💾 결과를 저장하고 있습니다...")
+        # Step 4: Runtime complete — summarize
+        agent_response = runtime_result.get("result", "")
         _publish_event(chat_channel, {
-            "type": "status",
-            "status": "processing",
-            "agent_active": "saving",
-            "message": "💾 결과를 저장하고 있습니다...",
+            "type": "progress",
+            "agent": "runtime",
+            "step": "complete",
+            "message": f"✅ 작업 완료 — 결과를 정리하고 있습니다...",
         })
+
+        # Step 5: Saving results
+        _update_agent_status(doc_id, "processing", "saving", "💾 결과 저장 중...")
 
         # Step 5: Re-fetch updated document from DynamoDB
         updated_resp = table.get_item(Key={"document_id": doc_id})
@@ -774,8 +798,7 @@ def _handle_async_chat(payload: dict) -> dict:
         if updated_doc:
             updated_doc = json.loads(_json(updated_doc))
 
-        # Step 4: Save agent response to conversation history (source of truth)
-        agent_response = runtime_result.get("result", "")
+        # Step 6: Save agent response to conversation history (source of truth)
         now = _now_iso()
         agent_msg = {
             "id": f"agent-{uuid.uuid4().hex[:8]}",

@@ -36,13 +36,9 @@ class ProgressPublisher:
         self._table = table
 
     def publish(self, agent: str, message: str, step: str = "") -> None:
-        """Publish a progress event.
+        """Publish a progress event."""
+        print(f"[progress] agent={agent} step={step} message={message}")
 
-        Args:
-            agent: Sub-agent name (e.g. "discovery_agent")
-            message: Human-readable progress message
-            step: Optional step identifier (e.g. "extracting", "saving")
-        """
         # 1. Update DynamoDB
         if self._table:
             try:
@@ -67,6 +63,7 @@ class ProgressPublisher:
 
     def _publish_appsync(self, agent: str, message: str, step: str) -> None:
         appsync_url, api_key = _get_appsync_config()
+        print(f"[progress] appsync config: url={bool(appsync_url)} key={bool(api_key)}")
         if not appsync_url or not api_key:
             logger.debug("progress: AppSync not configured (url=%s key=%s)", bool(appsync_url), bool(api_key))
             return
@@ -93,4 +90,5 @@ class ProgressPublisher:
             )
             urllib.request.urlopen(req, timeout=3)
         except Exception as e:
+            print(f"[progress] AppSync publish failed: {e}")
             logger.debug("progress AppSync publish failed: %s", e)
