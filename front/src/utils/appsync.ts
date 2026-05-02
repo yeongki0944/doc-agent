@@ -90,12 +90,24 @@ export function subscribeToChannel(channel: string, onMessage: MessageHandler): 
           }
 
           if (data.type === 'data') {
-            // Events API uses "event" (array of stringified JSON)
-            const events: string[] = data.event || data.events || []
+            // AppSync Events: data.event can be a single JSON string or an array
+            const raw = data.event || data.events
+            let events: string[]
+            if (Array.isArray(raw)) {
+              events = raw
+            } else if (typeof raw === 'string') {
+              events = [raw]
+            } else {
+              events = []
+            }
             for (const e of events) {
               try {
-                onMessage(typeof e === 'string' ? JSON.parse(e) : e)
-              } catch { /* skip */ }
+                const parsed = typeof e === 'string' ? JSON.parse(e) : e
+                console.log('[appsync] parsed event:', parsed.type)
+                onMessage(parsed)
+              } catch (err) {
+                console.error('[appsync] event parse error:', err)
+              }
             }
           }
 
