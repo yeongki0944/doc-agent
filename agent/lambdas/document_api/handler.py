@@ -760,11 +760,55 @@ def _handle_async_chat(payload: dict) -> dict:
     user_id = payload["user_id"]
     chat_channel = f"/docs/{doc_id}/chat"
     thinking_steps = []
+    thinking_msg_id = f"thinking-{uuid.uuid4().hex[:8]}"
 
     def _progress(step: str, agent: str = "runtime"):
-        """Append thinking step to history + send refresh signal."""
+        """Update thinking message in DynamoDB + send refresh signal."""
         thinking_steps.append(step)
         _update_agent_status(doc_id, "processing", agent, step)
+        # Update the thinking message in history (replace entire message)
+        try:
+            # First, try to find and update existing thinking message
+            hist_resp = history_table.get_item(Key={"document_id": doc_id, "session_id": "default"})
+            hist_item = hist_resp.get("Item", {})
+            messages = hist_item.get("messages", [])
+
+            # Find existing thinking message or append new one
+            thinking_found = False
+            for i, m in enumerate(messages):
+                if m.get("id") == thinking_msg_id:
+                    messages[i] = {
+                        "id": thinking_msg_id,
+                        "role": "agent",
+                        "content": step,
+                        "timestamp": _now_iso(),
+                        "type": "thinking",
+                        "thinking_steps": list(thinking_steps),
+                    }
+                    thinking_found = True
+                    break
+
+            if not thinking_found:
+                messages.append({
+                    "id": thinking_msg_id,
+                    "role": "agent",
+                    "content": step,
+                    "timestamp": _now_iso(),
+                    "type": "thinking",
+                    "thinking_steps": list(thinking_steps),
+                })
+
+            history_table.put_item(Item=json.loads(_json({
+                "document_id": doc_id,
+                "session_id": "default",
+                "user_id": user_id,
+                "messages": messages,
+                "bounded_window": DEFAULT_BOUNDED_WINDOW,
+                "total_count": len(messages),
+                "updated_at": _now_iso(),
+            }), parse_float=Decimal))
+        except Exception as e:
+            print(f"[progress] DynamoDB update failed: {e}")
         _publish_refresh(doc_id)
 
     try:
@@ -858,19 +902,15 @@ def _handle_async_chat(payload: dict) -> dict:
                 updated_doc["title"] = new_title
             updated_doc = json.loads(_json(updated_doc))
 
-        # Step 6: Save thinking block + agent response to history (atomic append)
-        thinking_steps.append("✅ 완료")
+        # Step 6: Finalize thinking + save agent response
+        _progress("✅ 작업 완료", "saving")
         now = _now_iso()
 
-        _append_history_message(doc_id, user_id, {
-            "id": f"thinking-{uuid.uuid4().hex[:8]}",
-            "role": "agent",
-            "content": "✅ 완료",
-            "timestamp": now,
-            "type": "thinking",
-            "thinking_steps": thinking_steps,
-        })
+        # Final update of thinking message with all steps
+        thinking_steps.append("✅ 완료")
+        _progress("✅ 완료", "complete")
 
+        # Append agent response
         _append_history_message(doc_id, user_id, {
             "id": f"agent-{uuid.uuid4().hex[:8]}",
             "role": "agent",
@@ -878,7 +918,7 @@ def _handle_async_chat(payload: dict) -> dict:
             "timestamp": now,
         })
 
-        # Step 7: Publish refresh + set idle
+        # Step 7: Set idle + refresh
         _update_agent_status(doc_id, "idle", "", "")
         _publish_refresh(doc_id)
 
