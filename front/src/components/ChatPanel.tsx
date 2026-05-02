@@ -1,14 +1,14 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useDocumentStore } from '../store/documentStore'
 import { StatusBar } from './StatusBar'
 import { initDocumentSubscription, type AppSyncMessage } from '../utils/appsync'
 import {
   type HistoryMessage,
   toBoundedApiHistory,
-  saveHistoryToServer,
   loadHistory,
 } from '../utils/conversationHistory'
 import { apiFetch } from '../auth/api'
+import { getDocument } from '../utils/api'
 import { onUserEdit } from '../utils/userEditEvent'
 import { useSessionStore } from '../store/sessionStore'
 import { color, font, space, radius } from '../styles/tokens'
@@ -71,133 +71,47 @@ export function ChatPanel({ docId }: ChatPanelProps) {
   const [loading, setLoading] = useState(false)
   const [historyLoaded, setHistoryLoaded] = useState(false)
   const setAgentStatus = useDocumentStore(s => s.setAgentStatus)
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const streamMsgIdRef = useRef<string | null>(null)
   const thinkingStepsRef = useRef<string[]>([])
   const thinkingIdRef = useRef<string>('')
 
   // Initialize AppSync subscription on mount
+  // Initialize AppSync subscription — refresh signal triggers history re-fetch
+  const fetchHistory = useCallback(() => {
+    loadHistory(API_BASE, docId, SESSION_ID).then(data => {
+      if (data && data.messages && data.messages.length > 0) {
+        const restored: Message[] = data.messages.map((m: any) => {
+          if (m.type === 'thinking' && m.thinking_steps) {
+            return { id: m.id, role: m.role as 'user' | 'agent', text: m.content, thinking: m.thinking_steps }
+          }
+          return { id: m.id, role: m.role as 'user' | 'agent', text: m.content }
+        })
+        setMessages(restored)
+      }
+      // Also refresh agent status from document
+      getDocument(docId).then(doc => {
+        if (doc) {
+          useDocumentStore.getState().setDocument(doc)
+          const status = (doc as any).agent_status || 'idle'
+          setAgentStatus(status as any)
+          if (status === 'idle') setLoading(false)
+        }
+      }).catch(() => {})
+    }).catch(() => {})
+  }, [docId, setAgentStatus])
+
   useEffect(() => {
     const unsubscribe = initDocumentSubscription(docId, (msg: AppSyncMessage) => {
       console.log('[chat] AppSync message:', msg.type)
 
-      if (msg.type === 'status') {
-        const statusMsg = (msg as any).message || ''
-        if (statusMsg) {
-          // Create new thinking block if none exists for this request
-          if (!thinkingIdRef.current) {
-            thinkingIdRef.current = `thinking-${Date.now()}`
-          }
-          const tid = thinkingIdRef.current
-          thinkingStepsRef.current = [...thinkingStepsRef.current, statusMsg]
-          setMessages(prev => {
-            const thinkingMsg: Message = {
-              id: tid,
-              role: 'agent',
-              text: statusMsg,
-              thinking: [...thinkingStepsRef.current],
-            }
-            const existing = prev.find(m => m.id === tid)
-            if (existing) {
-              return prev.map(m => m.id === tid ? thinkingMsg : m)
-            }
-            return [...prev, thinkingMsg]
-          })
-        }
-      }
-
-      if (msg.type === 'progress') {
-        const progressMsg = msg as any
-        const text = progressMsg.message || ''
-        if (text) {
-          if (!thinkingIdRef.current) {
-            thinkingIdRef.current = `thinking-${Date.now()}`
-          }
-          const tid = thinkingIdRef.current
-          thinkingStepsRef.current = [...thinkingStepsRef.current, text]
-          setMessages(prev => {
-            const thinkingMsg: Message = {
-              id: tid,
-              role: 'agent',
-              text,
-              thinking: [...thinkingStepsRef.current],
-            }
-            const existing = prev.find(m => m.id === tid)
-            if (existing) {
-              return prev.map(m => m.id === tid ? thinkingMsg : m)
-            }
-            return [...prev, thinkingMsg]
-          })
-        }
-      }
-
-      if (msg.type === 'chat_chunk') {
-        setMessages(prev => {
-          const streamId = streamMsgIdRef.current
-          if (!streamId) {
-            const newId = `stream-${Date.now()}`
-            streamMsgIdRef.current = newId
-            return [...prev.filter(m => m.id !== 'status-indicator'), { id: newId, role: 'agent', text: msg.text }]
-          }
-          return prev.map(m =>
-            m.id === streamId ? { ...m, text: m.text + msg.text } : m
-          )
-        })
-      }
-
-      if (msg.type === 'chat_done') {
-        streamMsgIdRef.current = null
-        const doneMsg = msg as any
-        const text = doneMsg.text || ''
-        const steps = [...thinkingStepsRef.current]
-        const tid = thinkingIdRef.current
-
-        // Reset for next request
-        thinkingStepsRef.current = []
-        thinkingIdRef.current = ''
-
-        setMessages(prev => {
-          let filtered = prev.filter(m => m.id !== 'status-indicator' && m.id !== 'progress-indicator')
-
-          // Update thinking block to final state
-          if (tid) {
-            filtered = filtered.map(m => {
-              if (m.id === tid) {
-                return { ...m, text: '✅ 완료', thinking: [...steps, '✅ 완료'] }
-              }
-              return m
-            })
-          }
-
-          // Add final agent response
-          const hasStream = filtered.some(m => m.id.startsWith('stream-'))
-          if (!hasStream && text) {
-            filtered = [...filtered, { id: `done-${Date.now()}`, role: 'agent' as const, text }]
-          }
-          return filtered
-        })
-
-        // Update document in store
-        if (doneMsg.document) {
-          useDocumentStore.getState().setDocument(doneMsg.document)
-        }
-
-        // Save conversation history including agent response
-        setMessages(prev => {
-          scheduleSave(prev)
-          return prev
-        })
-
-        // Refresh sidebar
-        useSessionStore.getState().fetchDocuments()
-
-        setLoading(false)
-        setAgentStatus('idle')
+      if (msg.type === 'refresh' || msg.type === 'status' || msg.type === 'progress' || msg.type === 'chat_done') {
+        // DynamoDB is source of truth — re-fetch on any signal
+        fetchHistory()
       }
     })
     return unsubscribe
-  }, [docId, setAgentStatus])
+  }, [docId, fetchHistory])
 
   // Reset state when docId changes
   useEffect(() => {
@@ -253,23 +167,8 @@ export function ChatPanel({ docId }: ChatPanelProps) {
     return () => { cancelled = true }
   }, [historyLoaded, docId])
 
-  // Debounced save to server after messages change
-  const scheduleSave = (msgs: Message[]) => {
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = setTimeout(() => {
-      const historyMsgs = msgs
-        .filter(m => m.id !== '0')
-        .map(m => {
-          const hm = toHistoryMessage(m)
-          if (m.thinking && m.thinking.length > 0) {
-            ;(hm as any).type = 'thinking'
-            ;(hm as any).thinking_steps = m.thinking
-          }
-          return hm
-        })
-      saveHistoryToServer(API_BASE, docId, SESSION_ID, historyMsgs, BOUNDED_WINDOW)
-    }, 1000)
-  }
+  // History is managed by handler.py (DynamoDB source of truth)
+  // No client-side scheduleSave needed
 
   const handleSend = async () => {
     const text = input.trim()
@@ -295,8 +194,8 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       })
 
       if (res.status === 202) {
-        // Async processing — save user message to history immediately
-        scheduleSave(updatedMessages)
+        // Async processing — handler.py saves to DynamoDB
+        // Loading state stays true until refresh signal arrives
         // Loading state stays true until chat_done arrives via AppSync
         // Add a timeout fallback: if no response in 90s, show error
         setTimeout(() => {
@@ -327,13 +226,11 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         useDocumentStore.getState().setDocument(data.document)
       }
       useSessionStore.getState().fetchDocuments()
-      scheduleSave(finalMessages)
       setAgentStatus('idle')
     } catch {
       const errorMsg: Message = { id: (Date.now() + 1).toString(), role: 'agent', text: 'API 연결 오류가 발생했습니다.' }
       const finalMessages = [...updatedMessages, errorMsg]
       setMessages(finalMessages)
-      scheduleSave(finalMessages)
       setAgentStatus('error')
     } finally {
       if (!loading) return // async mode keeps loading

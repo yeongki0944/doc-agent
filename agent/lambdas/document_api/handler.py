@@ -361,6 +361,35 @@ def _update_agent_status(doc_id: str, status: str, active: str = "", message: st
         print(f"[agent_status] update failed: {e}")
 
 
+def _append_history_message(doc_id: str, user_id: str, msg: dict) -> None:
+    """Atomic append a single message to conversation history."""
+    try:
+        history_table.update_item(
+            Key={"document_id": doc_id, "session_id": "default"},
+            UpdateExpression="SET messages = list_append(if_not_exists(messages, :empty), :new_msg), "
+                             "total_count = if_not_exists(total_count, :zero) + :one, "
+                             "user_id = :uid, updated_at = :now",
+            ExpressionAttributeValues={
+                ":new_msg": [msg],
+                ":empty": [],
+                ":one": 1,
+                ":zero": 0,
+                ":uid": user_id,
+                ":now": _now_iso(),
+            },
+        )
+    except Exception as e:
+        print(f"[history_append] failed: {e}")
+
+
+def _publish_refresh(doc_id: str) -> None:
+    """Send a refresh signal via AppSync — tells frontend to re-fetch from DynamoDB."""
+    _publish_event(f"/docs/{doc_id}/chat", {
+        "type": "refresh",
+        "target": "history",
+    })
+
+
 def _publish_event(channel: str, data: dict) -> None:
     """Publish an event to AppSync Events API via HTTP POST."""
     if not APPSYNC_HTTP_URL:
@@ -692,15 +721,19 @@ def _handle_chat(doc_id: str, body: dict, event: dict) -> dict:
     else:
         _save_to_ddb(_document_shell(doc_id, user_id))
 
+    # Save user message to history (DynamoDB = source of truth)
+    _append_history_message(doc_id, user_id, {
+        "id": f"user-{uuid.uuid4().hex[:8]}",
+        "role": "user",
+        "content": message,
+        "timestamp": _now_iso(),
+    })
+
     # Set agent_status in DynamoDB
     _update_agent_status(doc_id, "processing", "task_planner", "🔍 메시지 분석 중...")
 
-    # Publish "processing" status via AppSync
-    _publish_event(f"/docs/{doc_id}/chat", {
-        "type": "status",
-        "status": "processing",
-        "message": "🔍 메시지 분석 중...",
-    })
+    # Signal frontend to refresh
+    _publish_refresh(doc_id)
 
     # Invoke self asynchronously
     fn_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "doc-agent-document-api")
@@ -720,30 +753,26 @@ def _handle_chat(doc_id: str, body: dict, event: dict) -> dict:
 
 
 def _handle_async_chat(payload: dict) -> dict:
-    """Background chat processing — invoked asynchronously by _handle_chat."""
+    """Background chat processing — DynamoDB is source of truth."""
     doc_id = payload["doc_id"]
     message = payload["message"]
     history = payload.get("history", [])
     user_id = payload["user_id"]
     chat_channel = f"/docs/{doc_id}/chat"
-    thinking_steps = []  # Collect all progress steps for history persistence
+    thinking_steps = []
+
+    def _progress(step: str, agent: str = "runtime"):
+        """Append thinking step to history + send refresh signal."""
+        thinking_steps.append(step)
+        _update_agent_status(doc_id, "processing", agent, step)
+        _publish_refresh(doc_id)
 
     try:
         # Step 1: Analyze message
-        step1 = f"🔍 메시지 분석: \"{message[:60]}{'...' if len(message) > 60 else ''}\""
-        thinking_steps.append(step1)
-        _update_agent_status(doc_id, "processing", "task_planner", step1)
-        _publish_event(chat_channel, {
-            "type": "progress", "agent": "task_planner", "step": "start", "message": step1,
-        })
+        _progress(f"🔍 메시지 분석: \"{message[:60]}{'...' if len(message) > 60 else ''}\"", "task_planner")
 
-        # Step 2: Execute via Runtime (LLM routing + sub-agents)
-        step2 = "🧠 Runtime 실행 중..."
-        thinking_steps.append(step2)
-        _update_agent_status(doc_id, "processing", "runtime", step2)
-        _publish_event(chat_channel, {
-            "type": "progress", "agent": "runtime", "step": "executing", "message": step2,
-        })
+        # Step 2: Execute via Runtime
+        _progress("🧠 Runtime 실행 중...", "runtime")
         runtime_result = _invoke_runtime({
             "doc_id": doc_id,
             "prompt": message,
@@ -829,76 +858,42 @@ def _handle_async_chat(payload: dict) -> dict:
                 updated_doc["title"] = new_title
             updated_doc = json.loads(_json(updated_doc))
 
-        # Step 6: Save agent response to conversation history (source of truth)
+        # Step 6: Save thinking block + agent response to history (atomic append)
         thinking_steps.append("✅ 완료")
         now = _now_iso()
 
-        # Thinking block message (persisted for history restoration)
-        thinking_msg = {
+        _append_history_message(doc_id, user_id, {
             "id": f"thinking-{uuid.uuid4().hex[:8]}",
             "role": "agent",
             "content": "✅ 완료",
             "timestamp": now,
             "type": "thinking",
             "thinking_steps": thinking_steps,
-        }
+        })
 
-        agent_msg = {
+        _append_history_message(doc_id, user_id, {
             "id": f"agent-{uuid.uuid4().hex[:8]}",
             "role": "agent",
             "content": agent_response or "처리 완료",
             "timestamp": now,
-        }
-        # Append to existing history
-        try:
-            hist_resp = history_table.get_item(Key={"document_id": doc_id, "session_id": "default"})
-            hist_item = hist_resp.get("Item", {})
-            existing_msgs = hist_item.get("messages", [])
-            # Also save the user message if not already there
-            user_msg_exists = any(m.get("content") == message for m in existing_msgs[-3:])
-            if not user_msg_exists:
-                existing_msgs.append({
-                    "id": f"user-{uuid.uuid4().hex[:8]}",
-                    "role": "user",
-                    "content": message,
-                    "timestamp": now,
-                })
-            existing_msgs.append(thinking_msg)
-            existing_msgs.append(agent_msg)
-            history_item = {
-                "document_id": doc_id,
-                "session_id": "default",
-                "user_id": user_id,
-                "messages": existing_msgs,
-                "bounded_window": DEFAULT_BOUNDED_WINDOW,
-                "total_count": len(existing_msgs),
-                "updated_at": now,
-            }
-            history_table.put_item(Item=json.loads(_json(history_item), parse_float=Decimal))
-        except Exception as hist_err:
-            print(f"[async_chat] history save failed: {hist_err}")
-
-        # Step 5: Publish final result via AppSync
-        _publish_event(chat_channel, {
-            "type": "chat_done",
-            "text": agent_response or "처리 완료",
-            "document": updated_doc,
-            "status": "idle",
         })
 
-        print(f"[async_chat] published chat_done for {doc_id}")
-
-        # Step 6: Set agent_status to idle
+        # Step 7: Publish refresh + set idle
         _update_agent_status(doc_id, "idle", "", "")
+        _publish_refresh(doc_id)
+
+        print(f"[async_chat] completed for {doc_id}")
 
     except Exception as e:
         print(f"[async_chat] error: {e}")
         _update_agent_status(doc_id, "error", "", str(e)[:200])
-        _publish_event(chat_channel, {
-            "type": "chat_done",
-            "text": f"처리 중 오류가 발생했습니다: {str(e)[:200]}",
-            "document": None,
-            "status": "error",
+        _append_history_message(doc_id, user_id, {
+            "id": f"error-{uuid.uuid4().hex[:8]}",
+            "role": "agent",
+            "content": f"처리 중 오류가 발생했습니다: {str(e)[:200]}",
+            "timestamp": _now_iso(),
+        })
+        _publish_refresh(doc_id)
         })
 
     return _response(200, {"status": "ok"})
