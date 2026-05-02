@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useDocumentStore } from '../store/documentStore'
 import { StatusBar } from './StatusBar'
-import { initDocumentSubscription, type ChatMessage } from '../utils/appsync'
+import { initDocumentSubscription, type AppSyncMessage } from '../utils/appsync'
 import {
   type HistoryMessage,
   toBoundedApiHistory,
@@ -45,18 +45,33 @@ export function ChatPanel({ docId }: ChatPanelProps) {
 
   // Initialize AppSync subscription on mount
   useEffect(() => {
-    const unsubscribe = initDocumentSubscription(docId, (msg: ChatMessage) => {
+    const unsubscribe = initDocumentSubscription(docId, (msg: AppSyncMessage) => {
+      console.log('[chat] AppSync message:', msg.type)
+
+      if (msg.type === 'status') {
+        // Show status messages as agent typing indicator
+        const statusMsg = (msg as any).message || ''
+        if (statusMsg) {
+          setMessages(prev => {
+            // Update or add status message
+            const statusId = 'status-indicator'
+            const existing = prev.find(m => m.id === statusId)
+            if (existing) {
+              return prev.map(m => m.id === statusId ? { ...m, text: statusMsg } : m)
+            }
+            return [...prev, { id: statusId, role: 'agent', text: statusMsg }]
+          })
+        }
+      }
+
       if (msg.type === 'chat_chunk') {
-        // Append text to the current streaming message
         setMessages(prev => {
           const streamId = streamMsgIdRef.current
           if (!streamId) {
-            // Create new streaming message
             const newId = `stream-${Date.now()}`
             streamMsgIdRef.current = newId
-            return [...prev, { id: newId, role: 'agent', text: msg.text }]
+            return [...prev.filter(m => m.id !== 'status-indicator'), { id: newId, role: 'agent', text: msg.text }]
           }
-          // Append to existing streaming message
           return prev.map(m =>
             m.id === streamId ? { ...m, text: m.text + msg.text } : m
           )
@@ -65,10 +80,30 @@ export function ChatPanel({ docId }: ChatPanelProps) {
 
       if (msg.type === 'chat_done') {
         streamMsgIdRef.current = null
+        const doneMsg = msg as any
+        const text = doneMsg.text || ''
+
+        // Remove status indicator and add final message
+        setMessages(prev => {
+          const filtered = prev.filter(m => m.id !== 'status-indicator')
+          // If streaming already added a message, keep it. Otherwise add the final text.
+          const hasStream = filtered.some(m => m.id.startsWith('stream-'))
+          if (!hasStream && text) {
+            return [...filtered, { id: `done-${Date.now()}`, role: 'agent', text }]
+          }
+          return filtered
+        })
+
+        // Update document in store
+        if (doneMsg.document) {
+          useDocumentStore.getState().setDocument(doneMsg.document)
+        }
+
+        // Refresh sidebar
+        useSessionStore.getState().fetchDocuments()
+
         setLoading(false)
         setAgentStatus('idle')
-        // Source of truth: document updates arrive on docs/{docId}/patch.
-        // Ignore any legacy chat_done.document payload.
       }
     })
     return unsubscribe
@@ -148,9 +183,27 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, history: boundedHistory }),
       })
-      const data = await res.json()
 
-      // Always use HTTP response to show agent message
+      if (res.status === 202) {
+        // Async processing — wait for AppSync chat_done
+        // Loading state stays true until chat_done arrives via AppSync
+        // Add a timeout fallback: if no response in 90s, show error
+        setTimeout(() => {
+          if (loading) {
+            setMessages(prev => [...prev, {
+              id: (Date.now() + 1).toString(),
+              role: 'agent',
+              text: '응답 대기 시간이 초과되었습니다. 다시 시도해주세요.',
+            }])
+            setAgentStatus('error')
+            setLoading(false)
+          }
+        }, 90000)
+        return
+      }
+
+      // Sync fallback (non-202 responses)
+      const data = await res.json()
       const agentMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'agent',
@@ -159,12 +212,10 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       const finalMessages = [...updatedMessages, agentMsg]
       setMessages(finalMessages)
 
-      // Source of truth: chat HTTP responses carry message metadata only.
-      // REST fallback reloads elsewhere may still call setDocument().
-
-      // Refresh sidebar document list (title may have changed)
+      if (data.document) {
+        useDocumentStore.getState().setDocument(data.document)
+      }
       useSessionStore.getState().fetchDocuments()
-
       scheduleSave(finalMessages)
       setAgentStatus('idle')
     } catch {
@@ -174,6 +225,7 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       scheduleSave(finalMessages)
       setAgentStatus('error')
     } finally {
+      if (!loading) return // async mode keeps loading
       setLoading(false)
     }
   }

@@ -648,18 +648,111 @@ def _handle_load_history(doc_id: str, event: dict) -> dict:
 
 # --- Chat ---
 
+_lambda_client = None
+
+def _get_lambda_client():
+    global _lambda_client
+    if _lambda_client is None:
+        _lambda_client = boto3.client("lambda", region_name=REGION)
+    return _lambda_client
+
+
 def _handle_chat(doc_id: str, body: dict, event: dict) -> dict:
+    """Async chat: immediately returns 202, triggers background processing."""
     message = body.get("message", "")
     if not message:
         return _response(400, {"error": "message is required"})
 
-    return _handle_runtime_invocation(
-        doc_id,
-        message,
-        body.get("history", []),
-        event,
-        create_shell_if_missing=True,
+    user_id, err = _require_user(event)
+    if err:
+        return err
+
+    # Ensure document exists
+    resp = table.get_item(Key={"document_id": doc_id})
+    item = resp.get("Item")
+    if item:
+        forbidden = _check_ownership(item, user_id)
+        if forbidden:
+            return forbidden
+    else:
+        _save_to_ddb(_document_shell(doc_id, user_id))
+
+    # Publish "processing" status via AppSync
+    _publish_event(f"/docs/{doc_id}/chat", {
+        "type": "status",
+        "status": "processing",
+        "message": "🔍 메시지 분석 중...",
+    })
+
+    # Invoke self asynchronously
+    fn_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "doc-agent-document-api")
+    _get_lambda_client().invoke(
+        FunctionName=fn_name,
+        InvocationType="Event",
+        Payload=json.dumps({
+            "_async_chat": True,
+            "doc_id": doc_id,
+            "message": message,
+            "history": body.get("history", []),
+            "user_id": user_id,
+        }),
     )
+
+    return _response(202, {"status": "processing", "message": "처리 중..."})
+
+
+def _handle_async_chat(payload: dict) -> dict:
+    """Background chat processing — invoked asynchronously by _handle_chat."""
+    doc_id = payload["doc_id"]
+    message = payload["message"]
+    history = payload.get("history", [])
+    user_id = payload["user_id"]
+    chat_channel = f"/docs/{doc_id}/chat"
+
+    try:
+        # Step 1: Publish status
+        _publish_event(chat_channel, {
+            "type": "status",
+            "status": "processing",
+            "message": "📋 에이전트에게 작업 위임 중...",
+        })
+
+        # Step 2: Invoke Runtime
+        runtime_result = _invoke_runtime({
+            "doc_id": doc_id,
+            "prompt": message,
+            "history": history,
+            "user_id": user_id,
+        })
+        print(f"[async_chat] runtime result: status={runtime_result.get('status')} result_len={len(runtime_result.get('result', ''))}")
+
+        # Step 3: Re-fetch updated document from DynamoDB
+        updated_resp = table.get_item(Key={"document_id": doc_id})
+        updated_doc = updated_resp.get("Item")
+        if updated_doc:
+            updated_doc = json.loads(_json(updated_doc))
+
+        # Step 4: Publish final result via AppSync
+        agent_response = runtime_result.get("result", "")
+        _publish_event(chat_channel, {
+            "type": "chat_done",
+            "text": agent_response or "처리 완료",
+            "document": updated_doc,
+            "status": "idle",
+        })
+
+        print(f"[async_chat] published chat_done for {doc_id}")
+
+    except Exception as e:
+        print(f"[async_chat] error: {e}")
+        _publish_event(chat_channel, {
+            "type": "chat_done",
+            "text": f"처리 중 오류가 발생했습니다: {str(e)[:200]}",
+            "document": None,
+            "status": "error",
+        })
+
+    return _response(200, {"status": "ok"})
 
 
 def _handle_invocations(body: dict, event: dict) -> dict:
@@ -824,6 +917,10 @@ def _handle_user_input(doc_id: str, body: dict, event: dict) -> dict:
 
 
 def handler(event: dict, context: Any) -> dict:
+    # Handle async chat invocation (self-invoked)
+    if event.get("_async_chat"):
+        return _handle_async_chat(event)
+
     rc = event.get("requestContext", {})
     http = rc.get("http", {})
     method = http.get("method", event.get("httpMethod", "GET"))

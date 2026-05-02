@@ -145,31 +145,28 @@ function isChatMessage(msg: AppSyncMessage): msg is ChatMessage {
 
 export function handleDocumentEvent(
   msg: AppSyncMessage,
-  onChat?: (msg: ChatMessage) => void,
+  onChat?: (msg: AppSyncMessage) => void,
 ): void {
   const store = useDocumentStore.getState()
 
   if (isPatchMessage(msg)) {
-    // Source of truth: document mutations from agents are applied only from
-    // docs/{docId}/patch. Full-document setDocument is reserved for REST reloads.
     store.applyPatches(msg.operations)
     return
   }
 
-  if (isStatusMessage(msg)) {
-    store.setAgentStatus(msg.status)
-    return
+  // Forward all messages (status, chat_chunk, chat_done) to the callback
+  if (onChat) {
+    onChat(msg)
   }
 
-  if (isChatMessage(msg) && onChat) {
-    // Chat events update chat UI only. Ignore legacy chat_done.document payloads.
-    onChat(msg)
+  if (isStatusMessage(msg)) {
+    store.setAgentStatus(msg.status)
   }
 }
 
 export function initDocumentSubscription(
   docId: string,
-  onChat?: (msg: ChatMessage) => void,
+  onChat?: (msg: AppSyncMessage) => void,
 ): Unsubscribe {
   const unsubscribers = [
     subscribeToChannel(`${docId}/chat`, (msg) => handleDocumentEvent(msg, onChat)),

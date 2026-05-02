@@ -110,7 +110,10 @@ resource "aws_iam_role_policy" "lambda_invoke_export_docx" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["lambda:InvokeFunction"]
-      Resource = [aws_lambda_function.export_docx.arn]
+      Resource = [
+        aws_lambda_function.export_docx.arn,
+        aws_lambda_function.document_api.arn,
+      ]
     }]
   })
 }
