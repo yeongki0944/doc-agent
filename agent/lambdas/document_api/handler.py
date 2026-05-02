@@ -894,7 +894,6 @@ def _handle_async_chat(payload: dict) -> dict:
             "timestamp": _now_iso(),
         })
         _publish_refresh(doc_id)
-        })
 
     return _response(200, {"status": "ok"})
 
