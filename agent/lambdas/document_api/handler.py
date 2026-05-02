@@ -725,16 +725,32 @@ def _handle_async_chat(payload: dict) -> dict:
     chat_channel = f"/docs/{doc_id}/chat"
 
     try:
-        # Step 1: Publish status + update DynamoDB
-        _update_agent_status(doc_id, "processing", "task_planner", "📋 에이전트에게 작업 위임 중...")
+        # Step 1: Intent analysis
+        _update_agent_status(doc_id, "processing", "task_planner", "🔍 메시지 의도 분석 중...")
         _publish_event(chat_channel, {
             "type": "status",
             "status": "processing",
-            "message": "📋 에이전트에게 작업 위임 중...",
+            "agent_active": "task_planner",
+            "message": "🔍 메시지 의도를 분석하고 있습니다...",
         })
 
-        # Step 2: Invoke Runtime
-        _update_agent_status(doc_id, "processing", "runtime", "🧠 AgentCore Runtime 실행 중...")
+        # Step 2: Determine which agents will run (via LLM router in Runtime)
+        _update_agent_status(doc_id, "processing", "runtime", "📋 작업 계획을 수립하고 있습니다...")
+        _publish_event(chat_channel, {
+            "type": "status",
+            "status": "processing",
+            "agent_active": "runtime",
+            "message": "📋 작업 계획을 수립하고 있습니다...",
+        })
+
+        # Step 3: Invoke Runtime (sub-agents execute here)
+        _update_agent_status(doc_id, "processing", "runtime", "🧠 서브에이전트가 작업을 수행하고 있습니다...")
+        _publish_event(chat_channel, {
+            "type": "status",
+            "status": "processing",
+            "agent_active": "runtime",
+            "message": "🧠 서브에이전트가 작업을 수행하고 있습니다...",
+        })
         runtime_result = _invoke_runtime({
             "doc_id": doc_id,
             "prompt": message,
@@ -743,7 +759,16 @@ def _handle_async_chat(payload: dict) -> dict:
         })
         print(f"[async_chat] runtime result: status={runtime_result.get('status')} result_len={len(runtime_result.get('result', ''))}")
 
-        # Step 3: Re-fetch updated document from DynamoDB
+        # Step 4: Saving results
+        _update_agent_status(doc_id, "processing", "saving", "💾 결과를 저장하고 있습니다...")
+        _publish_event(chat_channel, {
+            "type": "status",
+            "status": "processing",
+            "agent_active": "saving",
+            "message": "💾 결과를 저장하고 있습니다...",
+        })
+
+        # Step 5: Re-fetch updated document from DynamoDB
         updated_resp = table.get_item(Key={"document_id": doc_id})
         updated_doc = updated_resp.get("Item")
         if updated_doc:
