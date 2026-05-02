@@ -122,9 +122,8 @@ export function ChatPanel({ docId }: ChatPanelProps) {
     ])
     setHistoryLoaded(false)
     setLoading(false)
-    setAgentStatus('idle')
     streamMsgIdRef.current = null
-  }, [docId, setAgentStatus])
+  }, [docId])
 
   // Listen for user direct edits on document fields → inject as user message for LLM context
   useEffect(() => {
