@@ -19,8 +19,13 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-APPSYNC_HTTP_ENDPOINT = os.environ.get("APPSYNC_HTTP_ENDPOINT", "")
-APPSYNC_API_KEY = os.environ.get("APPSYNC_API_KEY", "")
+
+def _get_appsync_config():
+    """Lazy load AppSync config — ensures env vars are set by entrypoint."""
+    return (
+        os.environ.get("APPSYNC_HTTP_ENDPOINT", "") or os.environ.get("APPSYNC_HTTP_URL", ""),
+        os.environ.get("APPSYNC_API_KEY", ""),
+    )
 
 
 class ProgressPublisher:
@@ -61,10 +66,12 @@ class ProgressPublisher:
         self.publish(agent, message or f"✅ {agent} 완료", step="done")
 
     def _publish_appsync(self, agent: str, message: str, step: str) -> None:
-        if not APPSYNC_HTTP_ENDPOINT or not APPSYNC_API_KEY:
+        appsync_url, api_key = _get_appsync_config()
+        if not appsync_url or not api_key:
+            logger.debug("progress: AppSync not configured (url=%s key=%s)", bool(appsync_url), bool(api_key))
             return
         try:
-            url = f"{APPSYNC_HTTP_ENDPOINT}/event"
+            url = f"{appsync_url}/event"
             channel = f"/docs/{self.doc_id}/chat"
             payload = json.dumps({
                 "channel": channel,
@@ -81,7 +88,7 @@ class ProgressPublisher:
                 method="POST",
                 headers={
                     "Content-Type": "application/json",
-                    "x-api-key": APPSYNC_API_KEY,
+                    "x-api-key": api_key,
                 },
             )
             urllib.request.urlopen(req, timeout=3)
