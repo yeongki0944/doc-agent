@@ -138,6 +138,26 @@ def _install_agent_dependencies(root_dir: str, package_dir: str) -> None:
 
 def _write_agentcore_entrypoint(package_dir: str) -> None:
     """Write a root-level entrypoint for AgentCore direct code deploy."""
+    # Read AppSync config from Terraform outputs
+    appsync_http = ""
+    appsync_api_key = ""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["terraform", "-chdir=infra/terraform", "output", "-raw", "appsync_http_url"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            appsync_http = result.stdout.strip()
+        result2 = subprocess.run(
+            ["terraform", "-chdir=infra/terraform", "output", "-raw", "appsync_api_key"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result2.returncode == 0:
+            appsync_api_key = result2.stdout.strip()
+    except Exception:
+        pass
+
     entrypoint = Path(package_dir) / "main.py"
     entrypoint.write_text(
         "\n".join(
@@ -147,6 +167,8 @@ def _write_agentcore_entrypoint(package_dir: str) -> None:
                 "",
                 "sys.path.insert(0, '/var/task')",
                 "os.environ.setdefault('DOC_AGENT_DISABLE_APP_RUN', '1')",
+                f"os.environ.setdefault('APPSYNC_HTTP_ENDPOINT', '{appsync_http}')",
+                f"os.environ.setdefault('APPSYNC_API_KEY', '{appsync_api_key}')",
                 "",
                 "from agent.app.parent.runtime import app",
                 "",

@@ -49,17 +49,32 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       console.log('[chat] AppSync message:', msg.type)
 
       if (msg.type === 'status') {
-        // Show status messages as agent typing indicator
         const statusMsg = (msg as any).message || ''
         if (statusMsg) {
           setMessages(prev => {
-            // Update or add status message
             const statusId = 'status-indicator'
             const existing = prev.find(m => m.id === statusId)
             if (existing) {
               return prev.map(m => m.id === statusId ? { ...m, text: statusMsg } : m)
             }
             return [...prev, { id: statusId, role: 'agent', text: statusMsg }]
+          })
+        }
+      }
+
+      if (msg.type === 'progress') {
+        const progressMsg = msg as any
+        const text = progressMsg.message || ''
+        if (text) {
+          setMessages(prev => {
+            // Replace existing progress indicator or add new one
+            const progressId = 'progress-indicator'
+            const existing = prev.find(m => m.id === progressId)
+            if (existing) {
+              return prev.map(m => m.id === progressId ? { ...m, text } : m)
+            }
+            // Remove status-indicator and add progress
+            return [...prev.filter(m => m.id !== 'status-indicator'), { id: progressId, role: 'agent', text }]
           })
         }
       }
@@ -83,9 +98,9 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         const doneMsg = msg as any
         const text = doneMsg.text || ''
 
-        // Remove status indicator and add final message
+        // Remove status/progress indicators and add final message
         setMessages(prev => {
-          const filtered = prev.filter(m => m.id !== 'status-indicator')
+          const filtered = prev.filter(m => m.id !== 'status-indicator' && m.id !== 'progress-indicator')
           // If streaming already added a message, keep it. Otherwise add the final text.
           const hasStream = filtered.some(m => m.id.startsWith('stream-'))
           if (!hasStream && text) {

@@ -351,38 +351,22 @@ class ParentOrchestrator:
         """
         result = AgentResult(success=True)
 
-        # Agent display names for status messages
-        agent_labels = {
-            "discovery_agent": "📋 정보 수집 중...",
-            "section_writer_agent": "✏️ 섹션 작성 중...",
-            "staffing_agent": "👥 팀 구성 추천 중...",
-            "cost_agent": "💰 비용 산정 중...",
-            "architecture_agent": "🏗️ 아키텍처 분석 중...",
-            "reviewer_agent": "🔎 문서 리뷰 중...",
-            "formatter_agent": "📄 DOCX 생성 중...",
-            "conversation_agent": "💬 대화 처리 중...",
-        }
+        # Publish progress via ProgressPublisher
+        from agent.lib.progress import ProgressPublisher
+        progress = ProgressPublisher(doc_id=doc_state.document_id, table=self.document_store._table)
 
-        # Update agent_status in DynamoDB + publish via AppSync
-        status_msg = agent_labels.get(agent_name, f"⚙️ {agent_name} 실행 중...")
-        try:
-            doc_id = doc_state.document_id
-            # DynamoDB update
-            self.document_store._table.update_item(
-                Key={"document_id": doc_id},
-                UpdateExpression="SET agent_status = :s, agent_active = :a, agent_message = :m",
-                ExpressionAttributeValues={":s": "processing", ":a": agent_name, ":m": status_msg},
-            )
-            # AppSync publish
-            await self.publish_status(doc_id, AgentStatus.processing)
-            await self._appsync_publish(f"docs/{doc_id}/chat", {
-                "type": "status",
-                "status": "processing",
-                "agent_active": agent_name,
-                "message": status_msg,
-            })
-        except Exception:
-            logger.debug("agent_status update failed for %s", agent_name)
+        agent_labels = {
+            "discovery_agent": "📋 정보 수집",
+            "section_writer_agent": "✏️ 섹션 작성",
+            "staffing_agent": "👥 팀 구성 추천",
+            "cost_agent": "💰 비용 산정",
+            "architecture_agent": "🏗️ 아키텍처 분석",
+            "reviewer_agent": "🔎 문서 리뷰",
+            "formatter_agent": "📄 DOCX 생성",
+            "conversation_agent": "💬 대화 처리",
+        }
+        label = agent_labels.get(agent_name, agent_name)
+        progress.publish(agent_name, f"{label} 시작...", step="start")
 
         try:
             logger.info("delegate_task: agent=%s action=%s params=%s", agent_name, task.action, {k: v for k, v in task.params.items() if k != "message"})
@@ -424,6 +408,13 @@ class ParentOrchestrator:
             "success": result.success,
             "patches_count": len(result.patches),
         })
+
+        # Publish completion progress
+        if result.success:
+            summary = result.chat_response[:100] if result.chat_response else "완료"
+            progress.complete(agent_name, f"✅ {label} 완료 — {summary}")
+        else:
+            progress.publish(agent_name, f"⚠️ {label} 실패", step="error")
 
         return result
 
