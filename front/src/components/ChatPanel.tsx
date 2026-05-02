@@ -75,6 +75,7 @@ export function ChatPanel({ docId }: ChatPanelProps) {
 
   const streamMsgIdRef = useRef<string | null>(null)
   const thinkingStepsRef = useRef<string[]>([])
+  const thinkingIdRef = useRef<string>('')
 
   // Initialize AppSync subscription on mount
   useEffect(() => {
@@ -84,18 +85,22 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       if (msg.type === 'status') {
         const statusMsg = (msg as any).message || ''
         if (statusMsg) {
+          // Create new thinking block if none exists for this request
+          if (!thinkingIdRef.current) {
+            thinkingIdRef.current = `thinking-${Date.now()}`
+          }
+          const tid = thinkingIdRef.current
           thinkingStepsRef.current = [...thinkingStepsRef.current, statusMsg]
           setMessages(prev => {
-            const thinkingId = 'thinking-block'
             const thinkingMsg: Message = {
-              id: thinkingId,
+              id: tid,
               role: 'agent',
               text: statusMsg,
               thinking: [...thinkingStepsRef.current],
             }
-            const existing = prev.find(m => m.id === thinkingId)
+            const existing = prev.find(m => m.id === tid)
             if (existing) {
-              return prev.map(m => m.id === thinkingId ? thinkingMsg : m)
+              return prev.map(m => m.id === tid ? thinkingMsg : m)
             }
             return [...prev, thinkingMsg]
           })
@@ -106,20 +111,23 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         const progressMsg = msg as any
         const text = progressMsg.message || ''
         if (text) {
+          if (!thinkingIdRef.current) {
+            thinkingIdRef.current = `thinking-${Date.now()}`
+          }
+          const tid = thinkingIdRef.current
           thinkingStepsRef.current = [...thinkingStepsRef.current, text]
           setMessages(prev => {
-            const thinkingId = 'thinking-block'
             const thinkingMsg: Message = {
-              id: thinkingId,
+              id: tid,
               role: 'agent',
               text,
               thinking: [...thinkingStepsRef.current],
             }
-            const existing = prev.find(m => m.id === thinkingId)
+            const existing = prev.find(m => m.id === tid)
             if (existing) {
-              return prev.map(m => m.id === thinkingId ? thinkingMsg : m)
+              return prev.map(m => m.id === tid ? thinkingMsg : m)
             }
-            return [...prev.filter(m => m.id !== 'status-indicator' && m.id !== 'progress-indicator'), thinkingMsg]
+            return [...prev, thinkingMsg]
           })
         }
       }
@@ -143,19 +151,24 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         const doneMsg = msg as any
         const text = doneMsg.text || ''
         const steps = [...thinkingStepsRef.current]
+        const tid = thinkingIdRef.current
+
+        // Reset for next request
         thinkingStepsRef.current = []
+        thinkingIdRef.current = ''
 
         setMessages(prev => {
-          // Convert thinking-block to final form with all steps
           let filtered = prev.filter(m => m.id !== 'status-indicator' && m.id !== 'progress-indicator')
 
           // Update thinking block to final state
-          filtered = filtered.map(m => {
-            if (m.id === 'thinking-block') {
-              return { ...m, text: '✅ 완료', thinking: [...steps, '✅ 완료'] }
-            }
-            return m
-          })
+          if (tid) {
+            filtered = filtered.map(m => {
+              if (m.id === tid) {
+                return { ...m, text: '✅ 완료', thinking: [...steps, '✅ 완료'] }
+              }
+              return m
+            })
+          }
 
           // Add final agent response
           const hasStream = filtered.some(m => m.id.startsWith('stream-'))
