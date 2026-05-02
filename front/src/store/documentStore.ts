@@ -268,7 +268,11 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
       grand_total_hours: incomingSp?.grand_total_hours || s.staffing_plan.grand_total_hours,
       grand_total_cost: incomingSp?.grand_total_cost || s.staffing_plan.grand_total_cost,
     }
-    return { ...s, ...doc, meta: safeMeta, staffing_plan: safeSp }
+    // Map DynamoDB agent_status to store agentStatus
+    const incomingAgentStatus = (doc as any).agent_status as AgentStatus | undefined
+    const agentStatus = incomingAgentStatus || s.agentStatus
+
+    return { ...s, ...doc, meta: safeMeta, staffing_plan: safeSp, agentStatus }
   }),
 
   applyPatches: (operations) => set((s) => {

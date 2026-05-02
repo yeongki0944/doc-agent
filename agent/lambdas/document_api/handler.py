@@ -349,6 +349,18 @@ def _check_ownership(item: dict, user_id: str) -> Optional[dict]:
     return None
 
 
+def _update_agent_status(doc_id: str, status: str, active: str = "", message: str = "") -> None:
+    """Update agent_status fields in DynamoDB for a document."""
+    try:
+        table.update_item(
+            Key={"document_id": doc_id},
+            UpdateExpression="SET agent_status = :s, agent_active = :a, agent_message = :m",
+            ExpressionAttributeValues={":s": status, ":a": active, ":m": message},
+        )
+    except Exception as e:
+        print(f"[agent_status] update failed: {e}")
+
+
 def _publish_event(channel: str, data: dict) -> None:
     """Publish an event to AppSync Events API via HTTP POST."""
     if not APPSYNC_HTTP_URL:
@@ -677,6 +689,9 @@ def _handle_chat(doc_id: str, body: dict, event: dict) -> dict:
     else:
         _save_to_ddb(_document_shell(doc_id, user_id))
 
+    # Set agent_status in DynamoDB
+    _update_agent_status(doc_id, "processing", "task_planner", "🔍 메시지 분석 중...")
+
     # Publish "processing" status via AppSync
     _publish_event(f"/docs/{doc_id}/chat", {
         "type": "status",
@@ -710,7 +725,8 @@ def _handle_async_chat(payload: dict) -> dict:
     chat_channel = f"/docs/{doc_id}/chat"
 
     try:
-        # Step 1: Publish status
+        # Step 1: Publish status + update DynamoDB
+        _update_agent_status(doc_id, "processing", "task_planner", "📋 에이전트에게 작업 위임 중...")
         _publish_event(chat_channel, {
             "type": "status",
             "status": "processing",
@@ -718,6 +734,7 @@ def _handle_async_chat(payload: dict) -> dict:
         })
 
         # Step 2: Invoke Runtime
+        _update_agent_status(doc_id, "processing", "runtime", "🧠 AgentCore Runtime 실행 중...")
         runtime_result = _invoke_runtime({
             "doc_id": doc_id,
             "prompt": message,
@@ -779,8 +796,12 @@ def _handle_async_chat(payload: dict) -> dict:
 
         print(f"[async_chat] published chat_done for {doc_id}")
 
+        # Step 6: Set agent_status to idle
+        _update_agent_status(doc_id, "idle", "", "")
+
     except Exception as e:
         print(f"[async_chat] error: {e}")
+        _update_agent_status(doc_id, "error", "", str(e)[:200])
         _publish_event(chat_channel, {
             "type": "chat_done",
             "text": f"처리 중 오류가 발생했습니다: {str(e)[:200]}",

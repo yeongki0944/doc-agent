@@ -455,6 +455,11 @@ class DocumentState(BaseModel):
     blocking_issues: list[BlockingIssue] = Field(default_factory=list)
     warnings: list[Warning] = Field(default_factory=list)
 
+    # Agent execution status (per-document, persisted in DynamoDB)
+    agent_status: str = "idle"       # idle / processing / error / degraded
+    agent_active: str = ""           # currently running agent name
+    agent_message: str = ""          # status message for UI
+
     @field_serializer("created_at", "updated_at")
     def _serialize_timestamps(self, v: datetime, _info: Any) -> str:
         return v.isoformat()
