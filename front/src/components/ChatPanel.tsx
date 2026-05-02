@@ -99,6 +99,12 @@ export function ChatPanel({ docId }: ChatPanelProps) {
           useDocumentStore.getState().setDocument(doneMsg.document)
         }
 
+        // Save conversation history including agent response
+        setMessages(prev => {
+          scheduleSave(prev)
+          return prev
+        })
+
         // Refresh sidebar
         useSessionStore.getState().fetchDocuments()
 
@@ -185,7 +191,8 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       })
 
       if (res.status === 202) {
-        // Async processing — wait for AppSync chat_done
+        // Async processing — save user message to history immediately
+        scheduleSave(updatedMessages)
         // Loading state stays true until chat_done arrives via AppSync
         // Add a timeout fallback: if no response in 90s, show error
         setTimeout(() => {
