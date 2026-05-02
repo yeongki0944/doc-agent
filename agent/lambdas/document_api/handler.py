@@ -723,15 +723,15 @@ def _handle_async_chat(payload: dict) -> dict:
     history = payload.get("history", [])
     user_id = payload["user_id"]
     chat_channel = f"/docs/{doc_id}/chat"
+    thinking_steps = []  # Collect all progress steps for history persistence
 
     try:
         # Step 1: Analyze message intent
+        step1 = f"🔍 \"{message[:50]}{'...' if len(message) > 50 else ''}\" 분석 중..."
+        thinking_steps.append(step1)
         _update_agent_status(doc_id, "processing", "task_planner", "🔍 메시지 의도 분석 중...")
         _publish_event(chat_channel, {
-            "type": "progress",
-            "agent": "task_planner",
-            "step": "start",
-            "message": f"🔍 \"{message[:50]}{'...' if len(message) > 50 else ''}\" 분석 중...",
+            "type": "progress", "agent": "task_planner", "step": "start", "message": step1,
         })
 
         # Step 2: Determine intent via LLM router (quick call)
@@ -762,20 +762,18 @@ def _handle_async_chat(payload: dict) -> dict:
         if not plan_parts:
             plan_parts.append("🔍 분석")
         plan_desc = ", ".join(plan_parts)
+        step2 = f"📋 작업 계획: {plan_desc}"
+        thinking_steps.append(step2)
         _publish_event(chat_channel, {
-            "type": "progress",
-            "agent": "task_planner",
-            "step": "planned",
-            "message": f"📋 작업 계획: {plan_desc}",
+            "type": "progress", "agent": "task_planner", "step": "planned", "message": step2,
         })
 
         # Step 3: Execute via Runtime
+        step3 = "🧠 에이전트가 작업을 수행하고 있습니다..."
+        thinking_steps.append(step3)
         _update_agent_status(doc_id, "processing", "runtime", "🧠 에이전트 실행 중...")
         _publish_event(chat_channel, {
-            "type": "progress",
-            "agent": "runtime",
-            "step": "executing",
-            "message": "🧠 에이전트가 작업을 수행하고 있습니다...",
+            "type": "progress", "agent": "runtime", "step": "executing", "message": step3,
         })
         runtime_result = _invoke_runtime({
             "doc_id": doc_id,
@@ -787,14 +785,14 @@ def _handle_async_chat(payload: dict) -> dict:
 
         # Step 4: Runtime complete — summarize
         agent_response = runtime_result.get("result", "")
+        step4 = "✅ 작업 완료 — 결과를 정리하고 있습니다..."
+        thinking_steps.append(step4)
         _publish_event(chat_channel, {
-            "type": "progress",
-            "agent": "runtime",
-            "step": "complete",
-            "message": f"✅ 작업 완료 — 결과를 정리하고 있습니다...",
+            "type": "progress", "agent": "runtime", "step": "complete", "message": step4,
         })
 
         # Step 5: Saving results
+        thinking_steps.append("💾 결과 저장 중...")
         _update_agent_status(doc_id, "processing", "saving", "💾 결과 저장 중...")
 
         # Step 5: Re-fetch updated document from DynamoDB
@@ -804,7 +802,19 @@ def _handle_async_chat(payload: dict) -> dict:
             updated_doc = json.loads(_json(updated_doc))
 
         # Step 6: Save agent response to conversation history (source of truth)
+        thinking_steps.append("✅ 완료")
         now = _now_iso()
+
+        # Thinking block message (persisted for history restoration)
+        thinking_msg = {
+            "id": f"thinking-{uuid.uuid4().hex[:8]}",
+            "role": "agent",
+            "content": "✅ 완료",
+            "timestamp": now,
+            "type": "thinking",
+            "thinking_steps": thinking_steps,
+        }
+
         agent_msg = {
             "id": f"agent-{uuid.uuid4().hex[:8]}",
             "role": "agent",
@@ -825,6 +835,7 @@ def _handle_async_chat(payload: dict) -> dict:
                     "content": message,
                     "timestamp": now,
                 })
+            existing_msgs.append(thinking_msg)
             existing_msgs.append(agent_msg)
             history_item = {
                 "document_id": doc_id,
