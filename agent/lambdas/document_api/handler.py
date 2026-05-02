@@ -735,34 +735,39 @@ def _handle_async_chat(payload: dict) -> dict:
         })
 
         # Step 2: Determine intent via LLM router (quick call)
-        from agent.app.parent.task_planner import build_task_plan as _local_build_plan
-        try:
-            plan = _local_build_plan(message)
-            agent_names = [t.agent for t in plan.tasks]
-            agent_labels = {
-                "discovery_agent": "📋 정보 수집",
-                "section_writer_agent": "✏️ 섹션 작성",
-                "staffing_agent": "👥 팀 구성",
-                "cost_agent": "💰 비용 산정",
-                "architecture_agent": "🏗️ 아키텍처",
-                "reviewer_agent": "🔎 리뷰",
-                "formatter_agent": "📄 DOCX",
-                "conversation_agent": "💬 대화",
-            }
-            plan_desc = ", ".join(agent_labels.get(a, a) for a in agent_names)
-            _publish_event(chat_channel, {
-                "type": "progress",
-                "agent": "task_planner",
-                "step": "planned",
-                "message": f"📋 작업 계획: {plan_desc}",
-            })
-        except Exception:
-            _publish_event(chat_channel, {
-                "type": "progress",
-                "agent": "task_planner",
-                "step": "planned",
-                "message": "📋 작업 계획 수립 완료",
-            })
+        # Note: task_planner is not available in Lambda env (agent package is in Runtime only)
+        # Use message keywords to show approximate plan
+        msg_lower = message.lower()
+        plan_parts = []
+        if any(kw in msg_lower for kw in ["고객사", "파트너", "프로젝트", "목표", "범위", "예산", "일정"]):
+            plan_parts.append("📋 정보 수집")
+        if any(kw in msg_lower for kw in ["overview", "summary", "요약", "개요"]):
+            plan_parts.append("✏️ Executive Summary 작성")
+        if any(kw in msg_lower for kw in ["scope", "범위", "작업"]):
+            plan_parts.append("✏️ Scope 작성")
+        if any(kw in msg_lower for kw in ["success", "kpi", "성공", "기준"]):
+            plan_parts.append("✏️ Success Criteria 작성")
+        if any(kw in msg_lower for kw in ["assumptions", "가정", "리스크"]):
+            plan_parts.append("✏️ Assumptions 작성")
+        if any(kw in msg_lower for kw in ["team", "팀", "staffing", "인원"]):
+            plan_parts.append("👥 팀 구성")
+        if any(kw in msg_lower for kw in ["cost", "비용", "예산"]):
+            plan_parts.append("💰 비용 산정")
+        if any(kw in msg_lower for kw in ["architecture", "아키텍처"]):
+            plan_parts.append("🏗️ 아키텍처")
+        if any(kw in msg_lower for kw in ["milestone", "마일스톤", "일정"]):
+            plan_parts.append("📅 마일스톤")
+        if any(kw in msg_lower for kw in ["acceptance", "인수", "수락"]):
+            plan_parts.append("✏️ Acceptance 작성")
+        if not plan_parts:
+            plan_parts.append("🔍 분석")
+        plan_desc = ", ".join(plan_parts)
+        _publish_event(chat_channel, {
+            "type": "progress",
+            "agent": "task_planner",
+            "step": "planned",
+            "message": f"📋 작업 계획: {plan_desc}",
+        })
 
         # Step 3: Execute via Runtime
         _update_agent_status(doc_id, "processing", "runtime", "🧠 에이전트 실행 중...")
