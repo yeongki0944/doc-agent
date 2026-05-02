@@ -726,54 +726,20 @@ def _handle_async_chat(payload: dict) -> dict:
     thinking_steps = []  # Collect all progress steps for history persistence
 
     try:
-        # Step 1: Analyze message intent
-        step1 = f"🔍 \"{message[:50]}{'...' if len(message) > 50 else ''}\" 분석 중..."
+        # Step 1: Analyze message
+        step1 = f"🔍 메시지 분석: \"{message[:60]}{'...' if len(message) > 60 else ''}\""
         thinking_steps.append(step1)
-        _update_agent_status(doc_id, "processing", "task_planner", "🔍 메시지 의도 분석 중...")
+        _update_agent_status(doc_id, "processing", "task_planner", step1)
         _publish_event(chat_channel, {
             "type": "progress", "agent": "task_planner", "step": "start", "message": step1,
         })
 
-        # Step 2: Determine intent via LLM router (quick call)
-        # Note: task_planner is not available in Lambda env (agent package is in Runtime only)
-        # Use message keywords to show approximate plan
-        msg_lower = message.lower()
-        plan_parts = []
-        if any(kw in msg_lower for kw in ["고객사", "파트너", "프로젝트", "목표", "범위", "예산", "일정"]):
-            plan_parts.append("📋 정보 수집")
-        if any(kw in msg_lower for kw in ["overview", "summary", "요약", "개요"]):
-            plan_parts.append("✏️ Executive Summary 작성")
-        if any(kw in msg_lower for kw in ["scope", "범위", "작업"]):
-            plan_parts.append("✏️ Scope 작성")
-        if any(kw in msg_lower for kw in ["success", "kpi", "성공", "기준"]):
-            plan_parts.append("✏️ Success Criteria 작성")
-        if any(kw in msg_lower for kw in ["assumptions", "가정", "리스크"]):
-            plan_parts.append("✏️ Assumptions 작성")
-        if any(kw in msg_lower for kw in ["team", "팀", "staffing", "인원"]):
-            plan_parts.append("👥 팀 구성")
-        if any(kw in msg_lower for kw in ["cost", "비용", "예산"]):
-            plan_parts.append("💰 비용 산정")
-        if any(kw in msg_lower for kw in ["architecture", "아키텍처"]):
-            plan_parts.append("🏗️ 아키텍처")
-        if any(kw in msg_lower for kw in ["milestone", "마일스톤", "일정"]):
-            plan_parts.append("📅 마일스톤")
-        if any(kw in msg_lower for kw in ["acceptance", "인수", "수락"]):
-            plan_parts.append("✏️ Acceptance 작성")
-        if not plan_parts:
-            plan_parts.append("🔍 분석")
-        plan_desc = ", ".join(plan_parts)
-        step2 = f"📋 작업 계획: {plan_desc}"
+        # Step 2: Execute via Runtime (LLM routing + sub-agents)
+        step2 = "🧠 Runtime 실행 중..."
         thinking_steps.append(step2)
+        _update_agent_status(doc_id, "processing", "runtime", step2)
         _publish_event(chat_channel, {
-            "type": "progress", "agent": "task_planner", "step": "planned", "message": step2,
-        })
-
-        # Step 3: Execute via Runtime
-        step3 = "🧠 에이전트가 작업을 수행하고 있습니다..."
-        thinking_steps.append(step3)
-        _update_agent_status(doc_id, "processing", "runtime", "🧠 에이전트 실행 중...")
-        _publish_event(chat_channel, {
-            "type": "progress", "agent": "runtime", "step": "executing", "message": step3,
+            "type": "progress", "agent": "runtime", "step": "executing", "message": step2,
         })
         runtime_result = _invoke_runtime({
             "doc_id": doc_id,
@@ -783,11 +749,12 @@ def _handle_async_chat(payload: dict) -> dict:
         })
         print(f"[async_chat] runtime result: status={runtime_result.get('status')} result_len={len(runtime_result.get('result', ''))}")
 
-        # Step 4: Runtime complete — extract execution log
+        # Step 3: Extract execution log and build detailed thinking steps
         agent_response = runtime_result.get("result", "")
-        execution_log = runtime_result.get("execution_log", [])
+        execution_log = runtime_result.get("execution_log", {})
+        planned = execution_log.get("planned", []) if isinstance(execution_log, dict) else []
+        executed = execution_log.get("executed", []) if isinstance(execution_log, dict) else (execution_log if isinstance(execution_log, list) else [])
 
-        # Convert execution_log to detailed thinking steps
         agent_labels = {
             "discovery_agent": "📋 정보 수집",
             "section_writer_agent": "✏️ 섹션 작성",
@@ -798,16 +765,35 @@ def _handle_async_chat(payload: dict) -> dict:
             "formatter_agent": "📄 DOCX",
             "conversation_agent": "💬 대화",
         }
-        for entry in execution_log:
-            agent_name = entry.get("agent", "")
-            label = agent_labels.get(agent_name, agent_name)
-            action = entry.get("action", "")
-            success = entry.get("success", True)
-            patches = entry.get("patches_count", 0)
-            if success:
-                thinking_steps.append(f"  ├─ {label}: {action} 완료 ✅ ({patches}건 변경)")
-            else:
-                thinking_steps.append(f"  └─ {label}: {action} 실패 ⚠️")
+
+        # Show LLM router's plan
+        if planned:
+            plan_names = [agent_labels.get(p.get("agent", ""), p.get("agent", "")) for p in planned]
+            thinking_steps.append(f"📋 LLM 라우터 판단: {', '.join(plan_names)}")
+
+        # Show executed agents with results
+        executed_agents = set()
+        if executed:
+            thinking_steps.append("🧠 서브에이전트 실행:")
+            for i, entry in enumerate(executed):
+                agent_name = entry.get("agent", "")
+                executed_agents.add(agent_name)
+                label = agent_labels.get(agent_name, agent_name)
+                action = entry.get("action", "")
+                success = entry.get("success", True)
+                patches = entry.get("patches_count", 0)
+                is_last = (i == len(executed) - 1) and not any(p.get("agent", "") not in executed_agents for p in planned)
+                prefix = "  └─" if is_last else "  ├─"
+                if success:
+                    thinking_steps.append(f"{prefix} {label}: {action} 완료 ✅ ({patches}건 변경)")
+                else:
+                    thinking_steps.append(f"{prefix} {label}: {action} 실패 ⚠️")
+
+        # Show planned but not executed agents
+        for p in planned:
+            if p.get("agent", "") not in executed_agents:
+                label = agent_labels.get(p.get("agent", ""), p.get("agent", ""))
+                thinking_steps.append(f"  ⊘ {label}: 실행되지 않음 (Runtime이 불필요로 판단)")
 
         thinking_steps.append("✅ 작업 완료")
         _publish_event(chat_channel, {

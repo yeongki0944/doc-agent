@@ -301,7 +301,10 @@ class ParentOrchestrator:
             await self.publish_status(doc_id, AgentStatus.idle)
 
             # Include execution log in plan for handler.py
-            plan.execution_log = self._audit_log.copy()
+            plan.execution_log = {
+                "planned": [{"agent": t.agent, "action": t.action} for t in plan.tasks],
+                "executed": self._audit_log.copy(),
+            }
 
         except VersionConflictError as exc:
             logger.warning("Version conflict for doc_id=%s: %s", doc_id, exc)
