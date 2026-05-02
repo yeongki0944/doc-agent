@@ -254,7 +254,10 @@ class ParentOrchestrator:
                     ),
                 )
             else:
-                if not any(t.agent == "discovery_agent" for t in plan.tasks):
+                if (
+                    not any(t.agent == "discovery_agent" for t in plan.tasks)
+                    and not any(t.agent == "conversation_agent" for t in plan.tasks)
+                ):
                     plan.tasks.insert(
                         0,
                         Task(
@@ -413,6 +416,8 @@ class ParentOrchestrator:
         try:
             if agent_name == "discovery_agent":
                 result = await self._delegate_discovery(task, doc_state)
+            elif agent_name == "conversation_agent":
+                result = self._delegate_conversation(task)
             elif agent_name == "architecture_agent":
                 result = await self._delegate_architecture(task, doc_state)
             elif agent_name == "staffing_agent":
@@ -451,6 +456,21 @@ class ParentOrchestrator:
     # ------------------------------------------------------------------
     # Per-agent delegation helpers
     # ------------------------------------------------------------------
+
+    def _delegate_conversation(self, task: Task) -> AgentResult:
+        """Handle simple non-document chat without mutating Document_State."""
+        message = task.params.get("message", "").strip()
+        if message.isdigit():
+            response = (
+                "입력하신 내용만으로는 프로젝트 정보를 판단하기 어렵습니다. "
+                "예: '고객사는 visang이고 GenAI 문서 자동화 PoC를 진행합니다'처럼 알려주세요."
+            )
+        else:
+            response = (
+                "가능합니다. 다만 이 채팅은 APN PoC Project Plan 작성을 돕는 용도라, "
+                "문서에 반영할 내용이면 고객사, 목표, 범위, 일정, 팀 구성처럼 알려주시면 바로 반영하겠습니다."
+            )
+        return AgentResult(success=True, chat_response=response)
 
     async def _delegate_discovery(
         self, task: Task, doc_state: DocumentState

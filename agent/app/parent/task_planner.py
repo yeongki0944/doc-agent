@@ -20,6 +20,29 @@ _INTENT_MAP: list[tuple[list[str], str, str]] = [
 ]
 
 
+def _is_conversation_message(message: str) -> bool:
+    msg = message.strip().lower()
+    if not msg:
+        return False
+    if msg.isdigit():
+        return True
+    return any(
+        phrase in msg
+        for phrase in [
+            "안녕",
+            "hello",
+            "hi",
+            "고마워",
+            "감사",
+            "다른 이야기",
+            "잡담",
+            "뭐 할 수",
+            "무엇을 할 수",
+            "help",
+        ]
+    )
+
+
 def build_task_plan(user_message: str) -> TaskPlan:
     """Analyze user message and produce a TaskPlan.
 
@@ -28,6 +51,17 @@ def build_task_plan(user_message: str) -> TaskPlan:
     """
     msg_lower = user_message.lower()
     tasks: list[Task] = []
+
+    if _is_conversation_message(user_message):
+        return TaskPlan(
+            tasks=[
+                Task(
+                    agent="conversation_agent",
+                    action="respond",
+                    params={"message": user_message},
+                )
+            ],
+        )
 
     for keywords, agent, action in _INTENT_MAP:
         if any(kw in msg_lower for kw in keywords):
@@ -39,5 +73,5 @@ def build_task_plan(user_message: str) -> TaskPlan:
 
     return TaskPlan(
         tasks=tasks,
-        chat_response=f"계획 수립 완료: {len(tasks)}개 작업",
+        chat_response="",
     )

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -386,7 +387,7 @@ class DiscoveryAgent:
         input_lower = user_input.lower()
 
         if any(kw in input_lower for kw in ["고객", "customer", "회사"]):
-            structured["customer"] = user_input
+            structured["customer"] = _extract_customer_value(user_input)
         if any(kw in input_lower for kw in ["목표", "goal", "목적"]):
             structured["project_goal"] = user_input
         if any(kw in input_lower for kw in ["범위", "scope"]):
@@ -416,6 +417,23 @@ class DiscoveryAgent:
 def _has_value(field_value: FieldValue) -> bool:
     """Check if a FieldValue has any meaningful value set."""
     return bool(field_value.user_input or field_value.ai_recommended)
+
+
+def _extract_customer_value(user_input: str) -> str:
+    """Extract the customer name from simple Korean/English edit phrases."""
+    text = user_input.strip()
+    patterns = [
+        r"([A-Za-z0-9가-힣_.&-]+)\s*고객사",
+        r"고객사(?:명)?(?:는|은|를|을|로|으로|:|=)?\s*([A-Za-z0-9가-힣_.& -]+?)(?:\s*(?:으로|로)?\s*(?:수정|변경|설정|해줘|해주세요)|\s*입니다|\s*이다|$)",
+        r"customer(?:\s+name)?\s*(?:is|to|=|:)?\s*([A-Za-z0-9가-힣_.& -]+?)(?:\s*(?:please|$))",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            value = match.group(1).strip(" .,:;은는이가을를")
+            if value:
+                return value
+    return text
 
 
 def _string_value(value: Any) -> str:

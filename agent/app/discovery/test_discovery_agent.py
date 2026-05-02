@@ -482,6 +482,13 @@ class TestKeywordExtraction:
         agent = DiscoveryAgent()
         result = agent._keyword_extract("ABC 고객사 프로젝트")
         assert "customer" in result
+        assert result["customer"] == "ABC"
+
+    @patch("agent.app.discovery.discovery_agent.Agent")
+    def test_extracts_customer_edit_value(self, mock_agent_cls: MagicMock) -> None:
+        agent = DiscoveryAgent()
+        result = agent._keyword_extract("고객사 visang으로 수정해줘")
+        assert result["customer"] == "visang"
 
     @patch("agent.app.discovery.discovery_agent.Agent")
     def test_extracts_goal_keywords(self, mock_agent_cls: MagicMock) -> None:
