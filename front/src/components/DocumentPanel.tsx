@@ -16,37 +16,37 @@ import { AcceptanceSection } from './sections/AcceptanceSection'
 import { LangProvider, type DocLang } from './LangContext'
 
 const TABS = [
-  'Cover',
-  'Executive Summary',
-  'Stakeholders',
-  'Success Criteria',
-  'Assumptions',
-  'Scope of Work',
-  'Architecture',
-  'Milestones',
-  'Cost Breakdown',
-  'Resources & Cost Estimates',
-  'Acceptance',
+  '1. Cover',
+  '2.1 Executive Summary',
+  '2.2 Stakeholders',
+  '2.3 Success Criteria / KPIs',
+  '2.4 Assumptions & Risks',
+  '2.5 Scope of Work',
+  '2.6 Architecture',
+  '2.7 Milestones',
+  '2.8 Cost Breakdown',
+  '2.9 Resources & Cost Estimates',
+  '2.10 Acceptance',
 ] as const
 
 type TabName = typeof TABS[number]
 
 const TAB_COMPONENTS: Record<TabName, React.FC> = {
-  'Cover': CoverSection,
-  'Executive Summary': ExecutiveSummarySection,
-  'Stakeholders': StakeholdersSection,
-  'Success Criteria': SuccessCriteriaSection,
-  'Assumptions': AssumptionsSection,
-  'Scope of Work': ScopeOfWorkSection,
-  'Architecture': ArchitectureSection,
-  'Milestones': MilestonesSection,
-  'Cost Breakdown': CostBreakdownSection,
-  'Resources & Cost Estimates': ResourcesCostEstimatesSection,
-  'Acceptance': AcceptanceSection,
+  '1. Cover': CoverSection,
+  '2.1 Executive Summary': ExecutiveSummarySection,
+  '2.2 Stakeholders': StakeholdersSection,
+  '2.3 Success Criteria / KPIs': SuccessCriteriaSection,
+  '2.4 Assumptions & Risks': AssumptionsSection,
+  '2.5 Scope of Work': ScopeOfWorkSection,
+  '2.6 Architecture': ArchitectureSection,
+  '2.7 Milestones': MilestonesSection,
+  '2.8 Cost Breakdown': CostBreakdownSection,
+  '2.9 Resources & Cost Estimates': ResourcesCostEstimatesSection,
+  '2.10 Acceptance': AcceptanceSection,
 }
 
 export function DocumentPanel({ docId }: { docId: string }) {
-  const [activeTab, setActiveTab] = useState<TabName>('Cover')
+  const [activeTab, setActiveTab] = useState<TabName>('1. Cover')
   const completionScore = useDocumentStore(s => s.completion_score ?? 0)
   const blockingIssues = useDocumentStore(s => s.blocking_issues ?? [])
   const setDocument = useDocumentStore(s => s.setDocument)

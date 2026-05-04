@@ -1,9 +1,8 @@
 import type { FieldValue } from '../../store/documentStore'
 import { EditableField } from '../EditableField'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
-import { useSaveStatus } from '../../hooks/useSaveStatus'
+import { useFieldSave } from '../../hooks/useFieldSave'
 import { resolveFieldValue, isAiRecommended } from '../AiBadge'
-import { saveUserInput } from '../../utils/api'
 
 export interface FieldValueEditorProps {
   field: FieldValue | undefined | null
@@ -22,19 +21,10 @@ export interface FieldValueEditorProps {
 export function FieldValueEditor({
   field, dotPath, docId, placeholder, multiline, type, onLocalUpdate,
 }: FieldValueEditorProps) {
-  const { saveStatus, doSave } = useSaveStatus()
+  const { saveStatus, handleSave } = useFieldSave(docId)
 
-  const handleSave = (newValue: string) => {
-    // 1. Optimistic update — must set user_edited: true
-    onLocalUpdate({
-      user_input: newValue,
-      ai_recommended: field?.ai_recommended ?? null,
-      calculated: field?.calculated ?? null,
-      status: 'draft',
-      user_edited: true,
-    })
-    // 2. Persist via API (dot-path)
-    doSave(() => saveUserInput(docId, dotPath, newValue))
+  const onSave = (newValue: string) => {
+    handleSave(dotPath, newValue, field, onLocalUpdate)
   }
 
   return (
@@ -42,7 +32,7 @@ export function FieldValueEditor({
       <EditableField
         value={resolveFieldValue(field) ?? ''}
         isAi={isAiRecommended(field)}
-        onSave={handleSave}
+        onSave={onSave}
         placeholder={placeholder}
         multiline={multiline}
         type={type}

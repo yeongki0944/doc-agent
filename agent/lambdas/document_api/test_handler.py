@@ -139,7 +139,7 @@ def test_chat_alias_auto_creates_shell_only_when_missing(monkeypatch):
     assert saved_item["document_id"] == "doc-new"
     assert saved_item["user_id"] == "user-1"
     assert saved_item["version"] == 0
-    assert saved_item["sections"] == {}
+    assert saved_item["sections"] == document_api._default_sections()
     assert saved_item["staffing_plan"]["roles"] == {}
 
 

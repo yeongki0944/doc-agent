@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react'
 import { useDocumentStore, type CostBreakdownSection as CostBreakdownSectionData, type CostBreakdownRow, type FieldValue } from '../../store/documentStore'
 import { useSessionStore } from '../../store/sessionStore'
 import { FieldValueEditor } from '../editors/FieldValueEditor'
+import { EditableComboField } from '../editors/EditableComboField'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
@@ -9,6 +10,8 @@ import { resolveFieldValue } from '../AiBadge'
 import { useDocLang } from '../LangContext'
 import { color } from '../../styles/tokens'
 import { formatMoney } from '../../utils/frontendSchema'
+import { SectionGuideButton } from '../SectionGuideButton'
+import { COST_CATEGORY_PRESETS, COST_NOTE_PRESETS } from '../../constants/documentPresets'
 
 const emptyField = (): FieldValue => ({
   user_input: null,
@@ -84,7 +87,7 @@ export function CostBreakdownSection() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 16 }}>Cost Breakdown</h2>
+      <h2 style={{ marginBottom: 16 }}>2.8 Cost Breakdown <SectionGuideButton sectionKey="cost_breakdown" /></h2>
 
       {/* --- Editable scalar fields --- */}
       <div style={fieldGrid}>
@@ -93,7 +96,7 @@ export function CostBreakdownSection() {
             field={sectionData?.calculator_url}
             dotPath="sections.cost_breakdown.calculator_url.user_input"
             docId={docId}
-            placeholder="Calculator URL"
+            placeholder="https://calculator.aws/#/estimate?id=..."
             onLocalUpdate={updateScalarField('calculator_url')}
           />
         </FieldRow>
@@ -146,11 +149,12 @@ export function CostBreakdownSection() {
             {breakdownRows.map((row, index) => (
               <tr key={index}>
                 <td style={td}>
-                  <FieldValueEditor
+                  <EditableComboField
                     field={row.category}
                     dotPath={`sections.cost_breakdown.breakdown_table.${index}.category.user_input`}
                     docId={docId}
                     placeholder="Category"
+                    presets={COST_CATEGORY_PRESETS}
                     onLocalUpdate={updateRowField(index, 'category')}
                   />
                 </td>
@@ -173,11 +177,12 @@ export function CostBreakdownSection() {
                   />
                 </td>
                 <td style={td}>
-                  <FieldValueEditor
+                  <EditableComboField
                     field={row.note}
                     dotPath={`sections.cost_breakdown.breakdown_table.${index}.note.user_input`}
                     docId={docId}
                     placeholder="Note"
+                    presets={COST_NOTE_PRESETS}
                     onLocalUpdate={updateRowField(index, 'note')}
                   />
                 </td>

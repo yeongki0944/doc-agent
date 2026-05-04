@@ -198,6 +198,58 @@ def _field_value_with_user_input(existing: Any, value: Any) -> dict:
     return field
 
 
+def _default_field_value() -> dict:
+    """Return an empty FieldValue dict (no value set)."""
+    return {
+        "user_input": None,
+        "ai_recommended": None,
+        "calculated": None,
+        "status": "empty",
+        "user_edited": False,
+    }
+
+
+def _confirmed_field_value(value: Any) -> dict:
+    """Return a FieldValue with a pre-set calculated value and confirmed status."""
+    return {
+        "user_input": None,
+        "ai_recommended": None,
+        "calculated": value,
+        "status": "confirmed",
+        "user_edited": False,
+    }
+
+
+def _default_meta() -> dict:
+    """Return the default meta dict for new documents."""
+    return {
+        "customer": _default_field_value(),
+        "partner": _confirmed_field_value("MegazoneCloud"),
+        "date": _default_field_value(),
+    }
+
+
+def _default_sections() -> dict:
+    """Return the default sections dict for new documents."""
+    return {
+        "stakeholders": {
+            "executive_sponsors": [
+                {
+                    "name": _confirmed_field_value("James, Kong"),
+                    "title": _confirmed_field_value("CAIO"),
+                    "description": _confirmed_field_value("Head of AI Business"),
+                    "stakeholder_for": _default_field_value(),
+                    "role": _default_field_value(),
+                    "contact": _confirmed_field_value("jameskong@megazone.com"),
+                }
+            ],
+            "stakeholders": [],
+            "project_team": [],
+            "escalation_contacts": [],
+        }
+    }
+
+
 def _resolved_number(value: Any) -> float:
     if isinstance(value, dict):
         value = value.get("user_input") if value.get("user_input") is not None else (
@@ -436,8 +488,8 @@ def _document_shell(doc_id: str, user_id: str) -> dict:
         "updated_at": now,
         "mode": "architecture_absent",
         "template": "apn_poc_project_plan",
-        "meta": {},
-        "sections": {},
+        "meta": _default_meta(),
+        "sections": _default_sections(),
         "staffing_plan": {
             "roles": {},
             "grand_total_hours": {"calculated": None},
@@ -557,8 +609,8 @@ def _handle_create_document(event: dict) -> dict:
         "updated_at": now,
         "mode": "architecture_absent",
         "template": "apn_poc_project_plan",
-        "meta": {},
-        "sections": {},
+        "meta": _default_meta(),
+        "sections": _default_sections(),
         "staffing_plan": {
             "roles": {},
             "grand_total_hours": {"calculated": None},
@@ -1063,6 +1115,32 @@ def _handle_user_input(doc_id: str, body: dict, event: dict) -> dict:
 
     expected_version = int(item.get("version", 0))
     doc_dict = json.loads(_json(item))
+
+    # Top-level title update: when path is "title" and value is a string,
+    # update doc_dict["title"] directly (not wrapped in FieldValue).
+    if path == "title" and isinstance(value, str):
+        doc_dict["title"] = value
+        operations = [_patch_operation("replace", "/title", value, "user_input")]
+
+        try:
+            saved = _conditional_save_document(doc_dict, expected_version)
+        except Exception as exc:
+            if "VersionConflict" in type(exc).__name__:
+                return _response(409, {"error": str(exc), "status": "version_conflict"})
+            raise
+
+        _publish_event(f"docs/{doc_id}/patch", {
+            "type": "patch",
+            "patch_id": f"patch-{uuid.uuid4().hex[:12]}",
+            "doc_id": doc_id,
+            "agent": "document_api",
+            "operations": operations,
+            "version": saved["version"],
+            "version_before": expected_version,
+            "version_after": saved["version"],
+        })
+
+        return _response(200, {"status": "ok", "version": saved["version"]})
 
     # Direct array/object replacement: if value is list or dict and path
     # does NOT end with .user_input, set the value directly without

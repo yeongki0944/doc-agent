@@ -239,7 +239,13 @@ const INITIAL_STATE: DocumentState = {
   completion_score: 0,
   meta: {
     customer: emptyField(),
-    partner: emptyField(),
+    partner: {
+      user_input: null,
+      ai_recommended: null,
+      calculated: "MegazoneCloud",
+      status: "confirmed" as FieldStatus,
+      user_edited: false,
+    },
     date: emptyField(),
   },
   sections: {},

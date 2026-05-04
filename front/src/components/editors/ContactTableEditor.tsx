@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import type { ContactEntry, FieldValue } from '../../store/documentStore'
 import { FieldValueEditor } from './FieldValueEditor'
+import { EditableComboField } from './EditableComboField'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
@@ -12,7 +13,7 @@ const COLUMN_LABELS: Record<keyof ContactEntry, string> = {
   description: 'Description',
   stakeholder_for: 'Stakeholder For',
   role: 'Role',
-  contact: 'Contact',
+  contact: 'Email / Contact',
 }
 
 const DEFAULT_COLUMNS: (keyof ContactEntry)[] = ['name', 'title', 'description', 'role', 'contact', 'stakeholder_for']
@@ -42,15 +43,17 @@ export interface ContactTableEditorProps {
   docId: string
   onContactsChange: (contacts: ContactEntry[]) => void
   columns?: (keyof ContactEntry)[]  // which columns to show (varies by list type)
+  columnPresets?: Partial<Record<keyof ContactEntry, readonly (string | number)[]>>
 }
 
 /**
  * Editable table of ContactEntry rows with configurable visible columns.
- * Each cell uses FieldValueEditor for inline editing.
+ * Each cell uses FieldValueEditor for inline editing, or EditableComboField
+ * when columnPresets are provided for that column.
  * Add/remove rows persist the full array to listDotPath via saveUserInput.
  */
 export function ContactTableEditor({
-  contacts, listDotPath, docId, onContactsChange, columns,
+  contacts, listDotPath, docId, onContactsChange, columns, columnPresets,
 }: ContactTableEditorProps) {
   const visibleColumns = columns ?? DEFAULT_COLUMNS
   const { saveStatus: arraySaveStatus, doSave: doArraySave } = useSaveStatus()
@@ -93,17 +96,31 @@ export function ContactTableEditor({
                 <td style={tdStyle}>
                   <span style={{ color: color.textMuted, fontSize: 12 }}>{index + 1}</span>
                 </td>
-                {visibleColumns.map(col => (
-                  <td key={col} style={tdStyle}>
-                    <FieldValueEditor
-                      field={entry[col]}
-                      dotPath={`${listDotPath}.${index}.${col}.user_input`}
-                      docId={docId}
-                      placeholder={COLUMN_LABELS[col]}
-                      onLocalUpdate={(newField) => handleLocalUpdate(index, col, newField)}
-                    />
-                  </td>
-                ))}
+                {visibleColumns.map(col => {
+                  const presets = columnPresets?.[col]
+                  return (
+                    <td key={col} style={tdStyle}>
+                      {presets && presets.length > 0 ? (
+                        <EditableComboField
+                          field={entry[col]}
+                          dotPath={`${listDotPath}.${index}.${col}.user_input`}
+                          docId={docId}
+                          placeholder={COLUMN_LABELS[col]}
+                          presets={presets}
+                          onLocalUpdate={(newField) => handleLocalUpdate(index, col, newField)}
+                        />
+                      ) : (
+                        <FieldValueEditor
+                          field={entry[col]}
+                          dotPath={`${listDotPath}.${index}.${col}.user_input`}
+                          docId={docId}
+                          placeholder={COLUMN_LABELS[col]}
+                          onLocalUpdate={(newField) => handleLocalUpdate(index, col, newField)}
+                        />
+                      )}
+                    </td>
+                  )
+                })}
                 <td style={tdStyle}>
                   <button
                     onClick={() => handleRemove(index)}

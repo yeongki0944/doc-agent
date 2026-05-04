@@ -8,14 +8,21 @@ import {
 } from '../../store/documentStore'
 import { useSessionStore } from '../../store/sessionStore'
 import { FieldValueEditor } from '../editors/FieldValueEditor'
+import { EditableComboField } from '../editors/EditableComboField'
 import { ListEditor } from '../editors/ListEditor'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
+import { SectionGuideButton } from '../SectionGuideButton'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
 import { useDocLang } from '../LangContext'
 import { apiFetch } from '../../auth/api'
-import { color } from '../../styles/tokens'
+import { color, font, size, space } from '../../styles/tokens'
 import { isBedrockService, sortArchitectureServices } from '../../utils/frontendSchema'
+import { resolveFieldValue } from '../AiBadge'
+import {
+  SERVICE_NAME_PRESETS,
+  SERVICE_DESCRIPTION_PRESETS,
+} from '../../constants/documentPresets'
 
 const SERVICE_CATEGORIES: ServiceCategory[] = [
   'genai_core', 'data', 'compute', 'network', 'security', 'monitoring',
@@ -38,6 +45,15 @@ function createEmptyService(): ArchitectureService {
     category: 'compute',
     is_required_for_funding: false,
   }
+}
+
+/** Resolve description presets for a given service name. */
+function getDescriptionPresetsForService(serviceName: FieldValue | undefined | null): readonly (string | number)[] {
+  const name = resolveFieldValue(serviceName)
+  if (typeof name === 'string' && name in SERVICE_DESCRIPTION_PRESETS) {
+    return [SERVICE_DESCRIPTION_PRESETS[name as keyof typeof SERVICE_DESCRIPTION_PRESETS]]
+  }
+  return []
 }
 
 export function ArchitectureSection() {
@@ -157,7 +173,10 @@ export function ArchitectureSection() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 16 }}>Architecture</h2>
+      <h2 style={headingStyle}>
+        2.6 Architecture
+        <SectionGuideButton sectionKey="architecture" />
+      </h2>
 
       {/* Drawio upload */}
       <div style={{ marginBottom: 16 }}>
@@ -210,11 +229,12 @@ export function ArchitectureSection() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                   <div style={{ flex: 1 }}>
                     <div style={label}>Service Name</div>
-                    <FieldValueEditor
+                    <EditableComboField
                       field={service.service_name}
                       dotPath={`sections.architecture.services.${index}.service_name.user_input`}
                       docId={docId}
                       placeholder="서비스 이름"
+                      presets={SERVICE_NAME_PRESETS}
                       onLocalUpdate={updateServiceFieldValue(index, 'service_name')}
                     />
                     {service.service_id && (
@@ -229,12 +249,13 @@ export function ArchitectureSection() {
                 {/* Description */}
                 <div style={{ marginTop: 10 }}>
                   <div style={label}>Description</div>
-                  <FieldValueEditor
+                  <EditableComboField
                     field={service.description}
                     dotPath={`sections.architecture.services.${index}.description.user_input`}
                     docId={docId}
                     placeholder="서비스 설명"
                     multiline
+                    presets={getDescriptionPresetsForService(service.service_name)}
                     onLocalUpdate={updateServiceFieldValue(index, 'description')}
                   />
                 </div>
@@ -348,6 +369,16 @@ export function ArchitectureSection() {
 }
 
 // --- Styles ---
+
+const headingStyle: React.CSSProperties = {
+  marginBottom: 16,
+  fontSize: size.lg,
+  fontWeight: 600,
+  fontFamily: font.heading,
+  display: 'flex',
+  alignItems: 'center',
+  gap: space.xs,
+}
 
 const subHeading: React.CSSProperties = {
   fontSize: 14, fontWeight: 700, color: color.textSecondary, marginBottom: 8, marginTop: 0,

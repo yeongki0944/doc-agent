@@ -9,12 +9,15 @@ import {
 } from '../../store/documentStore'
 import { useSessionStore } from '../../store/sessionStore'
 import { FieldValueEditor } from '../editors/FieldValueEditor'
+import { EditableComboField } from '../editors/EditableComboField'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
 import { resolveFieldValue } from '../AiBadge'
 import { useDocLang } from '../LangContext'
 import { color } from '../../styles/tokens'
+import { SectionGuideButton } from '../SectionGuideButton'
+import { RESOURCE_ROLE_PRESETS, RATE_PRESETS, PROJECT_PHASE_PRESETS } from '../../constants/documentPresets'
 
 const emptyField = (): FieldValue => ({
   user_input: null,
@@ -132,7 +135,7 @@ export function ResourcesCostEstimatesSection() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 16 }}>Resources &amp; Cost Estimates</h2>
+      <h2 style={{ marginBottom: 16 }}>2.9 Resources &amp; Cost Estimates <SectionGuideButton sectionKey="resources_cost_estimates" /></h2>
 
       {/* ── Partner Technical Team ── */}
       <SectionCard title="Partner Technical Team">
@@ -152,11 +155,12 @@ export function ResourcesCostEstimatesSection() {
               {team.map((member, index) => (
                 <tr key={index}>
                   <td style={td}>
-                    <FieldValueEditor
+                    <EditableComboField
                       field={member.role}
                       dotPath={`sections.resources_cost_estimates.partner_technical_team.${index}.role.user_input`}
                       docId={docId}
                       placeholder="Role"
+                      presets={RESOURCE_ROLE_PRESETS}
                       onLocalUpdate={updateTeamMemberField(index, 'role')}
                     />
                   </td>
@@ -184,29 +188,32 @@ export function ResourcesCostEstimatesSection() {
       {/* ── Rate Fields ── */}
       <SectionCard title="Rates">
         <FieldRow label="Solution Architect">
-          <FieldValueEditor
+          <EditableComboField
             field={sectionData?.rate_solution_architect}
             dotPath="sections.resources_cost_estimates.rate_solution_architect.user_input"
             docId={docId}
             placeholder="Rate (SA)"
+            presets={RATE_PRESETS}
             onLocalUpdate={updateScalarField('rate_solution_architect')}
           />
         </FieldRow>
         <FieldRow label="Engineer">
-          <FieldValueEditor
+          <EditableComboField
             field={sectionData?.rate_engineer}
             dotPath="sections.resources_cost_estimates.rate_engineer.user_input"
             docId={docId}
             placeholder="Rate (Engineer)"
+            presets={RATE_PRESETS}
             onLocalUpdate={updateScalarField('rate_engineer')}
           />
         </FieldRow>
         <FieldRow label="Other">
-          <FieldValueEditor
+          <EditableComboField
             field={sectionData?.rate_other}
             dotPath="sections.resources_cost_estimates.rate_other.user_input"
             docId={docId}
             placeholder="Rate (Other)"
+            presets={RATE_PRESETS}
             onLocalUpdate={updateScalarField('rate_other')}
           />
         </FieldRow>
@@ -227,11 +234,12 @@ export function ResourcesCostEstimatesSection() {
               {phaseRows.map((row, index) => (
                 <tr key={index}>
                   <td style={td}>
-                    <FieldValueEditor
+                    <EditableComboField
                       field={row.phase}
                       dotPath={`sections.resources_cost_estimates.phase_hours_table.${index}.phase.user_input`}
                       docId={docId}
                       placeholder="Phase"
+                      presets={PROJECT_PHASE_PRESETS}
                       onLocalUpdate={updatePhaseField(index)}
                     />
                   </td>

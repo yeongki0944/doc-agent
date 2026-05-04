@@ -1,11 +1,20 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { useDocumentStore, type ExecutiveSummarySection as ExecutiveSummaryModel, type FieldValue } from '../../store/documentStore'
 import { useSessionStore } from '../../store/sessionStore'
 import { FieldValueEditor } from '../editors/FieldValueEditor'
 import { ListEditor } from '../editors/ListEditor'
+import { SectionGuideButton } from '../SectionGuideButton'
 import { useDocLang } from '../LangContext'
-import { color } from '../../styles/tokens'
+import { color, font, size, space, radius } from '../../styles/tokens'
 import { resolveFieldValue } from '../AiBadge'
+import { saveUserInput } from '../../utils/api'
+import { useSaveStatus } from '../../hooks/useSaveStatus'
+import {
+  EXEC_SUMMARY_STARTER_BLOCKS,
+  PAIN_POINT_PRESETS,
+  POC_OBJECTIVE_PRESETS,
+  presetToFieldValue,
+} from '../../constants/documentPresets'
 
 function resolve(value: FieldValue | undefined | null) {
   return resolveFieldValue(value) ?? ''
@@ -59,11 +68,36 @@ export function ExecutiveSummarySection() {
     setDocument({ sections: { ...sections, executive_summary: updated } } as any)
   }, [setDocument])
 
+  const handleStartDirectInput = useCallback(() => {
+    // Initialize the section with empty fields so the user can start typing
+    const sections = useDocumentStore.getState().sections || {}
+    const emptyField = (): FieldValue => ({ user_input: null, ai_recommended: null, calculated: null, status: 'empty', user_edited: false })
+    const initial: ExecutiveSummaryModel = {
+      customer_intro: emptyField(),
+      problem_statement: emptyField(),
+      proposed_solution: emptyField(),
+      phases_overview: [],
+      current_pain_points: [],
+      poc_objectives: [],
+      business_case: {
+        problem_definition: emptyField(),
+        roi_calculation: emptyField(),
+        executive_sponsor: emptyField(),
+        production_commitment: emptyField(),
+      },
+      custom_blocks: [],
+    }
+    setDocument({ sections: { ...sections, executive_summary: initial } } as any)
+  }, [setDocument])
+
   if (!hasContent) {
     return (
       <div>
-        <h2 style={{ marginBottom: 16 }}>Executive Summary</h2>
-        <p style={{ color: color.textMuted }}>프로젝트 개요가 아직 입력되지 않았습니다. 채팅에서 "Overview 작성해줘"라고 요청하세요.</p>
+        <h2 style={{ marginBottom: space.lg, fontSize: size.lg, fontWeight: 600, fontFamily: font.heading, display: 'flex', alignItems: 'center', gap: space.xs }}>
+          2.1 Executive Summary
+          <SectionGuideButton sectionKey="executive_summary" />
+        </h2>
+        <EmptyState onStartDirectInput={handleStartDirectInput} />
       </div>
     )
   }
@@ -72,7 +106,10 @@ export function ExecutiveSummarySection() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 16 }}>Executive Summary</h2>
+      <h2 style={{ marginBottom: space.lg, fontSize: size.lg, fontWeight: 600, fontFamily: font.heading, display: 'flex', alignItems: 'center', gap: space.xs }}>
+        2.1 Executive Summary
+        <SectionGuideButton sectionKey="executive_summary" />
+      </h2>
 
       {/* Scalar fields */}
       <div style={grid}>
@@ -109,7 +146,7 @@ export function ExecutiveSummarySection() {
       </div>
 
       {/* List fields */}
-      <div style={{ marginTop: 16 }}>
+      <div style={{ marginTop: space.lg }}>
         <FieldCard title="Phases Overview">
           <ListEditor
             items={es.phases_overview ?? []}
@@ -121,7 +158,7 @@ export function ExecutiveSummarySection() {
         </FieldCard>
       </div>
 
-      <div style={{ marginTop: 12, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+      <div style={{ marginTop: space.md, display: 'grid', gap: space.md, gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
         <FieldCard title="Current Pain Points">
           <ListEditor
             items={es.current_pain_points ?? []}
@@ -129,6 +166,13 @@ export function ExecutiveSummarySection() {
             docId={docId}
             onItemsChange={updateListField('current_pain_points')}
             placeholder="Pain point 입력"
+          />
+          <PresetPicker
+            presets={PAIN_POINT_PRESETS}
+            currentItems={es.current_pain_points ?? []}
+            listDotPath="sections.executive_summary.current_pain_points"
+            docId={docId}
+            onItemsChange={updateListField('current_pain_points')}
           />
         </FieldCard>
         <FieldCard title="PoC Objectives">
@@ -139,12 +183,19 @@ export function ExecutiveSummarySection() {
             onItemsChange={updateListField('poc_objectives')}
             placeholder="Objective 입력"
           />
+          <PresetPicker
+            presets={POC_OBJECTIVE_PRESETS}
+            currentItems={es.poc_objectives ?? []}
+            listDotPath="sections.executive_summary.poc_objectives"
+            docId={docId}
+            onItemsChange={updateListField('poc_objectives')}
+          />
         </FieldCard>
       </div>
 
       {/* Business Case */}
-      <div style={{ marginTop: 16, padding: 16, border: `1px solid ${color.border}`, borderRadius: 8, background: color.bgPrimary }}>
-        <h3 style={{ marginTop: 0, marginBottom: 12 }}>Business Case</h3>
+      <div style={{ marginTop: space.lg, padding: space.lg, border: `1px solid ${color.border}`, borderRadius: 8, background: color.bgPrimary }}>
+        <h3 style={{ marginTop: 0, marginBottom: space.md }}>Business Case</h3>
         <div style={businessGrid}>
           <FieldCard title="Problem Definition">
             <FieldValueEditor
@@ -191,6 +242,97 @@ export function ExecutiveSummarySection() {
   )
 }
 
+/* --- Empty State --- */
+
+function EmptyState({ onStartDirectInput }: { onStartDirectInput: () => void }) {
+  const [showStarters, setShowStarters] = useState(false)
+
+  return (
+    <div style={emptyContainer}>
+      <p style={emptyMainText}>
+        Executive Summary가 아직 입력되지 않았습니다. 오른쪽 문서에서 직접 입력하거나, 왼쪽 채팅에서 AI에게 작성을 요청할 수 있습니다.
+      </p>
+      <p style={emptyHintText}>
+        예: 고객사의 현재 과제, PoC 목표, 제안 솔루션을 입력하세요.
+      </p>
+      <p style={emptyAiHint}>
+        AI 요청 예시: Executive Summary 초안 작성해줘
+      </p>
+
+      <div style={actionRow}>
+        <button style={actionBtn} onClick={() => setShowStarters(prev => !prev)}>
+          📋 Starter Block 프리셋
+        </button>
+        <button style={actionBtn} onClick={onStartDirectInput}>
+          ✏️ 직접 입력
+        </button>
+        <button style={{ ...actionBtn, ...actionBtnMuted }}>
+          🤖 AI에게 초안 요청
+        </button>
+      </div>
+
+      {showStarters && (
+        <div style={starterGrid}>
+          {EXEC_SUMMARY_STARTER_BLOCKS.map((block, idx) => (
+            <div key={idx} style={starterChip}>
+              {block}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* --- Preset Picker for list fields --- */
+
+function PresetPicker({ presets, currentItems, listDotPath, docId, onItemsChange }: {
+  presets: readonly string[]
+  currentItems: FieldValue[]
+  listDotPath: string
+  docId: string
+  onItemsChange: (items: FieldValue[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const { saveStatus, doSave } = useSaveStatus()
+
+  const handleSelect = (preset: string) => {
+    const newItem = presetToFieldValue(preset)
+    const updated = [...currentItems, newItem]
+    onItemsChange(updated)
+    doSave(() => saveUserInput(docId, listDotPath, updated))
+    setOpen(false)
+  }
+
+  return (
+    <div style={{ marginTop: space.xs, position: 'relative' }}>
+      <button
+        onClick={() => setOpen(prev => !prev)}
+        style={presetPickerBtn}
+      >
+        + 프리셋 추가
+      </button>
+      {open && (
+        <div style={presetDropdown}>
+          {presets.map((preset, idx) => (
+            <div
+              key={idx}
+              onClick={() => handleSelect(preset)}
+              style={presetDropdownItem}
+              onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = color.bgSubtle }}
+              onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = 'transparent' }}
+            >
+              {preset}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* --- Shared sub-components --- */
+
 function FieldCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div style={card}>
@@ -200,28 +342,131 @@ function FieldCard({ title, children }: { title: string; children: React.ReactNo
   )
 }
 
+/* --- Styles --- */
+
 const grid: React.CSSProperties = {
   display: 'grid',
-  gap: 12,
+  gap: space.md,
   gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
 }
 
 const businessGrid: React.CSSProperties = {
   display: 'grid',
-  gap: 12,
+  gap: space.md,
   gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
 }
 
 const card: React.CSSProperties = {
-  padding: 12,
+  padding: space.md,
   borderRadius: 8,
   border: `1px solid ${color.border}`,
   background: color.bgSurface,
 }
 
 const cardTitle: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: size.sm,
   fontWeight: 700,
   color: color.textMuted,
-  marginBottom: 8,
+  marginBottom: space.sm,
+}
+
+const emptyContainer: React.CSSProperties = {
+  padding: space.xl,
+  border: `1px dashed ${color.border}`,
+  borderRadius: 8,
+  background: color.bgPrimary,
+  textAlign: 'center',
+}
+
+const emptyMainText: React.CSSProperties = {
+  color: color.textSecondary,
+  fontSize: size.base,
+  lineHeight: 1.6,
+  marginBottom: space.sm,
+}
+
+const emptyHintText: React.CSSProperties = {
+  color: color.textMuted,
+  fontSize: size.sm,
+  marginBottom: space.xs,
+}
+
+const emptyAiHint: React.CSSProperties = {
+  color: color.info,
+  fontSize: size.sm,
+  fontStyle: 'italic',
+  marginBottom: space.lg,
+}
+
+const actionRow: React.CSSProperties = {
+  display: 'flex',
+  gap: space.sm,
+  justifyContent: 'center',
+  flexWrap: 'wrap',
+}
+
+const actionBtn: React.CSSProperties = {
+  padding: `${space.sm}px ${space.md}px`,
+  border: `1px solid ${color.border}`,
+  borderRadius: 6,
+  background: color.bgSurface,
+  cursor: 'pointer',
+  fontSize: size.sm,
+  color: color.textPrimary,
+}
+
+const actionBtnMuted: React.CSSProperties = {
+  color: color.textMuted,
+  borderStyle: 'dashed',
+}
+
+const starterGrid: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: space.sm,
+  marginTop: space.md,
+  justifyContent: 'center',
+}
+
+const starterChip: React.CSSProperties = {
+  padding: `${space.xs}px ${space.sm}px`,
+  border: `1px solid ${color.border}`,
+  borderRadius: 16,
+  background: color.bgSurface,
+  fontSize: size.xs,
+  color: color.textSecondary,
+  cursor: 'default',
+}
+
+const presetPickerBtn: React.CSSProperties = {
+  background: 'none',
+  border: `1px dashed ${color.border}`,
+  borderRadius: 4,
+  padding: `${space.xs}px ${space.sm}px`,
+  cursor: 'pointer',
+  color: color.info,
+  fontSize: size.xs,
+}
+
+const presetDropdown: React.CSSProperties = {
+  position: 'absolute',
+  top: '100%',
+  left: 0,
+  zIndex: 1000,
+  background: color.bgSurface,
+  border: `1px solid ${color.border}`,
+  borderRadius: 6,
+  boxShadow: '0 4px 12px rgba(10,37,64,0.08)',
+  maxHeight: 200,
+  overflowY: 'auto',
+  minWidth: 280,
+  marginTop: 2,
+}
+
+const presetDropdownItem: React.CSSProperties = {
+  padding: `${space.xs}px ${space.sm}px`,
+  cursor: 'pointer',
+  fontSize: size.sm,
+  color: color.textPrimary,
+  lineHeight: 1.6,
 }

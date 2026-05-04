@@ -250,7 +250,7 @@ Migrate the frontend DocumentPanel and all section editors to the backend Docume
   - Verify no legacy status values (`'user_modified'`, `'recommended'`) in new code
   - _Requirements: 26.1, 26.2, 26.3, 26.4_
 
-- [-] 18. Commit and push
+- [x] 18. Commit and push
   - Stage all changed files
   - Commit with message: `feat: migrate frontend to DocumentState v2 schema`
   - Push to feature branch
