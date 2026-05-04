@@ -433,8 +433,51 @@ def test_group_rows_reads_bullets_not_items():
     assert len(rows) == 2
     assert rows[0]["category_name"] == "Category A"
     assert rows[0]["bullets_text"] == "- Bullet 1\n- Bullet 2"
+    assert rows[0]["bullets"] == ["Bullet 1", "Bullet 2"]
     assert rows[1]["category_name"] == "Category B"
     assert rows[1]["bullets_text"] == "- Bullet 3"
+    assert rows[1]["bullets"] == ["Bullet 3"]
+
+
+def test_build_context_resolves_success_criteria_and_assumption_group_bullets():
+    context = export_docx._build_context({
+        "sections": {
+            "success_criteria": {
+                "groups": [
+                    {
+                        "category_name": {"user_input": "Strategy Development Planning"},
+                        "bullets": [
+                            {"user_input": "Define clear project objectives aligned with business goals", "user_edited": True, "status": "draft", "calculated": None, "ai_recommended": None},
+                            {"user_input": "Establish measurable KPIs for PoC evaluation", "user_edited": True, "status": "draft", "calculated": None, "ai_recommended": None},
+                            {"user_input": "", "ai_recommended": None, "calculated": None},
+                        ],
+                    }
+                ]
+            },
+            "assumptions": {
+                "groups": [
+                    {
+                        "category_name": {"user_input": "Technical Environment"},
+                        "bullets": [
+                            {"ai_recommended": None, "calculated": None, "user_edited": True, "user_input": "Amazon Bedrock is available in the target AWS region", "status": "draft"},
+                        ],
+                    }
+                ]
+            },
+        }
+    })
+
+    success_bullets = context["success_criteria_groups"][0]["bullets"]
+    assumption_bullets = context["assumptions_groups"][0]["bullets"]
+    assert success_bullets == [
+        "Define clear project objectives aligned with business goals",
+        "Establish measurable KPIs for PoC evaluation",
+    ]
+    assert assumption_bullets == ["Amazon Bedrock is available in the target AWS region"]
+    assert all(not isinstance(item, dict) for item in success_bullets)
+    assert all(not isinstance(item, dict) for item in assumption_bullets)
+    assert "{'user_input':" not in context["success_criteria_groups"][0]["bullets_text"]
+    assert "{'user_input':" not in context["assumptions_groups"][0]["bullets_text"]
 
 
 def test_scope_task_rows_details_is_single_field_value():

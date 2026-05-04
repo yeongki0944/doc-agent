@@ -194,11 +194,25 @@ def _group_rows(groups: Any) -> list[dict[str, Any]]:
         data = _as_mapping(group)
         if not data:
             continue
-        bullets = data.get("bullets", data.get("values", data.get("details", [])))
+        raw_bullets = data.get("bullets", data.get("values", data.get("details", [])))
+        if isinstance(raw_bullets, dict):
+            bullet_items = raw_bullets.values()
+        elif isinstance(raw_bullets, (list, tuple, set)):
+            bullet_items = raw_bullets
+        elif raw_bullets in ("", None):
+            bullet_items = []
+        else:
+            bullet_items = [raw_bullets]
+
+        bullets = [
+            str(resolved)
+            for item in bullet_items
+            if (resolved := resolve_field_value(item, "")) not in ("", None)
+        ]
         rows.append({
             "category_name": resolve_field_value(data.get("category_name", data.get("name", ""))),
-            "bullets_text": _bullet_join(bullets),
-            "bullets": bullets if isinstance(bullets, list) else ([bullets] if bullets not in ("", None) else []),
+            "bullets_text": "\n".join(f"- {bullet}" for bullet in bullets),
+            "bullets": bullets,
         })
     return rows
 
