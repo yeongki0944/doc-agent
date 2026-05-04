@@ -244,6 +244,183 @@ def test_user_input_updates_field_value_and_preserves_ai_recommended(monkeypatch
     }
 
 
+def test_user_input_updates_list_index_field_value(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = {
+        "stakeholders": {
+            "stakeholders": [
+                {"name": _field(user_input="A", status="draft")},
+                {"name": _field(user_input="B", ai_recommended="B AI", status="recommended")},
+            ]
+        }
+    }
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    saver = FakeConditionalSaver()
+    monkeypatch.setattr(document_api, "_conditional_save_document", saver.save)
+    published = []
+    monkeypatch.setattr(document_api, "_publish_event", lambda channel, data: published.append(data))
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/user-input",
+            {
+                "path": "sections.stakeholders.stakeholders.1.name.user_input",
+                "value": "Project Stakeholders22",
+            },
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    saved = saver.calls[0][0]
+    rows = saved["sections"]["stakeholders"]["stakeholders"]
+    assert rows[0]["name"]["user_input"] == "A"
+    assert rows[1]["name"]["user_input"] == "Project Stakeholders22"
+    assert rows[1]["name"]["ai_recommended"] == "B AI"
+    assert rows[1]["name"]["status"] == "draft"
+    assert rows[1]["name"]["user_edited"] is True
+    assert {op["path"] for op in published[0]["operations"]} == {
+        "/sections/stakeholders/stakeholders/1/name/user_input",
+        "/sections/stakeholders/stakeholders/1/name/user_edited",
+        "/sections/stakeholders/stakeholders/1/name/status",
+    }
+
+
+def test_user_input_updates_nested_list_field_value(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = {
+        "success_criteria": {
+            "groups": [
+                {
+                    "category_name": _field(user_input="Group A"),
+                    "bullets": [
+                        _field(user_input="Bullet 0"),
+                        _field(user_input="Bullet 1", ai_recommended="Bullet AI"),
+                    ],
+                }
+            ]
+        }
+    }
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    saver = FakeConditionalSaver()
+    monkeypatch.setattr(document_api, "_conditional_save_document", saver.save)
+    monkeypatch.setattr(document_api, "_publish_event", lambda channel, data: None)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/user-input",
+            {
+                "path": "sections.success_criteria.groups.0.bullets.1.user_input",
+                "value": "Updated bullet",
+            },
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    bullets = saver.calls[0][0]["sections"]["success_criteria"]["groups"][0]["bullets"]
+    assert bullets[0]["user_input"] == "Bullet 0"
+    assert bullets[1]["user_input"] == "Updated bullet"
+    assert bullets[1]["ai_recommended"] == "Bullet AI"
+    assert bullets[1]["status"] == "draft"
+    assert bullets[1]["user_edited"] is True
+
+
+def test_user_input_replaces_full_array_without_field_value_wrapping(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = {"stakeholders": {"stakeholders": []}}
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    saver = FakeConditionalSaver()
+    monkeypatch.setattr(document_api, "_conditional_save_document", saver.save)
+    monkeypatch.setattr(document_api, "_publish_event", lambda channel, data: None)
+    replacement = [
+        {"name": _field(user_input="A")},
+        {"name": _field(user_input="B")},
+    ]
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/user-input",
+            {"path": "sections.stakeholders.stakeholders", "value": replacement},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    saved_value = saver.calls[0][0]["sections"]["stakeholders"]["stakeholders"]
+    assert isinstance(saved_value, list)
+    assert saved_value == replacement
+    assert "user_input" not in saver.calls[0][0]["sections"]["stakeholders"]
+
+
+def test_user_input_updates_top_level_title_without_field_value_wrapping(monkeypatch):
+    item = _doc_item(version=2)
+    item["title"] = "Old Title"
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    saver = FakeConditionalSaver()
+    monkeypatch.setattr(document_api, "_conditional_save_document", saver.save)
+    monkeypatch.setattr(document_api, "_publish_event", lambda channel, data: None)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/user-input",
+            {"path": "title", "value": "New Title"},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert saver.calls[0][0]["title"] == "New Title"
+    assert not isinstance(saver.calls[0][0]["title"], dict)
+
+
+def test_user_input_returns_clear_error_for_invalid_list_index(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = {
+        "stakeholders": {
+            "stakeholders": [
+                {"name": _field(user_input="A")},
+            ]
+        }
+    }
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    saver = FakeConditionalSaver()
+    monkeypatch.setattr(document_api, "_conditional_save_document", saver.save)
+    publish = MagicMock()
+    monkeypatch.setattr(document_api, "_publish_event", publish)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/user-input",
+            {
+                "path": "sections.stakeholders.stakeholders.9.name.user_input",
+                "value": "No row",
+            },
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+    assert _body(response) == {
+        "error": "invalid list index",
+        "path": "sections.stakeholders.stakeholders.9.name.user_input",
+        "segment": "9",
+        "reason": "index 9 is out of range for list of length 1",
+    }
+    assert saver.calls == []
+    publish.assert_not_called()
+
+
 def test_user_input_recalculates_staffing(monkeypatch):
     item = _doc_item(version=4)
     item["staffing_plan"] = {

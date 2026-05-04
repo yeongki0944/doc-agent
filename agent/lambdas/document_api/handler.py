@@ -28,6 +28,25 @@ history_table = dynamodb.Table(HISTORY_TABLE_NAME)
 class VersionConflictError(Exception):
     """Raised when a conditional DynamoDB document update loses the version race."""
 
+
+class EditablePathError(ValueError):
+    """Raised when a user-input path cannot be traversed safely."""
+
+    def __init__(self, error: str, path: str, segment: str, reason: str | None = None):
+        super().__init__(error)
+        self.error = error
+        self.path = path
+        self.segment = segment
+        self.reason = reason or error
+
+    def to_response_body(self) -> dict[str, str]:
+        return {
+            "error": self.error,
+            "path": self.path,
+            "segment": self.segment,
+            "reason": self.reason,
+        }
+
 # --- AgentCore Memory ---
 AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID", "")
 _agentcore_client = None
@@ -281,21 +300,116 @@ def _set_user_input_field(doc: dict, path: str, value: Any) -> tuple[str, dict]:
     if not target_parts:
         raise ValueError("path must target a field")
 
-    parent = doc
+    parent: Any = doc
     for part in target_parts[:-1]:
-        child = parent.get(part)
-        if child is None:
-            child = {}
-            parent[part] = child
-        if not isinstance(child, dict):
-            raise ValueError(f"path segment is not editable: {part}")
+        child = _get_editable_child(parent, part, path, create_missing_dict=True)
+        if not isinstance(child, (dict, list)):
+            raise EditablePathError(
+                "path segment is not editable",
+                path,
+                part,
+                "path segment resolved to a scalar value",
+            )
         parent = child
 
     field_key = target_parts[-1]
-    existing = parent.get(field_key)
+    if isinstance(parent, dict):
+        existing = parent.get(field_key)
+    else:
+        existing = _get_editable_child(parent, field_key, path, create_missing_dict=False)
     updated = _field_value_with_user_input(existing, value)
-    parent[field_key] = updated
+    _set_editable_child(parent, field_key, updated, path)
     return "/" + "/".join([*target_parts, "user_input"]), updated
+
+
+def _list_index(segment: str, path: str) -> int:
+    if not segment.isdigit():
+        raise EditablePathError(
+            "invalid list index",
+            path,
+            segment,
+            "list path segment must be a non-negative integer",
+        )
+    return int(segment)
+
+
+def _get_editable_child(container: Any, segment: str, path: str, *, create_missing_dict: bool) -> Any:
+    if isinstance(container, dict):
+        if segment not in container:
+            if create_missing_dict:
+                container[segment] = {}
+            else:
+                raise EditablePathError(
+                    "path segment not found",
+                    path,
+                    segment,
+                    "dict key does not exist",
+                )
+        return container[segment]
+
+    if isinstance(container, list):
+        index = _list_index(segment, path)
+        if index >= len(container):
+            raise EditablePathError(
+                "invalid list index",
+                path,
+                segment,
+                f"index {index} is out of range for list of length {len(container)}",
+            )
+        return container[index]
+
+    raise EditablePathError(
+        "path segment is not editable",
+        path,
+        segment,
+        "parent container is neither dict nor list",
+    )
+
+
+def _set_editable_child(container: Any, segment: str, value: Any, path: str) -> None:
+    if isinstance(container, dict):
+        container[segment] = value
+        return
+
+    if isinstance(container, list):
+        index = _list_index(segment, path)
+        if index >= len(container):
+            raise EditablePathError(
+                "invalid list index",
+                path,
+                segment,
+                f"index {index} is out of range for list of length {len(container)}",
+            )
+        container[index] = value
+        return
+
+    raise EditablePathError(
+        "path segment is not editable",
+        path,
+        segment,
+        "parent container is neither dict nor list",
+    )
+
+
+def _set_raw_user_input_path(doc: dict, path: str, value: Any) -> str:
+    parts = _path_parts(path)
+    if parts[0] not in {"meta", "sections", "staffing_plan"}:
+        raise ValueError("path must target meta, sections, or staffing_plan")
+
+    parent: Any = doc
+    for part in parts[:-1]:
+        child = _get_editable_child(parent, part, path, create_missing_dict=True)
+        if not isinstance(child, (dict, list)):
+            raise EditablePathError(
+                "path segment is not editable",
+                path,
+                part,
+                "path segment resolved to a scalar value",
+            )
+        parent = child
+
+    _set_editable_child(parent, parts[-1], value, path)
+    return "/" + "/".join(parts)
 
 
 def _calculated_patch(doc: dict, path: str, value: Any) -> dict | None:
@@ -1146,25 +1260,13 @@ def _handle_user_input(doc_id: str, body: dict, event: dict) -> dict:
     # does NOT end with .user_input, set the value directly without
     # wrapping in a FieldValue envelope.
     if isinstance(value, (list, dict)) and not path.rstrip("/").endswith(".user_input"):
-        parts = _path_parts(path)
-        if parts[0] not in {"meta", "sections", "staffing_plan"}:
-            return _response(400, {"error": "path must target meta, sections, or staffing_plan"})
+        try:
+            patch_path = _set_raw_user_input_path(doc_dict, path, value)
+        except EditablePathError as exc:
+            return _response(400, exc.to_response_body())
+        except ValueError as exc:
+            return _response(400, {"error": str(exc), "path": path})
 
-        # Walk to the parent dict
-        parent = doc_dict
-        for p in parts[:-1]:
-            child = parent.get(p)
-            if child is None:
-                child = {}
-                parent[p] = child
-            if not isinstance(child, dict):
-                return _response(400, {"error": f"path segment is not editable: {p}"})
-            parent = child
-
-        # Set value directly at the target key
-        parent[parts[-1]] = value
-
-        patch_path = "/" + "/".join(parts)
         operations = [_patch_operation("replace", patch_path, value, "user_input")]
 
         try:
@@ -1190,8 +1292,10 @@ def _handle_user_input(doc_id: str, body: dict, event: dict) -> dict:
     # Scalar value or path ending in .user_input — wrap in FieldValue
     try:
         patch_path, updated_field = _set_user_input_field(doc_dict, path, value)
+    except EditablePathError as exc:
+        return _response(400, exc.to_response_body())
     except ValueError as exc:
-        return _response(400, {"error": str(exc)})
+        return _response(400, {"error": str(exc), "path": path})
 
     field_path = patch_path.rsplit("/", 1)[0]
     operations = [
