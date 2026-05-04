@@ -15,6 +15,8 @@ export function SectionGuideButton({ sectionKey }: SectionGuideButtonProps) {
   const guide = DOCUMENT_GUIDES[sectionKey]
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
 
   // Close on click outside
   useEffect(() => {
@@ -28,11 +30,24 @@ export function SectionGuideButton({ sectionKey }: SectionGuideButtonProps) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [open])
 
+  // Calculate popover position when opening
+  useEffect(() => {
+    if (!open || !btnRef.current) return
+    const rect = btnRef.current.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - rect.bottom
+    // If not enough space below (less than 300px), align near top of viewport
+    const top = spaceBelow < 300 ? 24 : rect.bottom + 4
+    // Keep left within viewport
+    const left = Math.min(rect.left, window.innerWidth - 580)
+    setPopoverPos({ top: Math.max(top, 8), left: Math.max(left, 8) })
+  }, [open])
+
   if (!guide) return null
 
   return (
-    <div ref={containerRef} style={{ display: 'inline-block', position: 'relative', verticalAlign: 'middle' }}>
+    <div ref={containerRef} style={{ display: 'inline-block', verticalAlign: 'middle' }}>
       <button
+        ref={btnRef}
         type="button"
         onClick={() => setOpen(prev => !prev)}
         style={{
@@ -53,25 +68,25 @@ export function SectionGuideButton({ sectionKey }: SectionGuideButtonProps) {
       {open && (
         <div
           style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            zIndex: 1000,
+            position: 'fixed',
+            top: popoverPos.top,
+            left: popoverPos.left,
+            zIndex: 9999,
             background: color.bgSurface,
             border: `1px solid ${color.border}`,
             borderRadius: radius.md,
             boxShadow: shadow.elevated,
-            maxWidth: 400,
-            maxHeight: 420,
+            maxWidth: 640,
+            width: 'min(560px, calc(100vw - 48px))',
+            maxHeight: '70vh',
             overflowY: 'auto',
             padding: space.lg,
-            marginTop: 4,
           }}
         >
           {/* Title */}
           <div style={{
             fontWeight: 700,
-            fontSize: size.md,
+            fontSize: 15,
             color: color.textPrimary,
             fontFamily: font.heading,
             marginBottom: space.sm,
@@ -81,20 +96,20 @@ export function SectionGuideButton({ sectionKey }: SectionGuideButtonProps) {
 
           {/* Purpose */}
           <div style={{
-            fontSize: size.sm,
+            fontSize: 13,
             color: color.textSecondary,
             marginBottom: space.md,
-            lineHeight: 1.5,
+            lineHeight: 1.6,
           }}>
             {guide.purpose}
           </div>
 
           {/* Blocks */}
           {guide.blocks.map((block, bi) => (
-            <div key={bi} style={{ marginBottom: space.md }}>
+            <div key={bi} style={{ marginBottom: 16 }}>
               <div style={{
                 fontWeight: 600,
-                fontSize: size.sm,
+                fontSize: 13,
                 color: color.textPrimary,
                 marginBottom: space.xs,
               }}>
@@ -107,9 +122,9 @@ export function SectionGuideButton({ sectionKey }: SectionGuideButtonProps) {
               }}>
                 {block.items.map((item, ii) => (
                   <li key={ii} style={{
-                    fontSize: size.xs,
+                    fontSize: 12,
                     color: color.textSecondary,
-                    lineHeight: 1.6,
+                    lineHeight: 1.7,
                     marginBottom: 2,
                   }}>
                     {item}
@@ -121,10 +136,10 @@ export function SectionGuideButton({ sectionKey }: SectionGuideButtonProps) {
 
           {/* Useful Prompts */}
           {guide.useful_prompts && guide.useful_prompts.length > 0 && (
-            <div style={{ marginBottom: space.md }}>
+            <div style={{ marginBottom: 16 }}>
               <div style={{
                 fontWeight: 600,
-                fontSize: size.sm,
+                fontSize: 13,
                 color: color.textPrimary,
                 marginBottom: space.xs,
               }}>
@@ -137,9 +152,9 @@ export function SectionGuideButton({ sectionKey }: SectionGuideButtonProps) {
               }}>
                 {guide.useful_prompts.map((prompt, pi) => (
                   <li key={pi} style={{
-                    fontSize: size.xs,
+                    fontSize: 12,
                     color: color.info,
-                    lineHeight: 1.6,
+                    lineHeight: 1.7,
                     marginBottom: 2,
                   }}>
                     {prompt}
@@ -154,7 +169,7 @@ export function SectionGuideButton({ sectionKey }: SectionGuideButtonProps) {
             <div>
               <div style={{
                 fontWeight: 600,
-                fontSize: size.sm,
+                fontSize: 13,
                 color: color.textPrimary,
                 marginBottom: space.xs,
               }}>
@@ -167,9 +182,9 @@ export function SectionGuideButton({ sectionKey }: SectionGuideButtonProps) {
               }}>
                 {guide.tips.map((tip, ti) => (
                   <li key={ti} style={{
-                    fontSize: size.xs,
+                    fontSize: 12,
                     color: color.textSecondary,
-                    lineHeight: 1.6,
+                    lineHeight: 1.7,
                     marginBottom: 2,
                   }}>
                     {tip}

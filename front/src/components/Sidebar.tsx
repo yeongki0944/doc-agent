@@ -4,7 +4,12 @@ import { useAuth } from '../auth/AuthContext'
 import { color, font, space, radius, shadow } from '../styles/tokens'
 import { resolveDisplayText } from '../utils/frontendSchema'
 
-export function Sidebar() {
+export interface SidebarProps {
+  collapsed?: boolean
+  onToggle?: () => void
+}
+
+export function Sidebar({ collapsed = false, onToggle }: SidebarProps) {
   const { user, logout } = useAuth()
   const documents = useSessionStore(s => s.documents)
   const currentDocId = useSessionStore(s => s.currentDocId)
@@ -34,6 +39,30 @@ export function Sidebar() {
     }
   }
 
+  // Collapsed rail view
+  if (collapsed) {
+    return (
+      <div style={{
+        width: 48, minWidth: 48, height: '100vh', display: 'flex', flexDirection: 'column',
+        background: color.bgPrimary, borderRight: `1px solid ${color.border}`,
+        alignItems: 'center', paddingTop: 12,
+      }}>
+        <span style={{ fontSize: 18, marginBottom: 8 }} title="Doc Agent">📄</span>
+        <button
+          onClick={onToggle}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            fontSize: 14, color: color.textSecondary, padding: '4px',
+            borderRadius: 4, lineHeight: 1,
+          }}
+          title="사이드바 펼치기"
+        >
+          ▶
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div style={{
       width: 240, minWidth: 240, height: '100vh', display: 'flex', flexDirection: 'column',
@@ -43,6 +72,19 @@ export function Sidebar() {
       <div style={{ padding: '16px 12px 8px', borderBottom: `1px solid ${color.border}` }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <span style={{ fontWeight: 700, fontSize: 15 }}>Doc Agent</span>
+          {onToggle && (
+            <button
+              onClick={onToggle}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                fontSize: 13, color: color.textSecondary, padding: '2px 4px',
+                borderRadius: 4, lineHeight: 1,
+              }}
+              title="사이드바 접기"
+            >
+              ◀
+            </button>
+          )}
         </div>
         <button
           onClick={handleCreate}

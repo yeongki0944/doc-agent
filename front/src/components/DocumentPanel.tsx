@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { color, font, radius } from '../styles/tokens'
-import { useDocumentStore } from '../store/documentStore'
+import { useDocumentStore, type AgentStatus } from '../store/documentStore'
 import { requestReview, requestExport, getDocument } from '../utils/api'
 import { CoverSection } from './sections/CoverSection'
 import { ExecutiveSummarySection } from './sections/ExecutiveSummarySection'
@@ -64,14 +64,59 @@ export function DocumentPanel({ docId }: { docId: string }) {
 
   return (
     <LangProvider value={lang}>
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0 }}>
         <Header completionScore={completionScore} blockingIssues={blockingIssues} docId={docId} lang={lang} onLangChange={setLang} />
         <TabBar tabs={TABS} active={activeTab} onSelect={setActiveTab} />
-        <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+        <div style={{ flex: 1, overflow: 'auto', overflowX: 'hidden', padding: 16 }}>
           <ActiveComponent />
         </div>
       </div>
     </LangProvider>
+  )
+}
+
+/* --- Agent Status Badge --- */
+
+const STATUS_COLORS: Record<AgentStatus, string> = {
+  idle: '#16A34A',
+  processing: '#f59e0b',
+  error: '#DC2626',
+  degraded: '#f97316',
+}
+
+const STATUS_LABELS: Record<AgentStatus, string> = {
+  idle: 'Idle',
+  processing: 'Running',
+  error: 'Error',
+  degraded: 'Degraded',
+}
+
+function AgentStatusBadge() {
+  const agentStatus = useDocumentStore(s => s.agentStatus)
+  const appsyncConnected = useDocumentStore(s => s.appsyncConnected)
+  const dotColor = STATUS_COLORS[agentStatus] || STATUS_COLORS.idle
+  const label = STATUS_LABELS[agentStatus] || 'Idle'
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: color.textSecondary }}>
+      <span
+        style={{
+          display: 'inline-block',
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: dotColor,
+          flexShrink: 0,
+          animation: agentStatus === 'processing' ? 'pulse 1.5s ease-in-out infinite' : 'none',
+        }}
+      />
+      <span style={{ fontWeight: 500 }}>{label}</span>
+      {!appsyncConnected && (
+        <span style={{ fontSize: 11, color: '#f59e0b', whiteSpace: 'nowrap' }}>
+          ⚠ 실시간 연결 대기 중
+        </span>
+      )}
+    </div>
   )
 }
 
@@ -81,13 +126,14 @@ function Header({ completionScore, blockingIssues, docId, lang, onLangChange }: 
 
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px', borderBottom: `1px solid ${color.border}` }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
         <span style={{ fontWeight: 600, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 400 }} title={docTitle}>
           {docTitle || 'APN PoC Project Plan'}
         </span>
         <CompletionBadge score={completionScore} />
+        <AgentStatusBadge />
       </div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
         <LangToggle lang={lang} onChange={onLangChange} />
         <ReviewButton docId={docId} />
         <ExportButton disabled={!exportEnabled} docId={docId} />

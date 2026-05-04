@@ -274,9 +274,22 @@ function EmptyState({ onStartDirectInput }: { onStartDirectInput: () => void }) 
       {showStarters && (
         <div style={starterGrid}>
           {EXEC_SUMMARY_STARTER_BLOCKS.map((block, idx) => (
-            <div key={idx} style={starterChip}>
+            <button
+              key={idx}
+              type="button"
+              onClick={onStartDirectInput}
+              style={starterChipBtn}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLButtonElement).style.background = color.bgSubtle
+                ;(e.currentTarget as HTMLButtonElement).style.borderColor = color.textMuted
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLButtonElement).style.background = color.bgSurface
+                ;(e.currentTarget as HTMLButtonElement).style.borderColor = color.border
+              }}
+            >
               {block}
-            </div>
+            </button>
           ))}
         </div>
       )}
@@ -436,6 +449,19 @@ const starterChip: React.CSSProperties = {
   fontSize: size.xs,
   color: color.textSecondary,
   cursor: 'default',
+}
+
+const starterChipBtn: React.CSSProperties = {
+  padding: `${space.xs}px ${space.sm}px`,
+  border: `1px solid ${color.border}`,
+  borderRadius: 16,
+  background: color.bgSurface,
+  fontSize: size.xs,
+  color: color.textSecondary,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  lineHeight: 1.4,
+  transition: 'background 0.15s, border-color 0.15s',
 }
 
 const presetPickerBtn: React.CSSProperties = {

@@ -27,6 +27,8 @@ export function EditableComboField({
   const { saveStatus, handleSave } = useFieldSave(docId)
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; openUp: boolean }>({ top: 0, left: 0, openUp: false })
 
   const onSave = useCallback((newValue: string) => {
     handleSave(dotPath, newValue, field, onLocalUpdate)
@@ -37,6 +39,19 @@ export function EditableComboField({
     onSave(value)
     setDropdownOpen(false)
   }, [onSave])
+
+  // Calculate dropdown position when opening
+  useEffect(() => {
+    if (!dropdownOpen || !triggerRef.current) return
+    const rect = triggerRef.current.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - rect.bottom
+    const openUp = spaceBelow < 220
+    setDropdownPos({
+      top: openUp ? rect.top - 2 : rect.bottom + 2,
+      left: rect.left,
+      openUp,
+    })
+  }, [dropdownOpen])
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -63,6 +78,7 @@ export function EditableComboField({
       />
       {hasPresets && (
         <button
+          ref={triggerRef}
           type="button"
           onClick={() => setDropdownOpen(prev => !prev)}
           style={{
@@ -85,10 +101,11 @@ export function EditableComboField({
       {dropdownOpen && hasPresets && (
         <div
           style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            zIndex: 1000,
+            position: 'fixed',
+            top: dropdownPos.openUp ? undefined : dropdownPos.top,
+            bottom: dropdownPos.openUp ? (window.innerHeight - dropdownPos.top) : undefined,
+            left: dropdownPos.left,
+            zIndex: 9999,
             background: color.bgSurface,
             border: `1px solid ${color.border}`,
             borderRadius: radius.sm,
@@ -96,7 +113,6 @@ export function EditableComboField({
             maxHeight: 200,
             overflowY: 'auto',
             minWidth: 180,
-            marginTop: 2,
           }}
         >
           {presets.map((preset, idx) => (

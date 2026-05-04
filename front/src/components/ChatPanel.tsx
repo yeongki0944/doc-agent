@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useDocumentStore } from '../store/documentStore'
-import { StatusBar } from './StatusBar'
 import { initDocumentSubscription, type AppSyncMessage } from '../utils/appsync'
 import {
   type HistoryMessage,
@@ -240,7 +239,6 @@ export function ChatPanel({ docId }: ChatPanelProps) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <StatusBar />
       <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
         {messages.map(m => (
           m.thinking ? (

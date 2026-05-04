@@ -229,7 +229,7 @@ This plan implements preset dropdowns, writing guides, numbered tabs, improved e
   - Verify all imports resolve correctly (new config files, new components, updated sections).
   - Fix any TypeScript compilation or Vite build errors before proceeding.
 
-- [-] 21. Commit and push
+- [x] 21. Commit and push
   - Stage all modified and new files
   - Commit with message: `feat: add document presets, writing guides, and numbered tabs`
   - Push to feature branch
