@@ -1,13 +1,23 @@
-"""Document_State JSON canonical state schema.
+"""Document_State v2 JSON canonical state schema.
 
 Defines the Pydantic v2 models for the APN PoC Project Plan document state
 stored in DynamoDB (table: doc-agent-documents, PK: document_id).
 
-Each editable field follows the 4-property pattern:
-  user_input / ai_recommended / calculated / status
-with field-level metadata: user_edited, reason, source_patterns, confidence.
+Aligned with apn-poc-template_v2.docx placeholders.
 
-Read-only derived fields use the CalculatedOnly abbreviated form.
+Each editable field follows the simplified 4-property pattern:
+  user_input / ai_recommended / calculated / status (empty|draft|confirmed)
+
+Breaking change from v1:
+- FieldValue: removed reason, source_patterns, confidence
+- FieldStatus: reduced to empty|draft|confirmed
+- CalculatedOnly: removed (use FieldValue everywhere)
+- Top-level staffing_plan: removed (merged into resources_cost_estimates)
+- client_signatures section: removed (merged into resources_cost_estimates)
+- Legacy section fields removed: executive_summary.text/summary,
+  architecture.description/tools, acceptance.text
+- CategoryGroup uses bullets (not items)
+- Section models use extra="forbid" except CoverSection (extra="allow")
 """
 
 from __future__ import annotations
@@ -16,7 +26,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_serializer, model_validator
+from pydantic import BaseModel, Field, field_serializer
 
 
 # ---------------------------------------------------------------------------
@@ -30,19 +40,10 @@ class DocumentMode(str, Enum):
 
 
 class FieldStatus(str, Enum):
-    """Status lifecycle for the 4-property pattern."""
+    """Status lifecycle for the 4-property pattern (v2: simplified)."""
     empty = "empty"
-    recommended = "recommended"
-    user_modified = "user_modified"
+    draft = "draft"
     confirmed = "confirmed"
-    calculated = "calculated"
-
-
-class RoleCategory(str, Enum):
-    """Phase × Role 시간표 컬럼 분류."""
-    solution_architect = "solution_architect"
-    engineer = "engineer"
-    other = "other"
 
 
 class ServiceCategory(str, Enum):
@@ -56,25 +57,23 @@ class ServiceCategory(str, Enum):
 
 
 # ---------------------------------------------------------------------------
-# 4-property pattern base types
+# 4-property pattern base type (v2: simplified)
 # ---------------------------------------------------------------------------
 
 class FieldValue(BaseModel):
-    """Full 4-property field with metadata."""
+    """Simplified 4-property field. No metadata (reason/source_patterns/confidence)."""
     user_input: Any = None
     ai_recommended: Any = None
     calculated: Any = None
     status: FieldStatus = FieldStatus.empty
-    # field-level metadata
     user_edited: bool = False
-    reason: Optional[str] = None
-    source_patterns: list[str] = Field(default_factory=list)
-    confidence: Optional[float] = None
 
-
-class CalculatedOnly(BaseModel):
-    """Abbreviated form for read-only derived fields (e.g. totals)."""
-    calculated: Any = None
+    def resolve(self) -> Any:
+        """Return first non-empty value: user_input > ai_recommended > calculated > ''."""
+        for v in (self.user_input, self.ai_recommended, self.calculated):
+            if v is not None and v != "":
+                return v
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -89,26 +88,31 @@ class DocumentMeta(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# DOCX export sub-models
+# Sub-models for DOCX export
 # ---------------------------------------------------------------------------
 
 class ContactEntry(BaseModel):
-    """Stakeholders 표의 단일 행."""
+    """Stakeholders table row. Template uses description/stakeholder_for/role
+    depending on the stakeholder list type."""
     name: FieldValue = Field(default_factory=FieldValue)
     title: FieldValue = Field(default_factory=FieldValue)
-    role_or_description: FieldValue = Field(default_factory=FieldValue)
+    description: FieldValue = Field(default_factory=FieldValue)
+    stakeholder_for: FieldValue = Field(default_factory=FieldValue)
+    role: FieldValue = Field(default_factory=FieldValue)
     contact: FieldValue = Field(default_factory=FieldValue)
 
 
 class Phase(BaseModel):
-    """Milestones 표의 단일 phase."""
+    """Milestones table row."""
     phase: FieldValue = Field(default_factory=FieldValue)
     completion_date: FieldValue = Field(default_factory=FieldValue)
     deliverables: FieldValue = Field(default_factory=FieldValue)
 
 
 class BusinessCase(BaseModel):
-    """Executive business case for GenAIIC PLD/funding review."""
+    """Executive business case for GenAIIC PLD/funding review.
+    Nested under ExecutiveSummarySection. Export context flattens to
+    business_case_problem, business_case_roi, etc."""
     problem_definition: FieldValue = Field(default_factory=FieldValue)
     roi_calculation: FieldValue = Field(default_factory=FieldValue)
     executive_sponsor: FieldValue = Field(default_factory=FieldValue)
@@ -116,16 +120,16 @@ class BusinessCase(BaseModel):
 
 
 class CategoryGroup(BaseModel):
-    """Grouped success criteria, assumptions, risks, or related items."""
+    """Grouped success criteria / assumptions. Template iterates group.bullets."""
     category_name: FieldValue = Field(default_factory=FieldValue)
-    items: list[FieldValue] = Field(default_factory=list)
+    bullets: list[FieldValue] = Field(default_factory=list)
 
 
 class ScopeTask(BaseModel):
-    """Scope of work task row."""
+    """Scope of work task row. All fields remain FieldValue for agent patching."""
     task_category: FieldValue = Field(default_factory=FieldValue)
     schedule: FieldValue = Field(default_factory=FieldValue)
-    details: list[FieldValue] = Field(default_factory=list)
+    details: FieldValue = Field(default_factory=FieldValue)
     personnel: FieldValue = Field(default_factory=FieldValue)
 
 
@@ -139,166 +143,173 @@ class ArchitectureService(BaseModel):
     is_required_for_funding: bool = False
 
 
+class AcceptanceStep(BaseModel):
+    """Single acceptance criteria step with heading, content, and bullets."""
+    heading: FieldValue = Field(default_factory=FieldValue)
+    content: FieldValue = Field(default_factory=FieldValue)
+    bullets: list[FieldValue] = Field(default_factory=list)
+
+
+class CostBreakdownRow(BaseModel):
+    """Single AWS cost breakdown table row."""
+    category: FieldValue = Field(default_factory=FieldValue)
+    mrr: FieldValue = Field(default_factory=FieldValue)
+    arr: FieldValue = Field(default_factory=FieldValue)
+    note: FieldValue = Field(default_factory=FieldValue)
+
+
 class ContributionEntry(BaseModel):
-    """Cost contribution 표의 단일 당사자 항목."""
-    amount: FieldValue = Field(default_factory=FieldValue)   # USD
-    pct: FieldValue = Field(default_factory=FieldValue)      # 0~100
+    """Cost contribution table row for a single party."""
+    amount: FieldValue = Field(default_factory=FieldValue)
+    pct: FieldValue = Field(default_factory=FieldValue)
 
 
 class Contribution(BaseModel):
-    """Customer/Partner/AWS 비용 분담."""
+    """Customer/Partner/AWS cost contribution."""
     customer: ContributionEntry = Field(default_factory=ContributionEntry)
     partner: ContributionEntry = Field(default_factory=ContributionEntry)
     aws: ContributionEntry = Field(default_factory=ContributionEntry)
 
 
+class TeamMember(BaseModel):
+    """Partner technical team member. Template loops member.role, member.name."""
+    role: FieldValue = Field(default_factory=FieldValue)
+    name: FieldValue = Field(default_factory=FieldValue)
+
+
+class PhaseHours(BaseModel):
+    """Phase hours table row with SA/Eng/Other breakdown."""
+    phase: FieldValue = Field(default_factory=FieldValue)
+    sa_hours: int = 0
+    eng_hours: int = 0
+    other_hours: int = 0
+    total: int = 0
+
+
+class TotalsRow(BaseModel):
+    """Totals row for hours or cost. Template accesses .sa, .eng, .other, .total."""
+    sa: str = ""
+    eng: str = ""
+    other: str = ""
+    total: str = ""
+
+
 # ---------------------------------------------------------------------------
-# Section models — each section is a generic container for now.
-# Specific section schemas can be refined per-section as needed.
+# Section models
+# All use extra="forbid" except CoverSection (extra="allow" for dynamic metadata)
 # ---------------------------------------------------------------------------
 
-class Section(BaseModel):
-    """Generic section container. Sections hold arbitrary field values."""
+class CoverSection(BaseModel):
+    """Cover page section. extra="allow" because agents write dynamic metadata."""
     model_config = {"extra": "allow"}
 
 
-class CoverSection(Section):
-    """Cover page section."""
-    pass
+class ExecutiveSummarySection(BaseModel):
+    """Executive summary section (v2)."""
+    model_config = {"extra": "forbid"}
 
-
-class ExecutiveSummarySection(Section):
-    """Executive summary section."""
-    text: FieldValue = Field(default_factory=FieldValue)
-    summary: FieldValue | str = Field(default_factory=FieldValue)
     customer_intro: FieldValue = Field(default_factory=FieldValue)
     problem_statement: FieldValue = Field(default_factory=FieldValue)
     proposed_solution: FieldValue = Field(default_factory=FieldValue)
     phases_overview: list[FieldValue] = Field(default_factory=list)
+    current_pain_points: list[FieldValue] = Field(default_factory=list)
+    poc_objectives: list[FieldValue] = Field(default_factory=list)
     business_case: BusinessCase = Field(default_factory=BusinessCase)
+    custom_blocks: list[dict] = Field(default_factory=list)
 
 
-class StakeholdersSection(Section):
+class StakeholdersSection(BaseModel):
     """Sponsor / Stakeholder / Team contact & org info."""
+    model_config = {"extra": "forbid"}
+
     executive_sponsors: list[ContactEntry] = Field(default_factory=list)
     stakeholders: list[ContactEntry] = Field(default_factory=list)
     project_team: list[ContactEntry] = Field(default_factory=list)
     escalation_contacts: list[ContactEntry] = Field(default_factory=list)
 
 
-class SuccessCriteriaSection(Section):
+class SuccessCriteriaSection(BaseModel):
     """Success criteria / KPIs section."""
-    items: list[FieldValue] = Field(default_factory=list)
+    model_config = {"extra": "forbid"}
+
     groups: list[CategoryGroup] = Field(default_factory=list)
+    items: list[FieldValue] = Field(default_factory=list)
 
 
-class AssumptionsSection(Section):
+class AssumptionsSection(BaseModel):
     """Assumptions & risks section."""
-    items: list[FieldValue] = Field(default_factory=list)
+    model_config = {"extra": "forbid"}
+
     groups: list[CategoryGroup] = Field(default_factory=list)
-
-
-class ScopeOfWorkSection(Section):
-    """Scope of work section."""
     items: list[FieldValue] = Field(default_factory=list)
+
+
+class ScopeOfWorkSection(BaseModel):
+    """Scope of work section."""
+    model_config = {"extra": "forbid"}
+
     tasks: list[ScopeTask] = Field(default_factory=list)
+    out_of_scope: list[FieldValue] = Field(default_factory=list)
+    items: list[FieldValue] = Field(default_factory=list)
 
 
-class ArchitectureSection(Section):
-    """Architecture section — diagrams, service list, analysis."""
-    description: FieldValue = Field(default_factory=FieldValue)
-    tools: list[FieldValue] = Field(default_factory=list)
+class ArchitectureSection(BaseModel):
+    """Architecture section — overview, diagram, services, tools."""
+    model_config = {"extra": "forbid"}
+
     overview: FieldValue = Field(default_factory=FieldValue)
+    diagram_image_s3_key: FieldValue = Field(default_factory=FieldValue)
     services: list[ArchitectureService] = Field(default_factory=list)
-    diagram_image_s3_key: Optional[str] = None
+    tools_list: list[FieldValue] = Field(default_factory=list)
 
 
-class MilestonesSection(Section):
+class MilestonesSection(BaseModel):
     """Milestones & deliverables section."""
+    model_config = {"extra": "forbid"}
+
     phases: list[Phase] = Field(default_factory=list)
 
 
-class RoleCostSummary(BaseModel):
-    """Single role cost summary within staffing cost breakdown."""
-    role_id: str = ""
-    display_name: str = ""
-    total_hours: float = 0.0
-    rate_per_hour: float = 0.0
-    total_cost: float = 0.0
+class CostBreakdownSection(BaseModel):
+    """Cost breakdown section (v2: flat, clean schema names).
+    Export context maps: calculator_url→aws_calculator_url, mrr→aws_mrr,
+    arr→aws_arr, breakdown_table→aws_cost_breakdown_table,
+    bedrock_extra→aws_bedrock_extra."""
+    model_config = {"extra": "forbid"}
+
+    calculator_url: FieldValue = Field(default_factory=FieldValue)
+    mrr: FieldValue = Field(default_factory=FieldValue)
+    arr: FieldValue = Field(default_factory=FieldValue)
+    breakdown_table: list[CostBreakdownRow] = Field(default_factory=list)
+    bedrock_extra: FieldValue = Field(default_factory=FieldValue)
+    funding_calculation: dict = Field(default_factory=dict)
 
 
-class StaffingCost(BaseModel):
-    """Staffing cost breakdown — role summaries + grand total."""
-    roles_summary: list[RoleCostSummary] = Field(default_factory=list)
-    grand_total: CalculatedOnly = Field(default_factory=CalculatedOnly)
+class AcceptanceSection(BaseModel):
+    """Acceptance criteria section (v2: structured steps).
+    Export context key: acceptance_steps (mapped from steps)."""
+    model_config = {"extra": "forbid"}
+
+    steps: list[AcceptanceStep] = Field(default_factory=list)
 
 
-class ServiceBreakdownItem(BaseModel):
-    """Single AWS service cost entry."""
-    service_name: str = ""
-    service_code: str = ""
-    monthly_cost: float = 0.0
-    supported_by_calculator: bool = True
+class ResourcesCostEstimatesSection(BaseModel):
+    """Resources & cost estimates (v2: includes staffing + signatures).
+    Replaces top-level staffing_plan and client_signatures section."""
+    model_config = {"extra": "forbid"}
 
-
-class AWSServiceCost(BaseModel):
-    """AWS service cost breakdown — monthly summary + per-service detail."""
-    monthly_cost_summary: CalculatedOnly = Field(default_factory=CalculatedOnly)
-    service_breakdown: list[ServiceBreakdownItem] = Field(default_factory=list)
-    calculator_share_url: Optional[str] = None
-    fallback_card: Optional[dict[str, Any]] = None
-    manual_estimate_items: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class DocumentLocalSummary(BaseModel):
-    """Document-local cost summary preserved even when external URLs expire."""
-    total_staffing_cost: float = 0.0
-    total_aws_monthly_cost: float = 0.0
-    total_project_cost: float = 0.0
-    generated_at: Optional[datetime] = None
-
-    @field_serializer("generated_at")
-    def _serialize_generated_at(self, v: datetime | None, _info: Any) -> str | None:
-        if v is None:
-            return None
-        return v.isoformat()
-
-
-class FundingCalculation(BaseModel):
-    """GenAIIC PLD funding eligibility calculation."""
-    yr1_arr: FieldValue = Field(default_factory=FieldValue)
-    sow_cost: FieldValue = Field(default_factory=FieldValue)
-    funding_25pct_arr: CalculatedOnly = Field(default_factory=CalculatedOnly)
-    funding_cap: float = 125000
-    eligible_amount: CalculatedOnly = Field(default_factory=CalculatedOnly)
-    bedrock_included: bool = False
-    funding_type: str = "cash"
-
-
-class CostBreakdownSection(Section):
-    """Cost breakdown section — staffing cost + AWS service cost + local summary."""
-    staffing_cost: StaffingCost = Field(default_factory=StaffingCost)
-    aws_service_cost: AWSServiceCost = Field(default_factory=AWSServiceCost)
-    document_local_summary: DocumentLocalSummary = Field(default_factory=DocumentLocalSummary)
-    funding_calculation: FundingCalculation = Field(default_factory=FundingCalculation)
-
-
-class AcceptanceSection(Section):
-    """Acceptance criteria section."""
-    text: FieldValue = Field(default_factory=FieldValue)
-
-
-class ResourcesCostEstimatesSection(Section):
-    """Resources & cost estimates — sub-section of Cost tab."""
+    partner_technical_team: list[TeamMember] = Field(default_factory=list)
+    rate_solution_architect: FieldValue = Field(default_factory=FieldValue)
+    rate_engineer: FieldValue = Field(default_factory=FieldValue)
+    rate_other: FieldValue = Field(default_factory=FieldValue)
+    phase_hours_table: list[PhaseHours] = Field(default_factory=list)
+    total_hours: TotalsRow = Field(default_factory=TotalsRow)
+    total_cost: TotalsRow = Field(default_factory=TotalsRow)
     contribution: Contribution = Field(default_factory=Contribution)
-
-
-class ClientSignatureSection(Section):
-    """Client signature block for APN PoC Project Plan approval."""
-    customer_name: FieldValue = Field(default_factory=FieldValue)
-    authorized_person_name: FieldValue = Field(default_factory=FieldValue)
-    designation: FieldValue = Field(default_factory=FieldValue)
-    sign_date: FieldValue = Field(default_factory=FieldValue)
+    client_signature_customer_name: FieldValue = Field(default_factory=FieldValue)
+    client_signature_person_name: FieldValue = Field(default_factory=FieldValue)
+    client_signature_designation: FieldValue = Field(default_factory=FieldValue)
+    client_signature_date: FieldValue = Field(default_factory=FieldValue)
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +317,7 @@ class ClientSignatureSection(Section):
 # ---------------------------------------------------------------------------
 
 class Sections(BaseModel):
-    """All APN template sections keyed in snake_case."""
+    """All APN template v2 sections keyed in snake_case."""
     cover: CoverSection = Field(default_factory=CoverSection)
     executive_summary: ExecutiveSummarySection = Field(default_factory=ExecutiveSummarySection)
     stakeholders: StakeholdersSection = Field(default_factory=StakeholdersSection)
@@ -320,94 +331,6 @@ class Sections(BaseModel):
     resources_cost_estimates: ResourcesCostEstimatesSection = Field(
         default_factory=ResourcesCostEstimatesSection
     )
-    client_signatures: ClientSignatureSection = Field(default_factory=ClientSignatureSection)
-
-
-# ---------------------------------------------------------------------------
-# Staffing Plan (top-level, outside sections)
-# ---------------------------------------------------------------------------
-
-class PhaseHours(BaseModel):
-    """Per-phase hour allocations."""
-    discovery: FieldValue = Field(default_factory=FieldValue)
-    development: FieldValue = Field(default_factory=FieldValue)
-    testing: FieldValue = Field(default_factory=FieldValue)
-
-
-class StaffingRole(BaseModel):
-    """Single role entry in the staffing plan."""
-    role_id: str
-    display_name: str = ""
-    category: RoleCategory = RoleCategory.other
-    role_type: FieldValue = Field(default_factory=FieldValue)
-    count: FieldValue = Field(default_factory=FieldValue)
-    allocation_pct: FieldValue = Field(default_factory=FieldValue)
-    rate_per_hour: FieldValue = Field(default_factory=FieldValue)
-    phase_hours: PhaseHours = Field(default_factory=PhaseHours)
-    total_hours: CalculatedOnly = Field(default_factory=CalculatedOnly)
-    total_cost: CalculatedOnly = Field(default_factory=CalculatedOnly)
-    reason: Optional[str] = None
-    source_patterns: list[str] = Field(default_factory=list)
-    user_edited: bool = False
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_legacy_scalar_fields(cls, data: Any) -> Any:
-        """Accept saved roles where scalar fields were accidentally FieldValue-shaped."""
-        if not isinstance(data, dict):
-            return data
-
-        normalized = dict(data)
-        for field_name in ("display_name", "category"):
-            value = normalized.get(field_name)
-            if isinstance(value, dict) and (
-                "user_input" in value or "ai_recommended" in value or "calculated" in value
-            ):
-                normalized[field_name] = (
-                    value.get("user_input")
-                    or value.get("ai_recommended")
-                    or value.get("calculated")
-                    or ""
-                )
-
-        if not normalized.get("role_id"):
-            role_type = normalized.get("role_type")
-            if isinstance(role_type, dict):
-                normalized["role_id"] = (
-                    role_type.get("user_input")
-                    or role_type.get("ai_recommended")
-                    or role_type.get("calculated")
-                    or ""
-                )
-        return normalized
-
-
-class StaffingPlan(BaseModel):
-    """Top-level staffing plan with roles and grand totals."""
-    roles: dict[str, StaffingRole] = Field(default_factory=dict)
-    grand_total_hours: CalculatedOnly = Field(default_factory=CalculatedOnly)
-    grand_total_cost: CalculatedOnly = Field(default_factory=CalculatedOnly)
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_role_ids(cls, data: Any) -> Any:
-        """Accept saved role maps where the role_id only exists as the dict key."""
-        if not isinstance(data, dict):
-            return data
-
-        roles = data.get("roles")
-        if not isinstance(roles, dict):
-            return data
-
-        normalized = dict(data)
-        normalized_roles: dict[str, Any] = {}
-        for role_id, role in roles.items():
-            if isinstance(role, dict) and not role.get("role_id"):
-                normalized_roles[role_id] = {**role, "role_id": role_id}
-            else:
-                normalized_roles[role_id] = role
-        normalized["roles"] = normalized_roles
-        return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -429,13 +352,14 @@ class Warning(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Document_State — root model
+# Document_State v2 — root model
 # ---------------------------------------------------------------------------
 
 class DocumentState(BaseModel):
-    """JSON canonical state for an APN PoC Project Plan document.
+    """JSON canonical state for an APN PoC Project Plan document (v2).
 
     Stored in DynamoDB table `doc-agent-documents` with PK `document_id`.
+    No top-level staffing_plan — staffing data is in resources_cost_estimates.
     """
 
     document_id: str = ""
@@ -449,7 +373,6 @@ class DocumentState(BaseModel):
 
     meta: DocumentMeta = Field(default_factory=DocumentMeta)
     sections: Sections = Field(default_factory=Sections)
-    staffing_plan: StaffingPlan = Field(default_factory=StaffingPlan)
 
     completion_score: float = 0.0
     blocking_issues: list[BlockingIssue] = Field(default_factory=list)
@@ -479,11 +402,7 @@ class ConversationMessage(BaseModel):
 
 
 class ConversationHistory(BaseModel):
-    """Conversation history for a document/session.
-
-    The server is the canonical store; the frontend uses localStorage as cache.
-    API calls include only the most recent ``bounded_window`` messages.
-    """
+    """Conversation history for a document/session."""
     document_id: str = ""
     session_id: str = ""
     messages: list[ConversationMessage] = Field(default_factory=list)

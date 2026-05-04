@@ -126,11 +126,11 @@ DISCOVERY_PROMPT: str = """당신은 APN PoC Project Plan 문서 생성을 위�
     {"name": "...", "title": "...", "role": "...", "contact": "..."}
   ],
   "success_criteria": ["item1", "item2"],
-  "success_criteria_groups": [{"category_name": "Project Objective", "items": ["..."]}],
+  "success_criteria_groups": [{"category_name": "Project Objective", "bullets": ["..."]}],
   "assumptions": ["item1", "item2"],
-  "assumption_groups": [{"category_name": "Business Context", "items": ["..."]}],
+  "assumption_groups": [{"category_name": "Business Context", "bullets": ["..."]}],
   "scope_of_work": ["item1", "item2"],
-  "scope_tasks": [{"task_category": "...", "schedule": "...", "details": ["..."], "personnel": "..."}],
+  "scope_tasks": [{"task_category": "...", "schedule": "...", "details": "single text block", "personnel": "..."}],
   "acceptance_text": "single paragraph acceptance text, or empty string",
   "missing_fields": ["fields to ask user"],
   "follow_up_questions": ["누락된 필수 항목에 대한 재질문 목록"]
@@ -491,6 +491,7 @@ def _business_case(summary_value: Any, explicit_value: Any = None) -> dict[str, 
 
 
 def _category_groups(value: Any, default_labels: list[str]) -> list[dict[str, Any]]:
+    """v2: uses bullets (not items) for CategoryGroup."""
     if value is None:
         return []
     if isinstance(value, list) and all(isinstance(item, dict) for item in value):
@@ -498,16 +499,17 @@ def _category_groups(value: Any, default_labels: list[str]) -> list[dict[str, An
         for index, item in enumerate(value):
             groups.append({
                 "category_name": _string_value(item.get("category_name") or item.get("name") or default_labels[min(index, len(default_labels) - 1)]),
-                "items": _string_list(item.get("items")),
+                "bullets": _string_list(item.get("bullets") or item.get("items")),
             })
         return groups
     items = _string_list(value)
     if not items:
         return []
-    return [{"category_name": default_labels[0], "items": items}]
+    return [{"category_name": default_labels[0], "bullets": items}]
 
 
 def _scope_tasks(value: Any) -> list[dict[str, Any]]:
+    """v2: details is a single string (not list[str])."""
     if value is None:
         return []
     if isinstance(value, list) and all(isinstance(item, dict) for item in value):
@@ -515,7 +517,7 @@ def _scope_tasks(value: Any) -> list[dict[str, Any]]:
             {
                 "task_category": _string_value(item.get("task_category") or item.get("category")),
                 "schedule": _string_value(item.get("schedule")),
-                "details": _string_list(item.get("details")),
+                "details": _details_to_string(item.get("details")),
                 "personnel": _string_value(item.get("personnel")),
             }
             for item in value
@@ -523,7 +525,16 @@ def _scope_tasks(value: Any) -> list[dict[str, Any]]:
     items = _string_list(value)
     if not items:
         return []
-    return [{"task_category": "Scope Boundaries", "schedule": "", "details": items, "personnel": ""}]
+    return [{"task_category": "Scope Boundaries", "schedule": "", "details": "\n".join(items), "personnel": ""}]
+
+
+def _details_to_string(value: Any) -> str:
+    """Convert details to a single string (v2: ScopeTask.details is FieldValue, not list)."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "\n".join(str(v) for v in value if v)
+    return _string_value(value)
 
 
 def _contact_list(value: Any) -> list[dict[str, str]]:

@@ -457,7 +457,7 @@ class ParentOrchestrator:
         patches: list[dict] = []
         chat_parts: list[str] = []
 
-        # Apply extracted fields as patches
+        # Apply extracted fields as patches (v2: no /meta/project_goal, no /sections/scope_of_work/summary)
         for field_name, value in discovery_result.structured_input.items():
             if value is not None:
                 if field_name == "customer":
@@ -468,17 +468,19 @@ class ParentOrchestrator:
                         "source": "user_input",
                     })
                 elif field_name == "project_goal":
+                    # v2: project_goal maps to executive_summary/customer_intro
                     patches.append({
                         "op": "replace",
-                        "path": "/meta/project_goal",
-                        "value": value,
+                        "path": "/sections/executive_summary/customer_intro",
+                        "value": _ai_field_value(value),
                         "source": "user_input",
                     })
                 elif field_name == "scope_summary":
+                    # v2: scope_summary maps to executive_summary/problem_statement
                     patches.append({
                         "op": "replace",
-                        "path": "/sections/scope_of_work/summary",
-                        "value": value,
+                        "path": "/sections/executive_summary/problem_statement",
+                        "value": _ai_field_value(value),
                         "source": "user_input",
                     })
 
@@ -716,19 +718,21 @@ class ParentOrchestrator:
                 "value": arch_result.recommendations,
                 "source": "ai_recommended",
             })
-        architecture_description = arch_result.description or arch_result.architecture_description
+        # v2: architecture uses overview (not description) and tools_list (not tools)
+        architecture_description = getattr(arch_result, "description", "") or getattr(arch_result, "architecture_description", "")
         if architecture_description:
             patches.append({
                 "op": "replace",
-                "path": "/sections/architecture/description",
+                "path": "/sections/architecture/overview",
                 "value": _ai_field_value(architecture_description),
                 "source": "ai_recommended",
             })
-        if arch_result.tools:
+        tools = getattr(arch_result, "tools", None)
+        if tools:
             patches.append({
                 "op": "replace",
-                "path": "/sections/architecture/tools",
-                "value": [_ai_field_value(tool) for tool in arch_result.tools],
+                "path": "/sections/architecture/tools_list",
+                "value": [_ai_field_value(tool) for tool in tools],
                 "source": "ai_recommended",
             })
 
@@ -750,13 +754,21 @@ class ParentOrchestrator:
         message = task.params.get("message", "")
         rec = self.staffing_agent.recommend(message)
 
-        # Convert recommendation to patches via apply_recommendation logic
+        # v2: staffing data goes to /sections/resources_cost_estimates/ (not /staffing_plan/)
         patches: list[dict] = []
-        for role_id, role_data in rec.roles.items():
+        if rec.roles:
+            # Convert roles to partner_technical_team entries
+            team_members = []
+            for role_id, role_data in rec.roles.items():
+                display_name = role_data.get("display_name", role_id) if isinstance(role_data, dict) else role_id
+                team_members.append({
+                    "role": _ai_field_value(display_name),
+                    "name": _ai_field_value(""),
+                })
             patches.append({
                 "op": "replace",
-                "path": f"/staffing_plan/roles/{role_id}",
-                "value": role_data,
+                "path": "/sections/resources_cost_estimates/partner_technical_team",
+                "value": team_members,
                 "source": "ai_recommended",
             })
 
@@ -775,6 +787,8 @@ class ParentOrchestrator:
     ) -> AgentResult:
         """Delegate to CostAgent.calculate_staffing_cost() or calculate_aws_cost().
 
+        v2: staffing data is in resources_cost_estimates, cost fields are flat.
+
         Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8
         """
         action = task.action
@@ -786,18 +800,22 @@ class ParentOrchestrator:
             aws_result = await self.cost_agent.calculate_aws_cost(
                 services, self.gateway_client
             )
-            patches.append({
-                "op": "replace",
-                "path": "/sections/cost_breakdown/aws_service_cost",
-                "value": {
-                    "monthly_cost_summary": {"calculated": aws_result.monthly_cost_summary},
-                    "service_breakdown": aws_result.service_breakdown,
-                    "calculator_share_url": aws_result.calculator_share_url,
-                    "manual_estimate_items": aws_result.manual_estimate_items,
-                },
-                "source": "calculated",
-            })
-            total_project_cost = _current_staffing_total(doc_state) + aws_result.monthly_cost_summary
+            # v2: flat cost fields (calculator_url, mrr, arr, breakdown_table)
+            if hasattr(aws_result, "calculator_share_url") and aws_result.calculator_share_url:
+                patches.append({
+                    "op": "replace",
+                    "path": "/sections/cost_breakdown/calculator_url",
+                    "value": _ai_field_value(aws_result.calculator_share_url),
+                    "source": "calculated",
+                })
+            if hasattr(aws_result, "monthly_cost_summary"):
+                patches.append({
+                    "op": "replace",
+                    "path": "/sections/cost_breakdown/mrr",
+                    "value": _ai_field_value(str(aws_result.monthly_cost_summary)),
+                    "source": "calculated",
+                })
+            total_project_cost = _current_staffing_total(doc_state) + getattr(aws_result, "monthly_cost_summary", 0)
             patches.append({
                 "op": "replace",
                 "path": "/sections/resources_cost_estimates/contribution",
@@ -806,22 +824,24 @@ class ParentOrchestrator:
                 ).model_dump(mode="json"),
                 "source": "calculated",
             })
-            chat_parts.append(f"[cost_agent] AWS 서비스 비용: 월 ${aws_result.monthly_cost_summary:,.2f}")
+            chat_parts.append(f"[cost_agent] AWS 서비스 비용: 월 ${getattr(aws_result, 'monthly_cost_summary', 0):,.2f}")
         else:
-            # Default: calculate staffing cost
-            staffing_result = self.cost_agent.calculate_staffing_cost(
-                doc_state.staffing_plan
-            )
+            # Default: calculate staffing cost using resources_cost_estimates
+            resources = doc_state.sections.resources_cost_estimates
+            staffing_result = self.cost_agent.calculate_staffing_cost(resources)
+            # v2: update total_cost in resources_cost_estimates
             patches.append({
                 "op": "replace",
-                "path": "/sections/cost_breakdown/staffing_cost",
+                "path": "/sections/resources_cost_estimates/total_cost",
                 "value": {
-                    "roles_summary": staffing_result.roles_summary,
-                    "grand_total": {"calculated": staffing_result.grand_total},
+                    "sa": str(getattr(staffing_result, "sa_total", "")),
+                    "eng": str(getattr(staffing_result, "eng_total", "")),
+                    "other": str(getattr(staffing_result, "other_total", "")),
+                    "total": str(getattr(staffing_result, "grand_total", 0)),
                 },
                 "source": "calculated",
             })
-            total_project_cost = staffing_result.grand_total + _current_aws_monthly_total(doc_state)
+            total_project_cost = getattr(staffing_result, "grand_total", 0) + _current_aws_monthly_total(doc_state)
             patches.append({
                 "op": "replace",
                 "path": "/sections/resources_cost_estimates/contribution",
@@ -831,7 +851,7 @@ class ParentOrchestrator:
                 "source": "calculated",
             })
             chat_parts.append(
-                f"[cost_agent] 인건비 계산 완료: 총 ${staffing_result.grand_total:,.2f}"
+                f"[cost_agent] 인건비 계산 완료: 총 ${getattr(staffing_result, 'grand_total', 0):,.2f}"
             )
 
         return AgentResult(
@@ -944,21 +964,17 @@ class ParentOrchestrator:
         doc_id: str,
         doc_state: DocumentState,
     ) -> AgentResult:
-        """Rebuild milestones when staffing_plan or scope_of_work changes.
+        """Rebuild milestones when staffing or scope_of_work changes.
 
-        Calls Gateway ``build_milestone_summary`` tool with the current
-        staffing_plan and scope_of_work, then returns patches to update
-        ``sections.milestones``.
-
-        stakeholders contact info is NOT used as direct input (Req 14.3).
+        v2: staffing data is in resources_cost_estimates (not staffing_plan).
 
         Requirements: 14.1, 14.2, 14.3
         """
-        staffing_dict = doc_state.staffing_plan.model_dump(mode="json")
+        resources_dict = doc_state.sections.resources_cost_estimates.model_dump(mode="json")
         scope_dict = doc_state.sections.scope_of_work.model_dump(mode="json")
 
         params = {
-            "staffing_plan": staffing_dict,
+            "resources_cost_estimates": resources_dict,
             "scope_of_work": scope_dict,
         }
 
@@ -975,10 +991,10 @@ class ParentOrchestrator:
                     "[milestone_sync] Gateway 호출 실패 — 로컬 동기화로 대체합니다."
                 )
                 # Fallback to local sync
-                result = self._local_milestone_sync(staffing_dict, scope_dict)
+                result = self._local_milestone_sync(resources_dict, scope_dict)
         else:
             # No gateway client — use local sync
-            result = self._local_milestone_sync(staffing_dict, scope_dict)
+            result = self._local_milestone_sync(resources_dict, scope_dict)
 
         if result:
             phases = result.get("phases", [])
@@ -1009,38 +1025,44 @@ class ParentOrchestrator:
 
     @staticmethod
     def _local_milestone_sync(
-        staffing_plan: dict, scope_of_work: dict
+        resources_cost_estimates: dict, scope_of_work: dict
     ) -> dict:
-        """Local fallback milestone generation without Gateway call."""
+        """Local fallback milestone generation without Gateway call.
+        v2: reads from resources_cost_estimates (not staffing_plan).
+        """
         phases_list = ("discovery", "development", "testing")
         default_deliverables = {
             "discovery": ["요구사항 문서", "아키텍처 설계서", "프로젝트 계획서"],
             "development": ["에이전트 구현", "API 개발", "UI 구현", "통합"],
             "testing": ["통합 테스트", "UAT", "버그 수정", "최종 문서"],
         }
-        roles = staffing_plan.get("roles", {})
+        # v2: phase_hours_table is a list of PhaseHours dicts
+        phase_hours_table = resources_cost_estimates.get("phase_hours_table", [])
+        team = resources_cost_estimates.get("partner_technical_team", [])
         phases: list[dict] = []
-        for phase in phases_list:
+        for phase_name in phases_list:
             total_hours = 0.0
-            assigned: list[str] = []
-            for role_id, role in roles.items():
-                ph = role.get("phase_hours", {})
-                fv = ph.get(phase, {})
-                val = fv.get("user_input") or fv.get("ai_recommended") or fv.get("calculated")
-                hours = float(val) if val else 0.0
-                if hours > 0:
-                    total_hours += hours
-                    name = role.get("display_name", role_id)
-                    if name not in assigned:
-                        assigned.append(name)
+            # Find matching phase in phase_hours_table
+            for ph in phase_hours_table:
+                ph_phase = ph.get("phase", {})
+                ph_name = ph_phase.get("user_input") or ph_phase.get("ai_recommended") or ph_phase.get("calculated") or "" if isinstance(ph_phase, dict) else str(ph_phase)
+                if phase_name.lower() in str(ph_name).lower():
+                    total_hours = float(ph.get("total", 0))
+                    break
+            assigned = []
+            for member in team:
+                role_fv = member.get("role", {})
+                name = role_fv.get("user_input") or role_fv.get("ai_recommended") or role_fv.get("calculated") or "" if isinstance(role_fv, dict) else str(role_fv)
+                if name and name not in assigned:
+                    assigned.append(name)
             deliverables = scope_of_work.get(
-                f"{phase}_deliverables",
-                default_deliverables.get(phase, []),
+                f"{phase_name}_deliverables",
+                default_deliverables.get(phase_name, []),
             )
             if not isinstance(deliverables, list):
-                deliverables = default_deliverables.get(phase, [])
+                deliverables = default_deliverables.get(phase_name, [])
             phases.append({
-                "phase": phase,
+                "phase": phase_name,
                 "total_hours": round(total_hours, 2),
                 "roles": assigned,
                 "deliverables": deliverables,
@@ -1078,7 +1100,6 @@ class ParentOrchestrator:
         if self.gateway_client:
             params = {
                 "sections": doc_state.sections.model_dump(mode="json"),
-                "staffing_plan": doc_state.staffing_plan.model_dump(mode="json"),
                 "completion_score": doc_state.completion_score,
             }
             gw_result, error = await self.gateway_client.call_tool_safe(
@@ -1143,113 +1164,62 @@ class ParentOrchestrator:
         doc_state: DocumentState,
         edit_payload: dict,
     ) -> AgentResult:
-        """Handle user edit on staffing_plan: mark as user_modified, recalculate costs.
+        """Handle user edit on resources/staffing: mark as confirmed, recalculate costs.
+
+        v2: staffing data is in resources_cost_estimates (not staffing_plan).
 
         Steps:
-          1. Apply user edits to staffing_plan fields with user_edited=true,
-             status=user_modified, preserving original ai_recommended
+          1. Apply user edits to resources_cost_estimates fields
           2. Trigger Cost Agent recalculation
-          3. Update cost_breakdown section
+          3. Update total_cost in resources_cost_estimates
 
         Requirements: 7.3, 8.3, 12.2, 12.3
         """
         patches: list[dict] = []
         chat_parts: list[str] = []
 
-        role_id = edit_payload.get("role_id", "")
         field_name = edit_payload.get("field", "")
         new_value = edit_payload.get("value")
 
-        if role_id and field_name and new_value is not None:
-            # Mark the field as user_modified, preserve ai_recommended
-            base_path = f"/staffing_plan/roles/{role_id}/{field_name}"
+        if field_name and new_value is not None:
+            # v2: edits target /sections/resources_cost_estimates/...
+            base_path = f"/sections/resources_cost_estimates/{field_name}"
             patches.append({
                 "op": "replace",
-                "path": f"{base_path}/user_input",
+                "path": base_path,
                 "value": new_value,
-                "source": "user_input",
-            })
-            patches.append({
-                "op": "replace",
-                "path": f"{base_path}/user_edited",
-                "value": True,
-                "source": "user_input",
-            })
-            patches.append({
-                "op": "replace",
-                "path": f"{base_path}/status",
-                "value": FieldStatus.user_modified.value,
-                "source": "user_input",
-            })
-
-            # Also mark the role-level user_edited flag
-            patches.append({
-                "op": "replace",
-                "path": f"/staffing_plan/roles/{role_id}/user_edited",
-                "value": True,
                 "source": "user_input",
             })
 
             chat_parts.append(
-                f"[user_edit] {role_id}.{field_name} = {new_value} (user_modified)"
+                f"[user_edit] resources_cost_estimates.{field_name} = {new_value}"
             )
 
-        # Recalculate costs using the updated staffing_plan
-        # Build an updated staffing_plan dict with the user edit applied
-        sp_dict = doc_state.staffing_plan.model_dump(mode="json")
-        if role_id and field_name and new_value is not None:
-            role_data = sp_dict.get("roles", {}).get(role_id, {})
-            field_data = role_data.get(field_name, {})
-            if isinstance(field_data, dict):
-                field_data["user_input"] = new_value
-                field_data["user_edited"] = True
-                field_data["status"] = FieldStatus.user_modified.value
+        # Recalculate costs using the updated resources_cost_estimates
+        resources_dict = doc_state.sections.resources_cost_estimates.model_dump(mode="json")
+        calc = recalculate_costs(resources_dict)
 
-        calc = recalculate_costs(sp_dict)
-
-        # Update calculated totals for each role
-        for rid, vals in calc["roles"].items():
+        # Update total_cost in resources_cost_estimates
+        if "total_cost" in calc:
             patches.append({
                 "op": "replace",
-                "path": f"/staffing_plan/roles/{rid}/total_hours/calculated",
-                "value": vals["total_hours"],
-                "source": "calculated",
-            })
-            patches.append({
-                "op": "replace",
-                "path": f"/staffing_plan/roles/{rid}/total_cost/calculated",
-                "value": vals["total_cost"],
+                "path": "/sections/resources_cost_estimates/total_cost",
+                "value": calc["total_cost"],
                 "source": "calculated",
             })
 
-        # Update grand totals
-        patches.append({
-            "op": "replace",
-            "path": "/staffing_plan/grand_total_hours/calculated",
-            "value": calc["grand_total_hours"],
-            "source": "calculated",
-        })
-        patches.append({
-            "op": "replace",
-            "path": "/staffing_plan/grand_total_cost/calculated",
-            "value": calc["grand_total_cost"],
-            "source": "calculated",
-        })
+        # Update total_hours in resources_cost_estimates
+        if "total_hours" in calc:
+            patches.append({
+                "op": "replace",
+                "path": "/sections/resources_cost_estimates/total_hours",
+                "value": calc["total_hours"],
+                "source": "calculated",
+            })
 
-        # Update cost_breakdown section
-        cost_result = self.cost_agent.calculate_staffing_cost(doc_state.staffing_plan)
-        patches.append({
-            "op": "replace",
-            "path": "/sections/cost_breakdown/staffing_cost",
-            "value": {
-                "roles_summary": cost_result.roles_summary,
-                "grand_total": {"calculated": cost_result.grand_total},
-            },
-            "source": "calculated",
-        })
-
+        grand_total = calc.get("grand_total_cost", 0)
         chat_parts.append(
-            f"[cost_recalc] 비용 재계산 완료 — 총 ${calc['grand_total_cost']:,.2f}"
+            f"[cost_recalc] 비용 재계산 완료 — 총 ${grand_total:,.2f}"
         )
 
         return AgentResult(
@@ -1263,7 +1233,7 @@ class ParentOrchestrator:
     # ------------------------------------------------------------------
 
     def _detect_staffing_or_scope_change(self, tasks: list[Task]) -> bool:
-        """Check if any task modifies staffing_plan or scope_of_work."""
+        """Check if any task modifies resources_cost_estimates or scope_of_work."""
         for task in tasks:
             if task.agent in ("staffing_agent", "cost_agent"):
                 return True
@@ -1699,21 +1669,24 @@ def _ai_field_value(value: Any) -> dict[str, Any]:
         "user_input": None,
         "ai_recommended": value or "",
         "calculated": None,
-        "status": FieldStatus.recommended.value,
+        "status": FieldStatus.draft.value,
         "user_edited": False,
     }
 
 
 def _contact_to_field_value(c: dict) -> dict:
-    role_value = c.get("description") or c.get("stakeholder_for") or c.get("role") or ""
-
+    """Convert a contact dict to v2 FieldValue structure.
+    v2: no role_or_description — uses description, stakeholder_for, role separately.
+    """
     def fv(value):
         return _ai_field_value(value)
 
     return {
         "name": fv(c.get("name", "")),
         "title": fv(c.get("title", "")),
-        "role_or_description": fv(role_value),
+        "description": fv(c.get("description", "")),
+        "stakeholder_for": fv(c.get("stakeholder_for", "")),
+        "role": fv(c.get("role", "")),
         "contact": fv(c.get("contact", "")),
     }
 
@@ -1723,17 +1696,22 @@ def _field_value_list(items: list[Any]) -> list[dict[str, Any]]:
 
 
 def _category_group_to_field_values(group: dict[str, Any]) -> dict[str, Any]:
+    """v2: uses bullets (not items)."""
     return {
         "category_name": _ai_field_value(group.get("category_name", "")),
-        "items": _field_value_list(group.get("items", [])),
+        "bullets": _field_value_list(group.get("bullets", group.get("items", []))),
     }
 
 
 def _scope_task_to_field_values(task: dict[str, Any]) -> dict[str, Any]:
+    """v2: details is a single FieldValue (not list[FieldValue])."""
+    details_raw = task.get("details", "")
+    if isinstance(details_raw, list):
+        details_raw = "\n".join(str(d) for d in details_raw if d)
     return {
         "task_category": _ai_field_value(task.get("task_category", "")),
         "schedule": _ai_field_value(task.get("schedule", "")),
-        "details": _field_value_list(task.get("details", [])),
+        "details": _ai_field_value(details_raw),
         "personnel": _ai_field_value(task.get("personnel", "")),
     }
 
@@ -1753,14 +1731,16 @@ def _architecture_service_to_field_values(service: Any) -> dict[str, Any]:
 
 
 def _discovery_schema_patches(discovery_result: Any) -> list[dict]:
+    """Build v2 schema patches from discovery result.
+    v2: no /sections/executive_summary/text, no /sections/acceptance/text.
+    """
     patches: list[dict] = []
     structured_input = getattr(discovery_result, "structured_input", {}) or {}
     summary_fields = getattr(discovery_result, "executive_summary_fields", {}) or {}
     business_case = getattr(discovery_result, "business_case", {}) or {}
 
+    # v2 executive summary fields (no legacy text/summary paths)
     for path, value in [
-        ("/sections/executive_summary/text", discovery_result.executive_summary),
-        ("/sections/acceptance/text", discovery_result.acceptance_text),
         ("/sections/executive_summary/customer_intro", summary_fields.get("customer_intro", "")),
         ("/sections/executive_summary/problem_statement", summary_fields.get("problem_statement", "")),
         ("/sections/executive_summary/proposed_solution", summary_fields.get("proposed_solution", "")),
@@ -1850,18 +1830,29 @@ def _milestone_phase_to_field_values(phase: dict[str, Any]) -> dict[str, Any]:
 
 
 def _current_staffing_total(doc_state: DocumentState) -> float:
-    value = getattr(doc_state.staffing_plan.grand_total_cost, "calculated", 0) or 0
-    if value:
-        return float(value)
-    staffing_cost = doc_state.sections.cost_breakdown.staffing_cost
-    section_value = getattr(staffing_cost.grand_total, "calculated", 0) or 0
-    return float(section_value)
+    """v2: read from resources_cost_estimates.total_cost.total (str)."""
+    total_str = doc_state.sections.resources_cost_estimates.total_cost.total
+    if total_str:
+        try:
+            # Strip currency symbols and commas
+            cleaned = str(total_str).replace("$", "").replace(",", "").strip()
+            return float(cleaned)
+        except (ValueError, TypeError):
+            pass
+    return 0.0
 
 
 def _current_aws_monthly_total(doc_state: DocumentState) -> float:
-    summary = doc_state.sections.cost_breakdown.aws_service_cost.monthly_cost_summary
-    value = getattr(summary, "calculated", 0) or 0
-    return float(value)
+    """v2: read from cost_breakdown.mrr (FieldValue)."""
+    mrr_field = doc_state.sections.cost_breakdown.mrr
+    value = mrr_field.resolve()
+    if value:
+        try:
+            cleaned = str(value).replace("$", "").replace(",", "").strip()
+            return float(cleaned)
+        except (ValueError, TypeError):
+            pass
+    return 0.0
 
 
 def _apply_operation(doc_dict: dict, op: PatchOperation) -> None:

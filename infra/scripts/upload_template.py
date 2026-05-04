@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_KEY = "templates/apn-poc-template.docx"
+DEFAULT_KEY = "templates/apn-poc-template_v2.docx"
 
 
 def run(cmd: list[str]) -> str:
@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--template",
-        default="agent/templates/apn-poc-template.docx",
+        default="agent/templates/apn-poc-template_v2.docx",
         help="Path to the local DOCX template.",
     )
     parser.add_argument("--bucket", help="Artifacts bucket name. Defaults to Terraform output.")

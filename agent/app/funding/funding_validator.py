@@ -117,15 +117,16 @@ class FundingValidator:
 
     def calculate_funding(self, doc_state: DocumentState) -> dict[str, float]:
         cost = doc_state.sections.cost_breakdown
-        funding = cost.funding_calculation
+        funding = cost.funding_calculation  # dict in v2
 
-        annual_aws_arr = _to_float(funding.yr1_arr)
+        annual_aws_arr = _to_float(funding.get("yr1_arr"))
         if annual_aws_arr <= 0:
             annual_aws_arr = self._aws_annual_cost(doc_state)
 
         sow_cost = self._sow_cost(doc_state)
         funding_25pct_arr = round(annual_aws_arr * 0.25, 2)
-        eligible_amount = round(min(funding_25pct_arr, sow_cost, funding.funding_cap), 2)
+        funding_cap = 125000  # hardcoded cap in v2
+        eligible_amount = round(min(funding_25pct_arr, sow_cost, funding_cap), 2)
         if annual_aws_arr <= 0 or sow_cost <= 0:
             eligible_amount = 0.0
 
@@ -149,7 +150,7 @@ class FundingValidator:
             if any("bedrock" in str(candidate).lower() for candidate in candidates if candidate):
                 return True
 
-        extra_services = getattr(architecture, "model_extra", {}).get("services")
+        extra_services = (getattr(architecture, "model_extra", None) or {}).get("services")
         if isinstance(extra_services, list):
             for service in extra_services:
                 if isinstance(service, dict):
@@ -159,7 +160,7 @@ class FundingValidator:
         return False
 
     def has_calculator_url(self, doc_state: DocumentState) -> bool:
-        return bool(doc_state.sections.cost_breakdown.aws_service_cost.calculator_share_url)
+        return _has_value(doc_state.sections.cost_breakdown.calculator_url)
 
     def has_sow_cost(self, doc_state: DocumentState) -> bool:
         return self._sow_cost(doc_state) > 0
@@ -170,18 +171,23 @@ class FundingValidator:
 
     def _sow_cost(self, doc_state: DocumentState) -> float:
         cost = doc_state.sections.cost_breakdown
-        configured_sow_cost = _to_float(cost.funding_calculation.sow_cost)
+        configured_sow_cost = _to_float(cost.funding_calculation.get("sow_cost"))
         if configured_sow_cost > 0:
             return configured_sow_cost
 
-        staffing_total = _to_float(doc_state.staffing_plan.grand_total_cost)
-        if staffing_total <= 0:
-            staffing_total = _to_float(cost.staffing_cost.grand_total)
+        # v2: read staffing total from resources_cost_estimates.total_cost.total (str)
+        total_cost_str = doc_state.sections.resources_cost_estimates.total_cost.total
+        staffing_total = 0.0
+        if total_cost_str:
+            try:
+                staffing_total = float(total_cost_str)
+            except (TypeError, ValueError):
+                staffing_total = 0.0
         return round(staffing_total + self._aws_annual_cost(doc_state), 2)
 
     def _aws_annual_cost(self, doc_state: DocumentState) -> float:
-        monthly = _to_float(doc_state.sections.cost_breakdown.aws_service_cost.monthly_cost_summary)
-        return round(monthly * 12, 2)
+        # v2: arr is already annual (FieldValue), no *12 needed
+        return round(_to_float(doc_state.sections.cost_breakdown.arr), 2)
 
     def _poc_start_date_too_soon(self, doc_state: DocumentState) -> bool:
         raw = (

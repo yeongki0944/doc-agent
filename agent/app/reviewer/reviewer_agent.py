@@ -108,8 +108,8 @@ class ReviewerAgent:
 
         Checks:
         1. Required section completeness (Req 13.1)
-        2. Staffing plan populated
-        3. Numeric consistency — grand total cost
+        2. Resources/staffing populated (v2: partner_technical_team)
+        3. Numeric consistency — total cost
         4. Completion score (Req 17.1)
         5. Suggestions from blocking issues and warnings
         6. Classify issues into blocking vs non-blocking (Req 13.2)
@@ -129,22 +129,28 @@ class ReviewerAgent:
                     section=sec_name,
                 ))
 
-        # 2. Staffing plan check
-        if not doc_state.staffing_plan.roles:
+        # 2. Staffing check (v2: resources_cost_estimates.partner_technical_team)
+        if not doc_state.sections.resources_cost_estimates.partner_technical_team:
             result.blocking_issues.append(BlockingIssue(
                 code="EMPTY_STAFFING",
-                message="staffing_plan에 역할이 정의되지 않음",
-                section="staffing_plan",
+                message="partner_technical_team에 팀원이 정의되지 않음",
+                section="resources_cost_estimates",
             ))
 
-        # 3. Numeric consistency: staffing totals vs cost_breakdown
-        grand_cost = doc_state.staffing_plan.grand_total_cost.calculated
-        if grand_cost is not None and grand_cost <= 0:
-            result.warnings.append(Warning(
-                code="ZERO_COST",
-                message="인건비 grand total이 0 이하",
-                section="cost_breakdown",
-            ))
+        # 3. Numeric consistency: total cost (v2: resources_cost_estimates.total_cost.total)
+        total_cost_str = doc_state.sections.resources_cost_estimates.total_cost.total
+        if total_cost_str:
+            try:
+                cleaned = str(total_cost_str).replace("$", "").replace(",", "").strip()
+                total_cost_val = float(cleaned)
+                if total_cost_val <= 0:
+                    result.warnings.append(Warning(
+                        code="ZERO_COST",
+                        message="인건비 total cost가 0 이하",
+                        section="cost_breakdown",
+                    ))
+            except (ValueError, TypeError):
+                pass
 
         funding_validation = FundingValidator().validate(doc_state)
         result.funding_validation = funding_validation
@@ -181,10 +187,12 @@ class ReviewerAgent:
     def calculate_completion_score(self, doc_state: DocumentState) -> float:
         """Section-level required field fill ratio → 0.0~1.0.
 
+        v2: no staffing_plan — staffing data is in resources_cost_estimates section.
+
         Requirement: 17.1
         """
         filled = 0
-        total = len(REQUIRED_SECTIONS) + 1  # +1 for staffing_plan
+        total = len(REQUIRED_SECTIONS)
 
         sections = doc_state.sections
         for sec_name in REQUIRED_SECTIONS:
@@ -196,9 +204,6 @@ class ReviewerAgent:
                     filled += 1
                 else:
                     filled += 0.3  # section exists but empty → partial credit
-
-        if doc_state.staffing_plan.roles:
-            filled += 1
 
         return round(min(filled / total, 1.0), 2)
 

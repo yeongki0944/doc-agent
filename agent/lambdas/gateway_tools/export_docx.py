@@ -2,6 +2,8 @@
 
 Downloads the APN PoC DOCX template from S3, renders it with docxtpl using
 Document_State data, uploads the rendered DOCX to S3, and returns a download URL.
+
+v2: Reads from v2 schema paths only. No legacy fallbacks.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ import boto3
 
 
 ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET") or os.environ.get("S3_BUCKET", "doc-agent-artifacts")
-TEMPLATE_S3_KEY = os.environ.get("TEMPLATE_S3_KEY", "templates/apn-poc-template.docx")
+TEMPLATE_S3_KEY = os.environ.get("TEMPLATE_S3_KEY", "templates/apn-poc-template_v2.docx")
 REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -131,61 +133,6 @@ def _section(sections: dict[str, Any], key: str) -> dict[str, Any]:
     return section if isinstance(section, dict) else {}
 
 
-def _phase_hours(role: dict[str, Any], phase: str) -> Any:
-    return _resolve_field(role.get("phase_hours", {}).get(phase, {}), 0)
-
-
-def _build_staffing_context(staffing_plan: dict[str, Any]) -> dict[str, Any]:
-    roles = staffing_plan.get("roles", {})
-    if not isinstance(roles, dict):
-        roles = {}
-
-    role_rows: list[dict[str, Any]] = []
-    for role_id, role in roles.items():
-        if not isinstance(role, dict):
-            continue
-        role_rows.append({
-            "role_id": role.get("role_id") or role_id,
-            "display_name": role.get("display_name") or role_id,
-            "count": _resolve_field(role.get("count", {}), 0),
-            "allocation_pct": _resolve_field(role.get("allocation_pct", {}), 0),
-            "rate_per_hour": _resolve_field(role.get("rate_per_hour", {}), 0),
-            "discovery_hours": _phase_hours(role, "discovery"),
-            "development_hours": _phase_hours(role, "development"),
-            "testing_hours": _phase_hours(role, "testing"),
-            "total_hours": _resolve_field(role.get("total_hours", {}), 0),
-            "total_cost": _resolve_field(role.get("total_cost", {}), 0),
-            "reason": role.get("reason", ""),
-        })
-
-    return {
-        "roles": role_rows,
-        "grand_total_hours": _resolve_field(staffing_plan.get("grand_total_hours", {}), 0),
-        "grand_total_cost": _resolve_field(staffing_plan.get("grand_total_cost", {}), 0),
-    }
-
-
-def _build_contribution(resources_cost_estimates: dict[str, Any]) -> dict[str, Any]:
-    contribution = resources_cost_estimates.get("contribution", {})
-    if not isinstance(contribution, dict):
-        contribution = {}
-
-    parties = {}
-    rows = []
-    for party in ("customer", "partner", "aws"):
-        entry = contribution.get(party, {})
-        if not isinstance(entry, dict):
-            entry = {}
-        party_context = {
-            "amount": _resolve_field(entry.get("amount", {}), 0),
-            "pct": _resolve_field(entry.get("pct", {}), 0),
-        }
-        parties[party] = party_context
-        rows.append({"party": party, **party_context})
-
-    return {"parties": parties, "rows": rows}
-
-
 def _as_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -211,7 +158,34 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+# ---------------------------------------------------------------------------
+# Helpers — kept and updated for v2
+# ---------------------------------------------------------------------------
+
+def _normalize_contact_entry(entry: Any, label_key: str, fallback_value: str = "") -> dict[str, Any]:
+    """Normalize a contact entry dict for template rendering.
+
+    v2: removed role_or_description fallback.
+    """
+    if not isinstance(entry, dict):
+        entry = {}
+
+    label_value = _resolve_field(
+        entry.get(label_key, entry.get("description", entry.get("stakeholder_for", ""))),
+        fallback_value,
+    )
+    return {
+        "name": _resolve_field(entry.get("name", "")),
+        "title": _resolve_field(entry.get("title", "")),
+        "description": _resolve_field(entry.get("description", label_value)),
+        "stakeholder_for": _resolve_field(entry.get("stakeholder_for", label_value)),
+        "role": _resolve_field(entry.get("role", label_value)),
+        "contact": _resolve_field(entry.get("contact", "")),
+    }
+
+
 def _group_rows(groups: Any) -> list[dict[str, Any]]:
+    """Render CategoryGroup list for template. v2: reads `bullets` not `items`."""
     rows: list[dict[str, Any]] = []
     if not isinstance(groups, list):
         return rows
@@ -220,16 +194,17 @@ def _group_rows(groups: Any) -> list[dict[str, Any]]:
         data = _as_mapping(group)
         if not data:
             continue
-        items = data.get("items", data.get("values", data.get("details", [])))
+        bullets = data.get("bullets", data.get("values", data.get("details", [])))
         rows.append({
             "category_name": resolve_field_value(data.get("category_name", data.get("name", ""))),
-            "items_text": _bullet_join(items),
-            "items": items if isinstance(items, list) else ([items] if items not in ("", None) else []),
+            "bullets_text": _bullet_join(bullets),
+            "bullets": bullets if isinstance(bullets, list) else ([bullets] if bullets not in ("", None) else []),
         })
     return rows
 
 
 def _scope_task_rows(tasks: Any) -> list[dict[str, Any]]:
+    """Render ScopeTask list for template. v2: `details` is a single FieldValue."""
     rows: list[dict[str, Any]] = []
     if not isinstance(tasks, list):
         return rows
@@ -238,12 +213,12 @@ def _scope_task_rows(tasks: Any) -> list[dict[str, Any]]:
         data = _as_mapping(task)
         if not data:
             continue
-        details = data.get("details", data.get("items", []))
+        details = data.get("details", "")
+        details_resolved = resolve_field_value(details, "")
         rows.append({
-            "task_category": resolve_field_value(data.get("task_category", data.get("category", ""))),
+            "task_category": resolve_field_value(data.get("task_category", "")),
             "schedule": resolve_field_value(data.get("schedule", "")),
-            "details_text": _bullet_join(details),
-            "details": details if isinstance(details, list) else ([details] if details not in ("", None) else []),
+            "details": details_resolved,
             "personnel": resolve_field_value(data.get("personnel", "")),
         })
     return rows
@@ -282,22 +257,153 @@ def _bedrock_present(architecture_services: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _build_contribution(resources_cost_estimates: dict[str, Any]) -> dict[str, Any]:
+    contribution = resources_cost_estimates.get("contribution", {})
+    if not isinstance(contribution, dict):
+        contribution = {}
+
+    parties = {}
+    rows = []
+    for party in ("customer", "partner", "aws"):
+        entry = contribution.get(party, {})
+        if not isinstance(entry, dict):
+            entry = {}
+        party_context = {
+            "amount": _resolve_field(entry.get("amount", {}), 0),
+            "pct": _resolve_field(entry.get("pct", {}), 0),
+        }
+        parties[party] = party_context
+        rows.append({"party": party, **party_context})
+
+    return {"parties": parties, "rows": rows}
+
+
+def _resolve_list(items: Any) -> list[str]:
+    """Resolve a list[FieldValue] to a list of resolved strings."""
+    if not isinstance(items, list):
+        return []
+    result: list[str] = []
+    for item in items:
+        resolved = resolve_field_value(item, "")
+        if resolved not in ("", None):
+            result.append(str(resolved))
+    return result
+
+
+def _acceptance_step_rows(steps: Any) -> list[dict[str, Any]]:
+    """Render AcceptanceStep list for template."""
+    rows: list[dict[str, Any]] = []
+    if not isinstance(steps, list):
+        return rows
+
+    for step in steps:
+        data = _as_mapping(step)
+        if not data:
+            continue
+        bullets = data.get("bullets", [])
+        rows.append({
+            "heading": resolve_field_value(data.get("heading", "")),
+            "content": resolve_field_value(data.get("content", "")),
+            "bullets": _resolve_list(bullets),
+        })
+    return rows
+
+
+def _partner_team_rows(team: Any) -> list[dict[str, Any]]:
+    """Render partner_technical_team as list of {role, name}."""
+    rows: list[dict[str, Any]] = []
+    if not isinstance(team, list):
+        return rows
+
+    for member in team:
+        data = _as_mapping(member)
+        if not data:
+            continue
+        rows.append({
+            "role": resolve_field_value(data.get("role", "")),
+            "name": resolve_field_value(data.get("name", "")),
+        })
+    return rows
+
+
+def _phase_hours_rows(table: Any) -> list[dict[str, Any]]:
+    """Render phase_hours_table as list of {phase, sa_hours, eng_hours, other_hours, total}."""
+    rows: list[dict[str, Any]] = []
+    if not isinstance(table, list):
+        return rows
+
+    for entry in table:
+        data = _as_mapping(entry)
+        if not data:
+            continue
+        rows.append({
+            "phase": resolve_field_value(data.get("phase", "")),
+            "sa_hours": _safe_int(data.get("sa_hours", 0), 0),
+            "eng_hours": _safe_int(data.get("eng_hours", 0), 0),
+            "other_hours": _safe_int(data.get("other_hours", 0), 0),
+            "total": _safe_int(data.get("total", 0), 0),
+        })
+    return rows
+
+
+def _totals_row(data: Any) -> dict[str, str]:
+    """Render a TotalsRow-like dict as {sa, eng, other, total} strings."""
+    if not isinstance(data, dict):
+        return {"sa": "", "eng": "", "other": "", "total": ""}
+    return {
+        "sa": str(data.get("sa", "")),
+        "eng": str(data.get("eng", "")),
+        "other": str(data.get("other", "")),
+        "total": str(data.get("total", "")),
+    }
+
+
+def _cost_breakdown_table_rows(table: Any) -> list[dict[str, Any]]:
+    """Render breakdown_table as list of {category, mrr, arr, note}."""
+    rows: list[dict[str, Any]] = []
+    if not isinstance(table, list):
+        return rows
+
+    for entry in table:
+        data = _as_mapping(entry)
+        if not data:
+            continue
+        rows.append({
+            "category": resolve_field_value(data.get("category", "")),
+            "mrr": resolve_field_value(data.get("mrr", "")),
+            "arr": resolve_field_value(data.get("arr", "")),
+            "note": resolve_field_value(data.get("note", "")),
+        })
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Funding context — v2: reads from cost_breakdown.arr, resources_cost_estimates.total_cost
+# ---------------------------------------------------------------------------
+
 def _funding_context(
     cost_breakdown: dict[str, Any],
-    staffing_summary: dict[str, Any],
+    resources_cost_estimates: dict[str, Any],
     architecture_services: list[dict[str, Any]],
 ) -> dict[str, Any]:
     funding_calculation = _section(cost_breakdown, "funding_calculation")
-    monthly_aws_cost_num = _safe_float(_section(cost_breakdown, "aws_service_cost").get("monthly_cost_summary", {}), 0.0)
-    annual_aws_arr_num = _safe_float(funding_calculation.get("yr1_arr", ""), 0.0)
-    if annual_aws_arr_num <= 0 and monthly_aws_cost_num > 0:
-        annual_aws_arr_num = round(monthly_aws_cost_num * 12, 2)
+
+    # v2: read ARR directly from cost_breakdown.arr
+    annual_aws_arr_num = _safe_float(cost_breakdown.get("arr", {}), 0.0)
+    if annual_aws_arr_num <= 0:
+        # fallback to funding_calculation.yr1_arr
+        annual_aws_arr_num = _safe_float(funding_calculation.get("yr1_arr", ""), 0.0)
 
     sow_cost = resolve_field_value(funding_calculation.get("sow_cost", ""), "")
     eligible_amount = resolve_field_value(funding_calculation.get("eligible_amount", ""), "")
 
     if sow_cost in ("", None):
-        sow_cost = _safe_float(staffing_summary.get("total_cost", {}).get("total", 0), 0.0)
+        # v2: read total_cost from resources_cost_estimates instead of staffing_plan
+        total_cost_data = resources_cost_estimates.get("total_cost", {})
+        if isinstance(total_cost_data, dict):
+            sow_cost = _safe_float(total_cost_data.get("total", 0), 0.0)
+        else:
+            sow_cost = _safe_float(total_cost_data, 0.0)
         if annual_aws_arr_num > 0:
             sow_cost = round(sow_cost + annual_aws_arr_num, 2)
 
@@ -322,152 +428,20 @@ def _funding_context(
     }
 
 
-def _signature_context(sections: dict[str, Any]) -> dict[str, Any]:
-    client_signatures = _section(sections, "client_signatures")
-    return {
-        "signature_customer_name": resolve_field_value(client_signatures.get("customer_name", "")),
-        "signature_person_name": resolve_field_value(client_signatures.get("authorized_person_name", "")),
-        "signature_designation": resolve_field_value(client_signatures.get("designation", "")),
-        "signature_date": resolve_field_value(client_signatures.get("sign_date", "")),
-    }
-
-
-def _normalize_contact_entry(entry: Any, label_key: str, fallback_value: str = "") -> dict[str, Any]:
-    if not isinstance(entry, dict):
-        entry = {}
-
-    label_value = _resolve_field(
-        entry.get(label_key, entry.get("role_or_description", entry.get("description", entry.get("stakeholder_for", "")))),
-        fallback_value,
-    )
-    return {
-        "name": _resolve_field(entry.get("name", "")),
-        "title": _resolve_field(entry.get("title", "")),
-        "description": _resolve_field(entry.get("description", label_value)),
-        "stakeholder_for": _resolve_field(entry.get("stakeholder_for", label_value)),
-        "role": _resolve_field(entry.get("role", label_value)),
-        "contact": _resolve_field(entry.get("contact", "")),
-    }
-
-
-def _role_category_key(role: dict[str, Any]) -> str:
-    category = role.get("category", "other")
-    if hasattr(category, "value"):
-        category = category.value
-    category = str(category)
-    if category == "solution_architect":
-        return "sa"
-    if category == "engineer":
-        return "eng"
-    return "other"
-
-
-def _build_phase_hours_table(staffing_plan: dict[str, Any]) -> list[dict[str, Any]]:
-    roles = staffing_plan.get("roles", {})
-    if not isinstance(roles, dict):
-        roles = {}
-
-    phase_names: list[str] = []
-    seen: set[str] = set()
-    for role in roles.values():
-        if not isinstance(role, dict):
-            continue
-        phase_hours = role.get("phase_hours", {})
-        if not isinstance(phase_hours, dict):
-            continue
-        for phase in phase_hours.keys():
-            if phase not in seen:
-                seen.add(phase)
-                phase_names.append(phase)
-
-    preferred_order = ["discovery", "development", "testing"]
-    ordered = [phase for phase in preferred_order if phase in seen]
-    ordered.extend([phase for phase in phase_names if phase not in preferred_order])
-
-    phase_rows: list[dict[str, Any]] = []
-    for phase in ordered:
-        sa_hours = 0
-        eng_hours = 0
-        other_hours = 0
-        for role in roles.values():
-            if not isinstance(role, dict):
-                continue
-            phase_hours = role.get("phase_hours", {})
-            if not isinstance(phase_hours, dict):
-                continue
-            hours = _resolve_field(phase_hours.get(phase, {}), 0)
-            category_key = _role_category_key(role)
-            if category_key == "sa":
-                sa_hours += hours
-            elif category_key == "eng":
-                eng_hours += hours
-            else:
-                other_hours += hours
-        phase_rows.append({
-            "phase": phase,
-            "sa_hours": sa_hours,
-            "eng_hours": eng_hours,
-            "other_hours": other_hours,
-            "total": sa_hours + eng_hours + other_hours,
-        })
-
-    return phase_rows
-
-
-def _build_staffing_totals(staffing_plan: dict[str, Any]) -> dict[str, Any]:
-    roles = staffing_plan.get("roles", {})
-    if not isinstance(roles, dict):
-        roles = {}
-
-    totals = {
-        "sa": {"hours": 0, "cost": 0},
-        "eng": {"hours": 0, "cost": 0},
-        "other": {"hours": 0, "cost": 0},
-    }
-
-    for role in roles.values():
-        if not isinstance(role, dict):
-            continue
-        category_key = _role_category_key(role)
-        totals[category_key]["hours"] += _resolve_field(role.get("total_hours", {}), 0)
-        totals[category_key]["cost"] += _resolve_field(role.get("total_cost", {}), 0)
-
-    total_hours = {
-        "sa": totals["sa"]["hours"],
-        "eng": totals["eng"]["hours"],
-        "other": totals["other"]["hours"],
-        "total": totals["sa"]["hours"] + totals["eng"]["hours"] + totals["other"]["hours"],
-    }
-    total_cost = {
-        "sa": totals["sa"]["cost"],
-        "eng": totals["eng"]["cost"],
-        "other": totals["other"]["cost"],
-        "total": totals["sa"]["cost"] + totals["eng"]["cost"] + totals["other"]["cost"],
-    }
-
-    def _rate(category: str) -> float:
-        hours = totals[category]["hours"]
-        cost = totals[category]["cost"]
-        if hours:
-            return round(cost / hours, 2)
-        return 0
-
-    return {
-        "total_hours": total_hours,
-        "total_cost": total_cost,
-        "rates": {
-            "rate_solution_architect": _rate("sa"),
-            "rate_engineer": _rate("eng"),
-            "rate_other": _rate("other"),
-        },
-        "phase_hours_table": _build_phase_hours_table(staffing_plan),
-    }
-
+# ---------------------------------------------------------------------------
+# Context builder — v2
+# ---------------------------------------------------------------------------
 
 def _build_context(params: dict[str, Any]) -> dict[str, Any]:
+    """Build the template render context from a v2 DocumentState dict.
+
+    Reads from v2 schema paths only. No legacy fallbacks.
+    """
+    if not params:
+        params = {}
+
     meta = params.get("meta", {}) if isinstance(params.get("meta", {}), dict) else {}
     sections = params.get("sections", {}) if isinstance(params.get("sections", {}), dict) else {}
-    staffing_plan = params.get("staffing_plan", {}) if isinstance(params.get("staffing_plan", {}), dict) else {}
 
     cover = _section(sections, "cover")
     executive_summary = _section(sections, "executive_summary")
@@ -480,19 +454,21 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
     acceptance = _section(sections, "acceptance")
     resources_cost_estimates = _section(sections, "resources_cost_estimates")
     stakeholders = _section(sections, "stakeholders")
-    client_signatures = _section(sections, "client_signatures")
-    staffing_summary = _build_staffing_totals(staffing_plan)
+
+    # --- Contribution ---
     contribution_context = _build_contribution(resources_cost_estimates)
 
+    # --- Architecture ---
     architecture_services = _architecture_service_rows(architecture)
-    funding_context = _funding_context(cost_breakdown, staffing_summary, architecture_services)
-    signature_context = _signature_context(sections)
 
+    # --- Funding (v2: reads from cost_breakdown.arr and resources_cost_estimates.total_cost) ---
+    funding = _funding_context(cost_breakdown, resources_cost_estimates, architecture_services)
+
+    # --- Stakeholders ---
     executive_sponsors = stakeholders.get("executive_sponsors", [])
     stakeholder_rows = stakeholders.get("stakeholders", [])
     project_team = stakeholders.get("project_team", [])
     escalation_contacts = stakeholders.get("escalation_contacts", [])
-    milestones_rows = milestones.get("phases", [])
     if not isinstance(executive_sponsors, list):
         executive_sponsors = []
     if not isinstance(stakeholder_rows, list):
@@ -501,71 +477,123 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
         project_team = []
     if not isinstance(escalation_contacts, list):
         escalation_contacts = []
+
+    # --- Milestones ---
+    milestones_rows = milestones.get("phases", [])
     if not isinstance(milestones_rows, list):
         milestones_rows = []
 
-    executive_summary_text = resolve_field_value(executive_summary.get("text", executive_summary.get("summary", "")))
+    # --- Executive Summary ---
     customer_intro = resolve_field_value(executive_summary.get("customer_intro", ""))
     problem_statement = resolve_field_value(executive_summary.get("problem_statement", ""))
     proposed_solution = resolve_field_value(executive_summary.get("proposed_solution", ""))
-    phases_overview = executive_summary.get("phases_overview", [])
-    if not isinstance(phases_overview, list):
-        phases_overview = []
+
+    # list[FieldValue] → resolved lists
+    phases_overview = _resolve_list(executive_summary.get("phases_overview", []))
+    current_pain_points = _resolve_list(executive_summary.get("current_pain_points", []))
+    poc_objectives = _resolve_list(executive_summary.get("poc_objectives", []))
+    custom_blocks = executive_summary.get("custom_blocks", [])
+    if not isinstance(custom_blocks, list):
+        custom_blocks = []
+
+    # --- Business Case (nested under executive_summary) ---
     business_case = _section(executive_summary, "business_case")
     business_case_problem = resolve_field_value(business_case.get("problem_definition", ""))
     business_case_roi = resolve_field_value(business_case.get("roi_calculation", ""))
     business_case_sponsor = resolve_field_value(business_case.get("executive_sponsor", ""))
     business_case_commitment = resolve_field_value(business_case.get("production_commitment", ""))
 
+    # --- Success Criteria / Assumptions (v2: bullets not items) ---
     success_criteria_groups = _group_rows(success_criteria.get("groups", []))
-    if not success_criteria_groups:
-        success_criteria_groups = _group_rows(success_criteria.get("items", []))
+    success_criteria_items = _resolve_list(success_criteria.get("items", []))
     assumptions_groups = _group_rows(assumptions.get("groups", []))
-    if not assumptions_groups:
-        assumptions_groups = _group_rows(assumptions.get("items", []))
+    assumptions_items = _resolve_list(assumptions.get("items", []))
+
+    # --- Scope of Work (v2: tasks, out_of_scope, items) ---
     scope_tasks = _scope_task_rows(scope_of_work.get("tasks", []))
-    if not scope_tasks:
-        scope_tasks = _scope_task_rows(scope_of_work.get("items", []))
+    scope_out_of_scope = _resolve_list(scope_of_work.get("out_of_scope", []))
+    scope_items = _resolve_list(scope_of_work.get("items", []))
+
+    # --- Architecture diagram (v2: diagram_image_s3_key → architecture_diagram_image) ---
+    architecture_diagram_image = resolve_field_value(architecture.get("diagram_image_s3_key", ""))
+    if not isinstance(architecture_diagram_image, str):
+        architecture_diagram_image = ""
+
+    # --- Architecture tools_list (v2: list[FieldValue] → resolved list) ---
+    architecture_tools_list = _resolve_list(architecture.get("tools_list", []))
+
+    # --- Acceptance (v2: steps → acceptance_steps) ---
+    acceptance_steps = _acceptance_step_rows(acceptance.get("steps", []))
+
+    # --- Resources & Cost Estimates (v2: staffing data from resources_cost_estimates) ---
+    partner_technical_team = _partner_team_rows(resources_cost_estimates.get("partner_technical_team", []))
+    phase_hours_table = _phase_hours_rows(resources_cost_estimates.get("phase_hours_table", []))
+    total_hours = _totals_row(resources_cost_estimates.get("total_hours", {}))
+    total_cost = _totals_row(resources_cost_estimates.get("total_cost", {}))
+
+    # --- Client signatures (v2: from resources_cost_estimates) ---
+    client_signature_customer_name = resolve_field_value(resources_cost_estimates.get("client_signature_customer_name", ""))
+    client_signature_person_name = resolve_field_value(resources_cost_estimates.get("client_signature_person_name", ""))
+    client_signature_designation = resolve_field_value(resources_cost_estimates.get("client_signature_designation", ""))
+    client_signature_date = resolve_field_value(resources_cost_estimates.get("client_signature_date", ""))
+
+    # --- Cost breakdown (v2: flat schema names → aws_ prefixed context keys) ---
+    aws_calculator_url = resolve_field_value(cost_breakdown.get("calculator_url", ""))
+    aws_mrr = resolve_field_value(cost_breakdown.get("mrr", ""))
+    aws_arr = resolve_field_value(cost_breakdown.get("arr", ""))
+    aws_cost_breakdown_table = _cost_breakdown_table_rows(cost_breakdown.get("breakdown_table", []))
+    aws_bedrock_extra = resolve_field_value(cost_breakdown.get("bedrock_extra", ""))
 
     return {
+        # --- Document meta ---
         "doc_id": params.get("doc_id", "unknown"),
         "version": params.get("version", 0),
         "customer": _resolve_field(meta.get("customer", cover.get("customer", ""))),
         "partner": _resolve_field(meta.get("partner", cover.get("partner", ""))),
         "date": _resolve_field(meta.get("date", cover.get("date", ""))),
         "cover": {key: _resolve_field(value) for key, value in cover.items()},
-        "executive_summary": executive_summary_text,
-        "executive_summary_text": executive_summary_text,
+
+        # --- Executive Summary ---
         "customer_intro": customer_intro,
         "problem_statement": problem_statement,
         "proposed_solution": proposed_solution,
         "phases_overview": phases_overview,
+        "current_pain_points": current_pain_points,
+        "poc_objectives": poc_objectives,
+        "custom_blocks": custom_blocks,
+
+        # --- Business Case (flattened from nested) ---
         "business_case_problem": business_case_problem,
         "business_case_roi": business_case_roi,
         "business_case_sponsor": business_case_sponsor,
         "business_case_commitment": business_case_commitment,
-        "scope_of_work": _bullet_join(scope_of_work.get("items", scope_of_work.get("deliverables", ""))),
-        "success_criteria": _bullet_join(success_criteria.get("items", "")),
+
+        # --- Success Criteria ---
         "success_criteria_groups": success_criteria_groups,
-        "assumptions": _bullet_join(assumptions.get("items", assumptions.get("risks", assumptions.get("dependencies", "")))),
+        "success_criteria_items": success_criteria_items,
+
+        # --- Assumptions ---
         "assumptions_groups": assumptions_groups,
-        "assumption_groups": assumptions_groups,
+        "assumptions_items": assumptions_items,
+
+        # --- Scope of Work ---
         "scope_tasks": scope_tasks,
-        "architecture_overview": resolve_field_value(architecture.get("overview", architecture.get("description", ""))),
-        "architecture_description": resolve_field_value(architecture.get("description", architecture.get("overview", ""))),
+        "scope_out_of_scope": scope_out_of_scope,
+        "scope_items": scope_items,
+
+        # --- Architecture ---
+        "architecture_overview": resolve_field_value(architecture.get("overview", "")),
+        "architecture_diagram_image": architecture_diagram_image,
         "architecture_services": architecture_services,
-        "architecture_tools": _bullet_join(architecture.get("tools", [service["service_name"] for service in architecture_services])),
-        "architecture": {
-            "overview": resolve_field_value(architecture.get("overview", "")),
-            "description": resolve_field_value(architecture.get("description", "")),
-            "services": architecture_services,
-            "tools": _bullet_join(architecture.get("tools", [service["service_name"] for service in architecture_services])),
-        },
-        "acceptance_text": _resolve_field(acceptance.get("text", "")),
+        "architecture_tools_list": architecture_tools_list,
+
+        # --- Stakeholders ---
         "executive_sponsors": [_normalize_contact_entry(row, "description") for row in executive_sponsors],
         "stakeholders": [_normalize_contact_entry(row, "stakeholder_for") for row in stakeholder_rows],
         "project_team": [_normalize_contact_entry(row, "role") for row in project_team],
         "escalation_contacts": [_normalize_contact_entry(row, "role") for row in escalation_contacts],
+
+        # --- Milestones ---
         "milestones": [
             {
                 "phase": _resolve_field(row.get("phase", "")),
@@ -575,37 +603,42 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
             for row in milestones_rows
             if isinstance(row, dict)
         ],
-        "phase_hours_table": staffing_summary["phase_hours_table"],
-        "total_hours": staffing_summary["total_hours"],
-        "total_cost": staffing_summary["total_cost"],
-        **staffing_summary["rates"],
-        "yr1_arr": funding_context["yr1_arr"],
-        "sow_cost": funding_context["sow_cost"],
-        "eligible_amount": funding_context["eligible_amount"],
-        "funding_eligible": funding_context["funding_eligible"],
-        "bedrock_status": funding_context["bedrock_status"],
-        "funding": funding_context,
-        "aws_monthly_cost_summary": _resolve_field(cost_breakdown.get("aws_service_cost", {}).get("monthly_cost_summary", {}), 0),
-        "aws_calculator_url": _resolve_field(cost_breakdown.get("aws_service_cost", {}).get("calculator_share_url", "")),
+
+        # --- AWS Cost Breakdown (v2: schema names → aws_ prefixed) ---
+        "aws_calculator_url": aws_calculator_url,
+        "aws_mrr": aws_mrr,
+        "aws_arr": aws_arr,
+        "aws_cost_breakdown_table": aws_cost_breakdown_table,
+        "aws_bedrock_extra": aws_bedrock_extra,
+
+        # --- Acceptance ---
+        "acceptance_steps": acceptance_steps,
+
+        # --- Resources & Cost Estimates ---
+        "partner_technical_team": partner_technical_team,
+        "rate_solution_architect": resolve_field_value(resources_cost_estimates.get("rate_solution_architect", "")),
+        "rate_engineer": resolve_field_value(resources_cost_estimates.get("rate_engineer", "")),
+        "rate_other": resolve_field_value(resources_cost_estimates.get("rate_other", "")),
+        "phase_hours_table": phase_hours_table,
+        "total_hours": total_hours,
+        "total_cost": total_cost,
+
+        # --- Contribution ---
         "contribution": contribution_context["parties"],
-        "resources_cost_estimates": {
-            **resources_cost_estimates,
-            "contribution": contribution_context,
-        },
-        "cost_breakdown": cost_breakdown,
-        "acceptance": {
-            "text": _resolve_field(acceptance.get("text", "")),
-            **{key: _resolve_field(value) for key, value in acceptance.items() if key != "text"},
-        },
-        "staffing": _build_staffing_context(staffing_plan),
-        "client_signatures": {
-            "customer_name": signature_context["signature_customer_name"],
-            "authorized_person_name": signature_context["signature_person_name"],
-            "designation": signature_context["signature_designation"],
-            "sign_date": signature_context["signature_date"],
-            **{key: _resolve_field(value) for key, value in client_signatures.items()},
-        },
-        **signature_context,
+
+        # --- Client Signatures (v2: from resources_cost_estimates) ---
+        "client_signature_customer_name": client_signature_customer_name,
+        "client_signature_person_name": client_signature_person_name,
+        "client_signature_designation": client_signature_designation,
+        "client_signature_date": client_signature_date,
+
+        # --- Funding ---
+        "yr1_arr": funding["yr1_arr"],
+        "sow_cost": funding["sow_cost"],
+        "eligible_amount": funding["eligible_amount"],
+        "funding_eligible": funding["funding_eligible"],
+        "bedrock_status": funding["bedrock_status"],
+        "funding": funding,
     }
 
 
