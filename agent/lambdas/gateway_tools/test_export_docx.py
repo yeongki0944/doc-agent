@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from zipfile import ZipFile
 from unittest.mock import MagicMock, patch
 
 from agent.lambdas.gateway_tools import export_docx
@@ -329,6 +330,66 @@ def test_build_context_v2():
     assert "scope_of_work" not in context
     assert "success_criteria" not in context
     assert "assumptions" not in context
+
+
+def test_build_context_preserves_all_stakeholder_rows():
+    context = export_docx._build_context({
+        "sections": {
+            "stakeholders": {
+                "executive_sponsors": [
+                    {"name": {"user_input": "James, Kong"}, "title": {"user_input": "CAIO"}, "description": {"user_input": "Head of AI Business"}, "contact": {"user_input": "jameskong@megazone.com"}},
+                ],
+                "stakeholders": [
+                    {"name": {"user_input": "Project Stakeholders"}, "title": {"user_input": "Project Manager"}, "stakeholder_for": {"user_input": "QA"}, "contact": {"user_input": "Project Stakeholders@mail.com"}},
+                    {"name": {"user_input": "Project Stakeholders2"}, "title": {"user_input": "Director"}, "stakeholder_for": {"user_input": "PMO"}, "contact": {"user_input": "Project Stakeholders@gmail.com"}},
+                ],
+                "project_team": [
+                    {"name": {"user_input": "Partner Project Team"}, "title": {"user_input": "Director"}, "role": {"user_input": "Architect"}, "contact": {"user_input": "Partner Project Team@gmail.com"}},
+                    {"name": {"user_input": "Partner Project Team22"}, "title": {"user_input": "123"}, "role": {"user_input": "Partner Project Team"}, "contact": {"user_input": "Partner Project Team@ㅁgmail.223"}},
+                ],
+                "escalation_contacts": [
+                    {"name": {"user_input": "123"}, "title": {"user_input": "Director"}, "role": {"user_input": "Engagement Partner"}, "contact": {"user_input": "gmail.com"}},
+                    {"name": {"user_input": "123123"}, "title": {"user_input": "Director"}, "role": {"user_input": "Architect"}, "contact": {"user_input": "test.mail"}},
+                ],
+            }
+        }
+    })
+
+    assert len(context["executive_sponsors"]) == 1
+    assert len(context["stakeholders"]) == 2
+    assert len(context["project_team"]) == 2
+    assert len(context["escalation_contacts"]) == 2
+    assert context["stakeholders"][1] == {
+        "name": "Project Stakeholders2",
+        "title": "Director",
+        "description": "PMO",
+        "stakeholder_for": "PMO",
+        "role": "PMO",
+        "contact": "Project Stakeholders@gmail.com",
+    }
+    assert context["project_team"][1]["role"] == "Partner Project Team"
+    assert context["escalation_contacts"][1]["contact"] == "test.mail"
+
+
+def test_v2_template_uses_stakeholder_table_row_loops():
+    with ZipFile("agent/templates/apn-poc-template_v2.docx") as template:
+        document_xml = template.read("word/document.xml").decode("utf-8")
+
+    expected_fragments = [
+        "{%tr for row in executive_sponsors %}",
+        "{{ row.name }}",
+        "{{ row.title }}",
+        "{{ row.description }}",
+        "{{ row.contact }}",
+        "{%tr for row in stakeholders %}",
+        "{{ row.stakeholder_for }}",
+        "{%tr for row in project_team %}",
+        "{{ row.role }}",
+        "{%tr for row in escalation_contacts %}",
+        "{%tr endfor %}",
+    ]
+    for fragment in expected_fragments:
+        assert fragment in document_xml
 
 
 def test_build_context_handles_missing_optional_fields():
