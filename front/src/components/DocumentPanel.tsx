@@ -3,35 +3,46 @@ import { color, font, radius } from '../styles/tokens'
 import { useDocumentStore } from '../store/documentStore'
 import { requestReview, requestExport, getDocument } from '../utils/api'
 import { CoverSection } from './sections/CoverSection'
-import { OverviewSection } from './sections/OverviewSection'
-import { TeamSection } from './sections/TeamSection'
+import { ExecutiveSummarySection } from './sections/ExecutiveSummarySection'
+import { StakeholdersSection } from './sections/StakeholdersSection'
 import { SuccessCriteriaSection } from './sections/SuccessCriteriaSection'
 import { AssumptionsSection } from './sections/AssumptionsSection'
-import { ScopeSection } from './sections/ScopeSection'
+import { ScopeOfWorkSection } from './sections/ScopeOfWorkSection'
 import { ArchitectureSection } from './sections/ArchitectureSection'
 import { MilestonesSection } from './sections/MilestonesSection'
-import { CostSection } from './sections/CostSection'
+import { CostBreakdownSection } from './sections/CostBreakdownSection'
+import { ResourcesCostEstimatesSection } from './sections/ResourcesCostEstimatesSection'
 import { AcceptanceSection } from './sections/AcceptanceSection'
 import { LangProvider, type DocLang } from './LangContext'
 
 const TABS = [
-  'Cover', 'Overview', 'Team', 'Success Criteria', 'Assumptions',
-  'Scope', 'Architecture', 'Milestones', 'Cost', 'Acceptance',
+  'Cover',
+  'Executive Summary',
+  'Stakeholders',
+  'Success Criteria',
+  'Assumptions',
+  'Scope of Work',
+  'Architecture',
+  'Milestones',
+  'Cost Breakdown',
+  'Resources & Cost Estimates',
+  'Acceptance',
 ] as const
 
 type TabName = typeof TABS[number]
 
 const TAB_COMPONENTS: Record<TabName, React.FC> = {
-  Cover: CoverSection,
-  Overview: OverviewSection,
-  Team: TeamSection,
+  'Cover': CoverSection,
+  'Executive Summary': ExecutiveSummarySection,
+  'Stakeholders': StakeholdersSection,
   'Success Criteria': SuccessCriteriaSection,
-  Assumptions: AssumptionsSection,
-  Scope: ScopeSection,
-  Architecture: ArchitectureSection,
-  Milestones: MilestonesSection,
-  Cost: CostSection,
-  Acceptance: AcceptanceSection,
+  'Assumptions': AssumptionsSection,
+  'Scope of Work': ScopeOfWorkSection,
+  'Architecture': ArchitectureSection,
+  'Milestones': MilestonesSection,
+  'Cost Breakdown': CostBreakdownSection,
+  'Resources & Cost Estimates': ResourcesCostEstimatesSection,
+  'Acceptance': AcceptanceSection,
 }
 
 export function DocumentPanel({ docId }: { docId: string }) {

@@ -1,88 +1,148 @@
-import { useCallback } from 'react'
-import { useDocumentStore } from '../../store/documentStore'
+import { useCallback, useMemo } from 'react'
+import { useDocumentStore, type MilestonesSectionData, type Phase, type FieldValue } from '../../store/documentStore'
 import { useSessionStore } from '../../store/sessionStore'
-import { EditableField } from '../EditableField'
+import { FieldValueEditor } from '../editors/FieldValueEditor'
+import { SaveStatusIndicator } from '../SaveStatusIndicator'
+import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
-import { emitUserEdit } from '../../utils/userEditEvent'
+import { useDocLang } from '../LangContext'
 import { color } from '../../styles/tokens'
-import { resolveDisplayText } from '../../utils/frontendSchema'
 
-const PHASES = [
-  { id: 'discovery', name: 'Discovery', deliverables: '요구사항 문서, 아키텍처 초안' },
-  { id: 'development', name: 'Development', deliverables: '에이전트 구현, API, UI' },
-  { id: 'testing', name: 'Testing', deliverables: '통합 테스트, UAT, 최종 문서' },
-]
+const emptyField = (): FieldValue => ({
+  user_input: null,
+  ai_recommended: null,
+  calculated: null,
+  status: 'empty',
+  user_edited: false,
+})
+
+function createEmptyPhase(): Phase {
+  return {
+    phase: emptyField(),
+    completion_date: emptyField(),
+    deliverables: emptyField(),
+  }
+}
 
 export function MilestonesSection() {
-  const roles = useDocumentStore(s => s.staffing_plan?.roles ?? {})
-  const sectionData = useDocumentStore(s => s.sections?.milestones) as Record<string, any> | undefined
+  const lang = useDocLang()
+  const koData = useDocumentStore(s => s.sections?.milestones) as MilestonesSectionData | undefined
+  const enData = useDocumentStore(s => s.sections_en?.milestones) as MilestonesSectionData | undefined
+  const sectionData = lang === 'en' ? enData : koData
   const setDocument = useDocumentStore(s => s.setDocument)
   const docId = useSessionStore(s => s.currentDocId) || ''
-  const hasRoles = Object.keys(roles).length > 0
-  const hasSectionData = sectionData && Object.keys(sectionData).some(k => sectionData[k])
+  const { saveStatus: arraySaveStatus, doSave: doArraySave } = useSaveStatus()
 
-  const handleEdit = useCallback((key: string, newValue: string) => {
-    const oldValue = sectionData?.[key] ?? ''
+  const phases: Phase[] = useMemo(() => sectionData?.phases ?? [], [sectionData?.phases])
+  const hasContent = phases.length > 0
+
+  // --- Phase field updates (via FieldValueEditor) ---
+  const updatePhaseField = useCallback((index: number, field: keyof Phase) => (newField: FieldValue) => {
     const sections = useDocumentStore.getState().sections || {}
-    const updated = { ...(sections.milestones || {}), [key]: newValue }
-    setDocument({ sections: { ...sections, milestones: updated } } as any)
-    saveUserInput(docId, `sections.milestones.${key}`, newValue).catch(() => {})
-    emitUserEdit('Milestones', key, String(oldValue), newValue)
-  }, [sectionData, docId, setDocument])
+    const current = (sections.milestones || {}) as MilestonesSectionData
+    const currentPhases = [...(current.phases ?? [])]
+    const oldPhase = currentPhases[index] || createEmptyPhase()
+    currentPhases[index] = { ...oldPhase, [field]: newField }
+    setDocument({ sections: { ...sections, milestones: { ...current, phases: currentPhases } } } as any)
+  }, [setDocument])
 
-  if (!hasRoles && !hasSectionData) {
+  // --- Add/remove phases (persist full array) ---
+  const addPhase = useCallback(() => {
+    const sections = useDocumentStore.getState().sections || {}
+    const current = (sections.milestones || {}) as MilestonesSectionData
+    const updated = [...(current.phases ?? []), createEmptyPhase()]
+    setDocument({ sections: { ...sections, milestones: { ...current, phases: updated } } } as any)
+    doArraySave(() => saveUserInput(docId, 'sections.milestones.phases', updated))
+  }, [setDocument, docId, doArraySave])
+
+  const removePhase = useCallback((index: number) => {
+    const sections = useDocumentStore.getState().sections || {}
+    const current = (sections.milestones || {}) as MilestonesSectionData
+    const updated = (current.phases ?? []).filter((_, i) => i !== index)
+    setDocument({ sections: { ...sections, milestones: { ...current, phases: updated } } } as any)
+    doArraySave(() => saveUserInput(docId, 'sections.milestones.phases', updated))
+  }, [setDocument, docId, doArraySave])
+
+  if (!hasContent) {
     return (
       <div>
-        <h2 style={{ marginBottom: 16 }}>Milestones & Deliverables</h2>
-        <p style={{ color: color.textMuted }}>팀 구성과 범위가 설정되면 마일스톤이 자동 생성됩니다. 채팅에서 "Milestones 작성해줘"라고 요청하세요.</p>
+        <h2 style={{ marginBottom: 16 }}>Milestones &amp; Deliverables</h2>
+        <p style={{ color: color.textMuted }}>마일스톤이 아직 설정되지 않았습니다. 채팅에서 &quot;Milestones 작성해줘&quot;라고 요청하거나 아래에서 직접 추가하세요.</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+          <button type="button" onClick={addPhase} style={addButton}>+ Add Phase</button>
+          <SaveStatusIndicator status={arraySaveStatus} />
+        </div>
       </div>
     )
   }
 
   return (
     <div>
-      <h2 style={{ marginBottom: 16 }}>Milestones & Deliverables</h2>
+      <h2 style={{ marginBottom: 16 }}>Milestones &amp; Deliverables</h2>
 
-      {hasSectionData && (
-        <div style={{ marginBottom: 16 }}>
-          {Object.entries(sectionData!).map(([key, val]) =>
-            val ? (
-              <div key={key} style={{ marginBottom: 8, padding: 8, borderRadius: 4, border: `1px solid ${color.border}` }}>
-                <span style={{ fontWeight: 600, marginRight: 4 }}>{key}: </span>
-                <EditableField
-                  value={String(val)}
-                  isAi={true}
-                  onSave={v => handleEdit(key, v)}
-                  multiline={String(val).length > 60}
-                />
-              </div>
-            ) : null
-          )}
-        </div>
-      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <button type="button" onClick={addPhase} style={addButton}>+ Add Phase</button>
+        <SaveStatusIndicator status={arraySaveStatus} />
+      </div>
 
-      {hasRoles && (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-          <thead>
-            <tr style={{ background: color.bgPrimary }}>
-              {['Phase', 'Deliverables', '담당 역할'].map(h => (
-                <th key={h} style={{ padding: '8px 6px', borderBottom: `2px solid ${color.border}`, textAlign: 'left' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {PHASES.map(p => (
-              <tr key={p.id}>
-                <td style={td}>{p.name}</td>
-                <td style={td}>{p.deliverables}</td>
-                <td style={td}>{Object.values(roles).map(r => resolveDisplayText(r.display_name, r.role_id)).join(', ')}</td>
-              </tr>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+        <thead>
+          <tr style={{ background: color.bgPrimary }}>
+            {['Phase', 'Completion Date', 'Deliverables', ''].map(h => (
+              <th key={h} style={th}>{h}</th>
             ))}
-          </tbody>
-        </table>
-      )}
+          </tr>
+        </thead>
+        <tbody>
+          {phases.map((p, index) => (
+            <tr key={index}>
+              <td style={td}>
+                <FieldValueEditor
+                  field={p.phase}
+                  dotPath={`sections.milestones.phases.${index}.phase.user_input`}
+                  docId={docId}
+                  placeholder="Phase"
+                  onLocalUpdate={updatePhaseField(index, 'phase')}
+                />
+              </td>
+              <td style={td}>
+                <FieldValueEditor
+                  field={p.completion_date}
+                  dotPath={`sections.milestones.phases.${index}.completion_date.user_input`}
+                  docId={docId}
+                  placeholder="Completion Date"
+                  onLocalUpdate={updatePhaseField(index, 'completion_date')}
+                />
+              </td>
+              <td style={td}>
+                <FieldValueEditor
+                  field={p.deliverables}
+                  dotPath={`sections.milestones.phases.${index}.deliverables.user_input`}
+                  docId={docId}
+                  placeholder="Deliverables"
+                  multiline
+                  onLocalUpdate={updatePhaseField(index, 'deliverables')}
+                />
+              </td>
+              <td style={td}>
+                <button type="button" onClick={() => removePhase(index)} style={deleteButton}>Delete</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
 
-const td: React.CSSProperties = { padding: '8px 6px', borderBottom: `1px solid ${color.border}` }
+const th: React.CSSProperties = { padding: '8px 6px', borderBottom: `2px solid ${color.border}`, textAlign: 'left' }
+const td: React.CSSProperties = { padding: '6px', borderBottom: `1px solid ${color.border}`, verticalAlign: 'top' }
+const addButton: React.CSSProperties = {
+  background: 'none', border: `1px dashed ${color.border}`,
+  borderRadius: 4, padding: '4px 10px', cursor: 'pointer',
+  color: color.textSecondary, fontSize: 12,
+}
+const deleteButton: React.CSSProperties = {
+  border: 'none', borderRadius: 6, padding: '6px 10px',
+  background: '#fee2e2', color: '#b91c1c', cursor: 'pointer', fontWeight: 600,
+}

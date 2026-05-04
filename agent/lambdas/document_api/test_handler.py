@@ -231,7 +231,7 @@ def test_user_input_updates_field_value_and_preserves_ai_recommended(monkeypatch
     assert saved["meta"]["customer"]["user_input"] == "User Customer"
     assert saved["meta"]["customer"]["ai_recommended"] == "AI Customer"
     assert saved["meta"]["customer"]["user_edited"] is True
-    assert saved["meta"]["customer"]["status"] == "user_modified"
+    assert saved["meta"]["customer"]["status"] == "draft"
     assert published[0][0] == "docs/doc-1/patch"
     payload = published[0][1]
     assert payload["type"] == "patch"

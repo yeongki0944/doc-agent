@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import { useDocumentStore, type FieldValue } from '../../store/documentStore'
 import { useSessionStore } from '../../store/sessionStore'
 import { resolveFieldValue, isAiRecommended } from '../AiBadge'
+import { FieldValueEditor } from '../editors/FieldValueEditor'
 import { EditableField } from '../EditableField'
 import { saveUserInput } from '../../utils/api'
 import { emitUserEdit } from '../../utils/userEditEvent'
@@ -18,20 +19,14 @@ export function CoverSection() {
   const setDocument = useDocumentStore(s => s.setDocument)
   const docId = useSessionStore(s => s.currentDocId) || ''
 
-  const handleMetaEdit = useCallback((field: string, label: string, newValue: string) => {
-    const oldValue = resolveFieldValue(meta?.[field as keyof typeof meta]) ?? ''
-    // Update store
+  const handleMetaLocalUpdate = useCallback((field: string) => (newField: FieldValue) => {
     setDocument({
       meta: {
         ...meta,
-        [field]: { user_input: newValue, ai_recommended: meta?.[field as keyof typeof meta]?.ai_recommended, calculated: null, status: 'user_modified' },
+        [field]: newField,
       },
     } as any)
-    // Save to API
-    saveUserInput(docId, `meta.${field}.user_input`, newValue).catch(() => {})
-    // Notify chat
-    emitUserEdit('Cover', label, String(oldValue), newValue)
-  }, [meta, docId, setDocument])
+  }, [meta, setDocument])
 
   const handleCoverEdit = useCallback((field: string, label: string, newValue: string) => {
     const oldValue = cover?.[field] ?? ''
@@ -56,9 +51,28 @@ export function CoverSection() {
       <h2 style={{ marginBottom: 16, fontSize: size.lg, fontWeight: 600, fontFamily: font.heading }}>Cover Page</h2>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <tbody>
-          <MetaRow label="고객사" field={meta?.customer} onSave={v => handleMetaEdit('customer', '고객사', v)} />
-          <MetaRow label="파트너" field={meta?.partner} onSave={v => handleMetaEdit('partner', '파트너', v)} />
-          <MetaRow label="날짜" field={meta?.date} onSave={v => handleMetaEdit('date', '날짜', v)} type="date" />
+          <MetaRow
+            label="고객사"
+            field={meta?.customer}
+            dotPath="meta.customer.user_input"
+            docId={docId}
+            onLocalUpdate={handleMetaLocalUpdate('customer')}
+          />
+          <MetaRow
+            label="파트너"
+            field={meta?.partner}
+            dotPath="meta.partner.user_input"
+            docId={docId}
+            onLocalUpdate={handleMetaLocalUpdate('partner')}
+          />
+          <MetaRow
+            label="날짜"
+            field={meta?.date}
+            dotPath="meta.date.user_input"
+            docId={docId}
+            onLocalUpdate={handleMetaLocalUpdate('date')}
+            type="date"
+          />
           {COVER_FIELDS.map(({ key, label }) => (
             <CoverRow
               key={key}
@@ -73,18 +87,25 @@ export function CoverSection() {
   )
 }
 
-function MetaRow({ label, field, onSave, type }: { label: string; field: FieldValue | undefined | null; onSave: (v: string) => void; type?: 'text' | 'date' }) {
-  const value = resolveFieldValue(field)
+function MetaRow({ label, field, dotPath, docId, onLocalUpdate, type }: {
+  label: string
+  field: FieldValue | undefined | null
+  dotPath: string
+  docId: string
+  onLocalUpdate: (newField: FieldValue) => void
+  type?: 'text' | 'date'
+}) {
   return (
     <tr>
       <td style={tdLabel}>{label}</td>
       <td style={tdValue}>
-        <EditableField
-          value={value != null ? String(value) : ''}
-          isAi={isAiRecommended(field)}
-          onSave={onSave}
+        <FieldValueEditor
+          field={field}
+          dotPath={dotPath}
+          docId={docId}
           placeholder={`${label} 입력`}
           type={type}
+          onLocalUpdate={onLocalUpdate}
         />
       </td>
     </tr>

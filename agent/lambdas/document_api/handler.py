@@ -194,7 +194,7 @@ def _field_value_with_user_input(existing: Any, value: Any) -> dict:
         }
     field["user_input"] = value
     field["user_edited"] = True
-    field["status"] = "user_modified"
+    field["status"] = "draft"
     return field
 
 
@@ -1064,6 +1064,52 @@ def _handle_user_input(doc_id: str, body: dict, event: dict) -> dict:
     expected_version = int(item.get("version", 0))
     doc_dict = json.loads(_json(item))
 
+    # Direct array/object replacement: if value is list or dict and path
+    # does NOT end with .user_input, set the value directly without
+    # wrapping in a FieldValue envelope.
+    if isinstance(value, (list, dict)) and not path.rstrip("/").endswith(".user_input"):
+        parts = _path_parts(path)
+        if parts[0] not in {"meta", "sections", "staffing_plan"}:
+            return _response(400, {"error": "path must target meta, sections, or staffing_plan"})
+
+        # Walk to the parent dict
+        parent = doc_dict
+        for p in parts[:-1]:
+            child = parent.get(p)
+            if child is None:
+                child = {}
+                parent[p] = child
+            if not isinstance(child, dict):
+                return _response(400, {"error": f"path segment is not editable: {p}"})
+            parent = child
+
+        # Set value directly at the target key
+        parent[parts[-1]] = value
+
+        patch_path = "/" + "/".join(parts)
+        operations = [_patch_operation("replace", patch_path, value, "user_input")]
+
+        try:
+            saved = _conditional_save_document(doc_dict, expected_version)
+        except Exception as exc:
+            if "VersionConflict" in type(exc).__name__:
+                return _response(409, {"error": str(exc), "status": "version_conflict"})
+            raise
+
+        _publish_event(f"docs/{doc_id}/patch", {
+            "type": "patch",
+            "patch_id": f"patch-{uuid.uuid4().hex[:12]}",
+            "doc_id": doc_id,
+            "agent": "document_api",
+            "operations": operations,
+            "version": saved["version"],
+            "version_before": expected_version,
+            "version_after": saved["version"],
+        })
+
+        return _response(200, {"status": "ok", "version": saved["version"]})
+
+    # Scalar value or path ending in .user_input — wrap in FieldValue
     try:
         patch_path, updated_field = _set_user_input_field(doc_dict, path, value)
     except ValueError as exc:

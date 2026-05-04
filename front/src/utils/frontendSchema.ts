@@ -1,17 +1,6 @@
-import rolePool from '../data/role_pool.json'
-import type { ArchitectureService, FieldValue, RoleCategory, StaffingRole } from '../store/documentStore'
+import type { ArchitectureService, FieldValue, FieldStatus } from '../store/documentStore'
 
-type RolePoolOption = {
-  role_id: string
-  display_name: string
-  rate_default: number
-}
-
-type RolePool = Record<RoleCategory, RolePoolOption[]>
-
-export const ROLE_POOL = rolePool as RolePool
-
-const makeFieldValue = (aiRecommended: any = null, status = 'recommended'): FieldValue => ({
+const makeFieldValue = (aiRecommended: any = null, status: FieldStatus = 'draft'): FieldValue => ({
   user_input: null,
   ai_recommended: aiRecommended,
   calculated: null,
@@ -39,49 +28,6 @@ function unwrapFieldValue(value: any): any {
 export function resolveDisplayText(value: any, fallback = ''): string {
   const text = resolve(value)
   return text || fallback
-}
-
-export function getRoleOptions(category: RoleCategory): RolePoolOption[] {
-  return ROLE_POOL[category] ?? []
-}
-
-export function createRoleDraft(category: RoleCategory, roleTypeId: string): StaffingRole {
-  const option = getRoleOptions(category).find(item => item.role_id === roleTypeId) || {
-    role_id: roleTypeId,
-    display_name: roleTypeId,
-    rate_default: 0,
-  }
-
-  return {
-    role_id: roleTypeId,
-    display_name: option.display_name,
-    category,
-    role_type: makeFieldValue(option.role_id),
-    rate_default: makeFieldValue(option.rate_default),
-    count: makeFieldValue(1),
-    allocation_pct: makeFieldValue(100),
-    rate_per_hour: makeFieldValue(option.rate_default),
-    phase_hours: {
-      discovery: makeFieldValue(0),
-      development: makeFieldValue(0),
-      testing: makeFieldValue(0),
-    },
-    total_hours: { calculated: 0 },
-    total_cost: { calculated: 0 },
-    reason: 'role_pool default',
-  }
-}
-
-export function buildStaffingEditPath(roleId: string, field: string, subfield?: string) {
-  const tail = subfield ? `${field}.${subfield}` : field
-  if (field === 'display_name' || field === 'category' || field === 'role_id') {
-    return `staffing_plan.roles.${roleId}.${tail}`
-  }
-  return `staffing_plan.roles.${roleId}.${tail}.user_input`
-}
-
-export function sortStaffingRoles(roles: Record<string, StaffingRole>): StaffingRole[] {
-  return Object.values(roles).sort((a, b) => resolveDisplayText(a.display_name).localeCompare(resolveDisplayText(b.display_name)))
 }
 
 export function sortArchitectureServices(services: ArchitectureService[]): ArchitectureService[] {

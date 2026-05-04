@@ -105,7 +105,7 @@ export function ChatPanel({ docId }: ChatPanelProps) {
     const unsubscribe = initDocumentSubscription(docId, (msg: AppSyncMessage) => {
       console.log('[chat] AppSync message:', msg.type)
 
-      if (msg.type === 'refresh' || msg.type === 'status' || msg.type === 'progress' || msg.type === 'chat_done') {
+      if ((msg.type as string) === 'refresh' || msg.type === 'status' || (msg.type as string) === 'progress' || msg.type === 'chat_done') {
         // DynamoDB is source of truth — re-fetch on any signal
         fetchHistory()
       }

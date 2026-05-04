@@ -1,21 +1,115 @@
 import { create } from 'zustand'
-import { recalculateAll } from '../utils/staffingCalc'
+
+// --- Task 2.1: FieldStatus and FieldValue ---
+
+export type FieldStatus = 'empty' | 'draft' | 'confirmed'
 
 export interface FieldValue {
   user_input: any
   ai_recommended: any
   calculated: any
-  status: string
+  status: FieldStatus
   user_edited?: boolean
-  reason?: string
 }
 
 export type ServiceCategory = 'genai_core' | 'data' | 'compute' | 'network' | 'security' | 'monitoring'
-export type RoleCategory = 'solution_architect' | 'engineer' | 'other'
+
+// --- Task 2.2: New interfaces ---
+
+export interface ContactEntry {
+  name: FieldValue
+  title: FieldValue
+  description: FieldValue
+  stakeholder_for: FieldValue
+  role: FieldValue
+  contact: FieldValue
+}
+
+export interface TeamMember {
+  role: FieldValue
+  name: FieldValue
+}
+
+export interface Phase {
+  phase: FieldValue
+  completion_date: FieldValue
+  deliverables: FieldValue
+}
+
+export interface AcceptanceStep {
+  heading: FieldValue
+  content: FieldValue
+  bullets: FieldValue[]
+}
+
+export interface CostBreakdownRow {
+  category: FieldValue
+  mrr: FieldValue
+  arr: FieldValue
+  note: FieldValue
+}
+
+export interface ContributionEntry {
+  amount: FieldValue
+  pct: FieldValue
+}
+
+export interface Contribution {
+  customer: ContributionEntry
+  partner: ContributionEntry
+  aws: ContributionEntry
+}
+
+export interface PhaseHours {
+  phase: FieldValue
+  sa_hours: number
+  eng_hours: number
+  other_hours: number
+  total: number
+}
+
+export interface TotalsRow {
+  sa: string
+  eng: string
+  other: string
+  total: string
+}
+
+export interface StakeholdersSection {
+  executive_sponsors: ContactEntry[]
+  stakeholders: ContactEntry[]
+  project_team: ContactEntry[]
+  escalation_contacts: ContactEntry[]
+}
+
+export interface ResourcesCostEstimatesSection {
+  partner_technical_team: TeamMember[]
+  rate_solution_architect: FieldValue
+  rate_engineer: FieldValue
+  rate_other: FieldValue
+  phase_hours_table: PhaseHours[]
+  total_hours: TotalsRow
+  total_cost: TotalsRow
+  contribution: Contribution
+  client_signature_customer_name: FieldValue
+  client_signature_person_name: FieldValue
+  client_signature_designation: FieldValue
+  client_signature_date: FieldValue
+}
+
+export interface AcceptanceSectionData {
+  steps: AcceptanceStep[]
+}
+
+export interface MilestonesSectionData {
+  phases: Phase[]
+}
+
+// --- Task 2.3: Updated existing interfaces ---
 
 export interface CategoryGroup {
   category_name: FieldValue
-  items: FieldValue[]
+  bullets: FieldValue[]
 }
 
 export interface BusinessCase {
@@ -26,25 +120,27 @@ export interface BusinessCase {
 }
 
 export interface ExecutiveSummarySection {
-  text?: FieldValue
-  summary?: FieldValue
   customer_intro: FieldValue
   problem_statement: FieldValue
   proposed_solution: FieldValue
   phases_overview: FieldValue[]
+  current_pain_points: FieldValue[]
+  poc_objectives: FieldValue[]
   business_case: BusinessCase
+  custom_blocks: Record<string, any>[]
 }
 
 export interface ScopeTask {
   task_category: FieldValue
   schedule: FieldValue
-  details: FieldValue[]
+  details: FieldValue
   personnel: FieldValue
 }
 
 export interface ScopeOfWorkSection {
   items?: FieldValue[]
   tasks: ScopeTask[]
+  out_of_scope?: FieldValue[]
 }
 
 export interface SuccessCriteriaSection {
@@ -68,72 +164,43 @@ export interface ArchitectureService {
 }
 
 export interface ArchitectureSection {
-  overview?: FieldValue
-  description?: FieldValue
+  overview: FieldValue
+  diagram_image_s3_key: FieldValue
   services: ArchitectureService[]
-  diagram_image_s3_key?: string | null
+  tools_list: FieldValue[]
   preview_url?: string | null
   drawio_url?: string | null
-  tools?: any
-  [key: string]: any
-}
-
-export interface FundingCalculation {
-  yr1_arr: FieldValue
-  sow_cost: FieldValue
-  funding_25pct_arr: FieldValue
-  funding_cap: number
-  eligible_amount: FieldValue
-  bedrock_included: boolean
-  funding_type: string
 }
 
 export interface CostBreakdownSection {
-  funding_calculation: FundingCalculation
-  aws_service_cost?: Record<string, any>
-  staffing_cost?: Record<string, any>
-  document_local_summary?: Record<string, any>
-  [key: string]: any
+  calculator_url: FieldValue
+  mrr: FieldValue
+  arr: FieldValue
+  breakdown_table: CostBreakdownRow[]
+  bedrock_extra: FieldValue
+  funding_calculation: Record<string, any>
 }
 
-export interface ClientSignatureSection {
-  customer_name: FieldValue
-  authorized_person_name: FieldValue
-  designation: FieldValue
-  sign_date: FieldValue
-}
+// --- Task 2.4: Removed legacy types ---
+// Removed: ClientSignatureSection, StaffingRole, RoleCategory
 
-export interface DocumentSections extends Record<string, any> {
+// --- Task 2.5: Updated DocumentSections ---
+
+export interface DocumentSections {
   cover?: Record<string, any>
   executive_summary?: ExecutiveSummarySection
+  stakeholders?: StakeholdersSection
   success_criteria?: SuccessCriteriaSection
   assumptions?: AssumptionsSection
   scope_of_work?: ScopeOfWorkSection
   architecture?: ArchitectureSection
-  milestones?: Record<string, any>
+  milestones?: MilestonesSectionData
   cost_breakdown?: CostBreakdownSection
-  acceptance?: Record<string, any>
-  stakeholders?: Record<string, any>
-  resources_cost_estimates?: Record<string, any>
-  client_signatures?: ClientSignatureSection
+  resources_cost_estimates?: ResourcesCostEstimatesSection
+  acceptance?: AcceptanceSectionData
 }
 
-export interface StaffingRole {
-  role_id: string
-  display_name: string | FieldValue
-  category: RoleCategory
-  role_type: FieldValue
-  rate_default: FieldValue
-  count: FieldValue
-  allocation_pct: FieldValue
-  rate_per_hour: FieldValue
-  phase_hours: { discovery: FieldValue; development: FieldValue; testing: FieldValue }
-  total_hours: { calculated: number | null }
-  total_cost: { calculated: number | null }
-  reason?: string
-  source_patterns?: string[]
-  user_edited?: boolean
-}
+// --- Task 2.4 / 2.6: Updated DocumentState (no staffing_plan) ---
 
 export interface DocumentState {
   document_id: string
@@ -141,7 +208,6 @@ export interface DocumentState {
   version: number
   completion_score: number
   meta: { customer: FieldValue; partner: FieldValue; date: FieldValue }
-  staffing_plan: { roles: Record<string, StaffingRole>; grand_total_hours: { calculated: number | null }; grand_total_cost: { calculated: number | null } }
   sections: DocumentSections
   sections_en?: Partial<DocumentSections>
   blocking_issues: any[]
@@ -150,13 +216,13 @@ export interface DocumentState {
 
 export type AgentStatus = 'processing' | 'idle' | 'error' | 'degraded'
 
-const emptyField = (): FieldValue => ({ user_input: null, ai_recommended: null, calculated: null, status: 'empty' })
+const emptyField = (): FieldValue => ({ user_input: null, ai_recommended: null, calculated: null, status: 'empty', user_edited: false })
 
 export const createFieldValue = (
   aiRecommended: any = null,
   userInput: any = null,
   calculated: any = null,
-  status = 'empty',
+  status: FieldStatus = 'empty',
 ): FieldValue => ({
   user_input: userInput,
   ai_recommended: aiRecommended,
@@ -164,13 +230,18 @@ export const createFieldValue = (
   status,
 })
 
+// --- Task 2.6: Updated INITIAL_STATE ---
+
 const INITIAL_STATE: DocumentState = {
   document_id: '',
   mode: 'architecture_absent',
   version: 0,
-  completion_score: 0.15,
-  meta: { customer: { ...emptyField(), user_input: 'ABC Corp', status: 'confirmed' }, partner: { ...emptyField(), user_input: 'MZC', status: 'confirmed' }, date: { ...emptyField(), user_input: '2025-07-15', status: 'confirmed' } },
-  staffing_plan: { roles: {}, grand_total_hours: { calculated: null }, grand_total_cost: { calculated: null } },
+  completion_score: 0,
+  meta: {
+    customer: emptyField(),
+    partner: emptyField(),
+    date: emptyField(),
+  },
   sections: {},
   blocking_issues: [],
   warnings: [],
@@ -192,10 +263,6 @@ interface DocumentStore extends DocumentState {
   setDocument: (doc: Partial<DocumentState>) => void
   /** Apply JSON Patch operations from AppSync patch channel (authoritative) */
   applyPatches: (operations: PatchOperation[]) => void
-  /** Update a staffing role inline and recalculate */
-  updateStaffingRole: (roleId: string, updates: Partial<StaffingRole>) => void
-  /** Add a staffing role and recalculate totals */
-  addStaffingRole: (roleId: string, role: StaffingRole) => void
   /** Set agent status from AppSync status channel */
   setAgentStatus: (status: AgentStatus) => void
   /** Set AppSync connection state */
@@ -203,7 +270,7 @@ interface DocumentStore extends DocumentState {
 }
 
 /**
- * Set a nested value in an object using a JSON Pointer path (e.g. "/staffing_plan/roles/pm/count/ai_recommended").
+ * Set a nested value in an object using a JSON Pointer path (e.g. "/sections/architecture/overview/user_input").
  */
 function setNestedValue(obj: any, path: string, value: any): any {
   const parts = path.split('/').filter(Boolean)
@@ -262,17 +329,11 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
       partner: incomingMeta?.partner || s.meta.partner,
       date: incomingMeta?.date || s.meta.date,
     }
-    const incomingSp = doc.staffing_plan as DocumentState['staffing_plan'] | undefined
-    const safeSp = {
-      roles: incomingSp?.roles || s.staffing_plan.roles,
-      grand_total_hours: incomingSp?.grand_total_hours || s.staffing_plan.grand_total_hours,
-      grand_total_cost: incomingSp?.grand_total_cost || s.staffing_plan.grand_total_cost,
-    }
     // Map DynamoDB agent_status to store agentStatus
     const incomingAgentStatus = (doc as any).agent_status as AgentStatus | undefined
     const agentStatus = incomingAgentStatus || s.agentStatus
 
-    return { ...s, ...doc, meta: safeMeta, staffing_plan: safeSp, agentStatus, agent_active: (doc as any).agent_active || '', agent_message: (doc as any).agent_message || '' }
+    return { ...s, ...doc, meta: safeMeta, agentStatus, agent_active: (doc as any).agent_active || '', agent_message: (doc as any).agent_message || '' }
   }),
 
   applyPatches: (operations) => set((s) => {
@@ -290,26 +351,6 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
     }
     return state
   }),
-
-  updateStaffingRole: (roleId, updates) =>
-    set((s) => {
-      const newRoles = {
-        ...s.staffing_plan.roles,
-        [roleId]: { ...s.staffing_plan.roles[roleId], ...updates },
-      }
-      const recalculated = recalculateAll(newRoles)
-      return { staffing_plan: recalculated }
-    }),
-
-  addStaffingRole: (roleId, role) =>
-    set((s) => {
-      const newRoles = {
-        ...s.staffing_plan.roles,
-        [roleId]: role,
-      }
-      const recalculated = recalculateAll(newRoles)
-      return { staffing_plan: recalculated }
-    }),
 
   setAgentStatus: (status) => set({ agentStatus: status }),
   setAppsyncConnected: (connected) => set({ appsyncConnected: connected }),
