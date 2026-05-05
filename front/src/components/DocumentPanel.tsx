@@ -19,14 +19,14 @@ const TABS = [
   '1. Cover',
   '2.1 Executive Summary',
   '2.2 Stakeholders',
-  '2.3 Success Criteria / KPIs',
+  '2.3 Project Success Criteria',
   '2.4 Assumptions & Risks',
-  '2.5 Scope of Work',
-  '2.6 Architecture',
-  '2.7 Milestones',
-  '2.8 Cost Breakdown',
-  '2.9 Resources & Cost Estimates',
-  '2.10 Acceptance',
+  '3. Scope of Work',
+  '4. Architecture',
+  '5. Milestones',
+  '5.1 Expected AWS Cost Breakdown',
+  '6. Acceptance',
+  '7. Resources & Cost Estimates',
 ] as const
 
 type TabName = typeof TABS[number]
@@ -35,14 +35,14 @@ const TAB_COMPONENTS: Record<TabName, React.FC> = {
   '1. Cover': CoverSection,
   '2.1 Executive Summary': ExecutiveSummarySection,
   '2.2 Stakeholders': StakeholdersSection,
-  '2.3 Success Criteria / KPIs': SuccessCriteriaSection,
+  '2.3 Project Success Criteria': SuccessCriteriaSection,
   '2.4 Assumptions & Risks': AssumptionsSection,
-  '2.5 Scope of Work': ScopeOfWorkSection,
-  '2.6 Architecture': ArchitectureSection,
-  '2.7 Milestones': MilestonesSection,
-  '2.8 Cost Breakdown': CostBreakdownSection,
-  '2.9 Resources & Cost Estimates': ResourcesCostEstimatesSection,
-  '2.10 Acceptance': AcceptanceSection,
+  '3. Scope of Work': ScopeOfWorkSection,
+  '4. Architecture': ArchitectureSection,
+  '5. Milestones': MilestonesSection,
+  '5.1 Expected AWS Cost Breakdown': CostBreakdownSection,
+  '6. Acceptance': AcceptanceSection,
+  '7. Resources & Cost Estimates': ResourcesCostEstimatesSection,
 }
 
 export function DocumentPanel({ docId }: { docId: string }) {

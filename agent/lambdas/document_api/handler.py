@@ -239,6 +239,13 @@ def _confirmed_field_value(value: Any) -> dict:
     }
 
 
+def _structured_bullet(text: Any = None, level: int = 1) -> dict:
+    return {
+        "text": _confirmed_field_value(text) if text not in (None, "") else _default_field_value(),
+        "level": 2 if level == 2 else 1,
+    }
+
+
 def _default_meta() -> dict:
     """Return the default meta dict for new documents."""
     return {
@@ -251,6 +258,23 @@ def _default_meta() -> dict:
 def _default_sections() -> dict:
     """Return the default sections dict for new documents."""
     return {
+        "cover": {},
+        "executive_summary": {
+            "groups": [
+                {
+                    "category_name": _confirmed_field_value("Customer Overview"),
+                    "bullets": [_structured_bullet("Customer description"), _structured_bullet("Business context")],
+                },
+                {
+                    "category_name": _confirmed_field_value("Current Challenges"),
+                    "bullets": [_structured_bullet("Manual process"), _structured_bullet("Search delay")],
+                },
+                {
+                    "category_name": _confirmed_field_value("Proposed Solution"),
+                    "bullets": [_structured_bullet("Amazon Bedrock-based solution"), _structured_bullet("RAG/OpenSearch/S3 architecture")],
+                },
+            ],
+        },
         "stakeholders": {
             "executive_sponsors": [
                 {
@@ -265,7 +289,36 @@ def _default_sections() -> dict:
             "stakeholders": [],
             "project_team": [],
             "escalation_contacts": [],
-        }
+        },
+        "success_criteria": {"groups": [], "items": []},
+        "assumptions": {"groups": [], "items": []},
+        "scope_of_work": {"tasks": [], "out_of_scope": [], "items": []},
+        "architecture": {"overview": _default_field_value(), "diagram_image_s3_key": _default_field_value(), "services": [], "tools_list": []},
+        "milestones": {"phases": []},
+        "cost_breakdown": {
+            "calculator_url": _default_field_value(),
+            "mrr": _default_field_value(),
+            "arr": _default_field_value(),
+            "breakdown_table": [],
+            "bedrock_extra": _default_field_value(),
+            "funding_calculation": {},
+        },
+        "acceptance": {"steps": []},
+        "resources_cost_estimates": {
+            "role_rates": [],
+            "phase_hours_table": [],
+            "total_hours": {"sa": "", "eng": "", "other": "", "total": ""},
+            "total_cost": {"sa": "", "eng": "", "other": "", "total": ""},
+            "contribution": {
+                "customer": {"amount": _default_field_value(), "pct": _default_field_value()},
+                "partner": {"amount": _default_field_value(), "pct": _default_field_value()},
+                "aws": {"amount": _default_field_value(), "pct": _default_field_value()},
+            },
+            "client_signature_customer_name": _default_field_value(),
+            "client_signature_person_name": _default_field_value(),
+            "client_signature_designation": _default_field_value(),
+            "client_signature_date": _default_field_value(),
+        },
     }
 
 
@@ -604,11 +657,6 @@ def _document_shell(doc_id: str, user_id: str) -> dict:
         "template": "apn_poc_project_plan",
         "meta": _default_meta(),
         "sections": _default_sections(),
-        "staffing_plan": {
-            "roles": {},
-            "grand_total_hours": {"calculated": None},
-            "grand_total_cost": {"calculated": None},
-        },
         "completion_score": 0,
         "blocking_issues": [],
         "warnings": [],
@@ -725,11 +773,6 @@ def _handle_create_document(event: dict) -> dict:
         "template": "apn_poc_project_plan",
         "meta": _default_meta(),
         "sections": _default_sections(),
-        "staffing_plan": {
-            "roles": {},
-            "grand_total_hours": {"calculated": None},
-            "grand_total_cost": {"calculated": None},
-        },
         "completion_score": 0,
         "blocking_issues": [],
         "warnings": [],

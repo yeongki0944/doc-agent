@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import type { AcceptanceStep, FieldValue } from '../../store/documentStore'
 import { FieldValueEditor } from './FieldValueEditor'
+import { StructuredBulletListEditor } from './StructuredBulletListEditor'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
@@ -58,19 +59,7 @@ export function AcceptanceStepEditor({
   }, [steps, onStepsChange, doArraySave, docId, sectionDotPath])
 
   const handleAddBullet = useCallback((stepIndex: number) => {
-    const updated = steps.map((s, i) =>
-      i === stepIndex ? { ...s, bullets: [...s.bullets, emptyField()] } : s,
-    )
-    onStepsChange(updated)
-    doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
-  }, [steps, onStepsChange, doArraySave, docId, sectionDotPath])
-
-  const handleRemoveBullet = useCallback((stepIndex: number, bulletIndex: number) => {
-    const updated = steps.map((s, i) =>
-      i === stepIndex
-        ? { ...s, bullets: s.bullets.filter((_, bi) => bi !== bulletIndex) }
-        : s,
-    )
+    const updated = steps.map((s, i) => i === stepIndex ? { ...s, bullets: [...s.bullets, { text: emptyField(), level: 1 as const }] } : s)
     onStepsChange(updated)
     doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
   }, [steps, onStepsChange, doArraySave, docId, sectionDotPath])
@@ -89,11 +78,9 @@ export function AcceptanceStepEditor({
     onStepsChange(updated)
   }, [steps, onStepsChange])
 
-  const handleBulletUpdate = useCallback((stepIndex: number, bulletIndex: number, newField: FieldValue) => {
+  const handleBulletsChange = useCallback((stepIndex: number, bullets: AcceptanceStep['bullets']) => {
     const updated = steps.map((s, i) =>
-      i === stepIndex
-        ? { ...s, bullets: s.bullets.map((b, bi) => (bi === bulletIndex ? newField : b)) }
-        : s,
+      i === stepIndex ? { ...s, bullets } : s,
     )
     onStepsChange(updated)
   }, [steps, onStepsChange])
@@ -138,28 +125,16 @@ export function AcceptanceStepEditor({
 
           <div style={bulletsContainer}>
             <span style={fieldLabel}>항목</span>
-            {step.bullets.map((bullet, bulletIndex) => (
-              <div key={bulletIndex} style={bulletRow}>
-                <span style={bulletMarker}>•</span>
-                <FieldValueEditor
-                  field={bullet}
-                  dotPath={`${sectionDotPath}.${stepIndex}.bullets.${bulletIndex}.user_input`}
-                  docId={docId}
-                  placeholder="항목 입력"
-                  onLocalUpdate={(newField) => handleBulletUpdate(stepIndex, bulletIndex, newField)}
-                />
-                <button
-                  onClick={() => handleRemoveBullet(stepIndex, bulletIndex)}
-                  style={removeBtnStyle}
-                  title="삭제"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
+            <StructuredBulletListEditor
+              items={step.bullets ?? []}
+              listDotPath={`${sectionDotPath}.${stepIndex}.bullets`}
+              docId={docId}
+              placeholder="항목 입력"
+              onItemsChange={(bullets) => handleBulletsChange(stepIndex, bullets)}
+            />
             <button
               onClick={() => handleAddBullet(stepIndex)}
-              style={addBulletBtn}
+              style={{ display: 'none' }}
             >
               + 항목 추가
             </button>
@@ -217,20 +192,6 @@ const bulletsContainer: React.CSSProperties = {
   marginTop: 4,
 }
 
-const bulletRow: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 4,
-  marginBottom: 4,
-  paddingLeft: 44,
-}
-
-const bulletMarker: React.CSSProperties = {
-  color: color.textMuted,
-  fontSize: 14,
-  minWidth: 14,
-}
-
 const removeBtnStyle: React.CSSProperties = {
   background: 'none',
   border: 'none',
@@ -238,17 +199,6 @@ const removeBtnStyle: React.CSSProperties = {
   color: color.textMuted,
   fontSize: 14,
   padding: '2px 4px',
-}
-
-const addBulletBtn: React.CSSProperties = {
-  background: 'none',
-  border: 'none',
-  cursor: 'pointer',
-  color: color.textSecondary,
-  fontSize: 12,
-  padding: '4px 0',
-  marginTop: 4,
-  marginLeft: 44,
 }
 
 const addStepBtn: React.CSSProperties = {

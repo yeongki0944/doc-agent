@@ -9,6 +9,7 @@ interface EditableFieldProps {
   placeholder?: string
   multiline?: boolean
   type?: 'text' | 'date'
+  onDraftChange?: (value: string) => void
 }
 
 /**
@@ -16,7 +17,7 @@ interface EditableFieldProps {
  * Shows a pencil icon on hover. AI values get yellow background + badge.
  * type="date" renders a native date picker.
  */
-export function EditableField({ value, isAi, onSave, placeholder, multiline, type = 'text' }: EditableFieldProps) {
+export function EditableField({ value, isAi, onSave, placeholder, multiline, type = 'text', onDraftChange }: EditableFieldProps) {
   const textValue = resolveDisplayText(value)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(textValue)
@@ -57,6 +58,7 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
           value={draft}
           onChange={e => {
             setDraft(e.target.value)
+            onDraftChange?.(e.target.value)
             // Auto-save on date selection
             if (e.target.value && e.target.value !== textValue) {
               onSave(e.target.value)
@@ -74,7 +76,7 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
         <textarea
           ref={inputRef as React.RefObject<HTMLTextAreaElement>}
           value={draft}
-          onChange={e => setDraft(e.target.value)}
+          onChange={e => { setDraft(e.target.value); onDraftChange?.(e.target.value) }}
           onBlur={save}
           onKeyDown={e => {
             if (e.key === 'Escape') cancel()
@@ -89,7 +91,7 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
       <input
         ref={inputRef as React.RefObject<HTMLInputElement>}
         value={draft}
-        onChange={e => setDraft(e.target.value)}
+        onChange={e => { setDraft(e.target.value); onDraftChange?.(e.target.value) }}
         onBlur={save}
         onKeyDown={e => {
           if (e.key === 'Escape') cancel()

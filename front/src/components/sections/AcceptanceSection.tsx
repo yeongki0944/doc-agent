@@ -27,7 +27,7 @@ export function AcceptanceSection() {
     const presetSteps: AcceptanceStep[] = ACCEPTANCE_STEP_PRESETS.map(preset => ({
       heading: presetToFieldValue(preset.heading),
       content: presetToFieldValue(preset.content),
-      bullets: [],
+      bullets: preset.bullets.map(bullet => ({ text: presetToFieldValue(bullet), level: 1 as const })),
     }))
     const sections = useDocumentStore.getState().sections || {}
     const current = (sections.acceptance || {}) as AcceptanceSectionData
@@ -43,7 +43,7 @@ export function AcceptanceSection() {
   if (steps.length === 0) {
     return (
       <div>
-        <h2 style={{ marginBottom: 16 }}>2.10 Acceptance <SectionGuideButton sectionKey="acceptance" /></h2>
+        <h2 style={{ marginBottom: 16 }}>6. Acceptance <SectionGuideButton sectionKey="acceptance" /></h2>
         <p style={{ color: color.textMuted, marginBottom: 12 }}>
           인수 기준이 아직 정의되지 않았습니다.
         </p>
@@ -79,7 +79,7 @@ export function AcceptanceSection() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 16 }}>2.10 Acceptance <SectionGuideButton sectionKey="acceptance" /></h2>
+        <h2 style={{ marginBottom: 16 }}>6. Acceptance <SectionGuideButton sectionKey="acceptance" /></h2>
       <div style={{ marginBottom: 12 }}>
         <button type="button" onClick={handleApplyStandardProcess} style={presetActionBtn}>
           표준 인수 프로세스 적용

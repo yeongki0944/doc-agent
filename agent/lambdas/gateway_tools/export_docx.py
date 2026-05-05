@@ -158,6 +158,48 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _structured_bullet_text(item: Any) -> str:
+    data = _as_mapping(item)
+    if data and "text" in data:
+        return str(resolve_field_value(data.get("text", ""), ""))
+    return str(resolve_field_value(item, ""))
+
+
+def _structured_bullet_level(item: Any) -> int:
+    data = _as_mapping(item)
+    try:
+        level = int(data.get("level", 1)) if data else 1
+    except (TypeError, ValueError):
+        level = 1
+    return 2 if level == 2 else 1
+
+
+def _structured_bullets(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        items = value.values()
+    elif isinstance(value, (list, tuple, set)):
+        items = value
+    elif value in ("", None):
+        items = []
+    else:
+        items = [value]
+
+    result: list[dict[str, Any]] = []
+    for item in items:
+        text = _structured_bullet_text(item)
+        if text not in ("", None):
+            result.append({"text": text, "level": _structured_bullet_level(item)})
+    return result
+
+
+def _flatten_structured_bullets(value: Any) -> str:
+    lines: list[str] = []
+    for item in _structured_bullets(value):
+        prefix = "  - " if item["level"] == 2 else "- "
+        lines.append(f"{prefix}{item['text']}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Helpers — kept and updated for v2
 # ---------------------------------------------------------------------------
@@ -194,25 +236,12 @@ def _group_rows(groups: Any) -> list[dict[str, Any]]:
         data = _as_mapping(group)
         if not data:
             continue
-        raw_bullets = data.get("bullets", data.get("values", data.get("details", [])))
-        if isinstance(raw_bullets, dict):
-            bullet_items = raw_bullets.values()
-        elif isinstance(raw_bullets, (list, tuple, set)):
-            bullet_items = raw_bullets
-        elif raw_bullets in ("", None):
-            bullet_items = []
-        else:
-            bullet_items = [raw_bullets]
-
-        bullets = [
-            str(resolved)
-            for item in bullet_items
-            if (resolved := resolve_field_value(item, "")) not in ("", None)
-        ]
+        bullets = _structured_bullets(data.get("bullets", data.get("values", data.get("details", []))))
         rows.append({
             "category_name": resolve_field_value(data.get("category_name", data.get("name", ""))),
-            "bullets_text": "\n".join(f"- {bullet}" for bullet in bullets),
-            "bullets": bullets,
+            "bullets_text": _flatten_structured_bullets(data.get("bullets", [])),
+            "bullets": [item["text"] if item["level"] == 1 else f"  {item['text']}" for item in bullets],
+            "bullets_structured": bullets,
         })
     return rows
 
@@ -227,13 +256,11 @@ def _scope_task_rows(tasks: Any) -> list[dict[str, Any]]:
         data = _as_mapping(task)
         if not data:
             continue
-        details = data.get("details", "")
-        details_resolved = resolve_field_value(details, "")
         rows.append({
             "task_category": resolve_field_value(data.get("task_category", "")),
             "schedule": resolve_field_value(data.get("schedule", "")),
-            "details": details_resolved,
-            "personnel": resolve_field_value(data.get("personnel", "")),
+            "details": _flatten_structured_bullets(data.get("details", [])),
+            "personnel": _flatten_structured_bullets(data.get("personnel", [])),
         })
     return rows
 
@@ -314,11 +341,10 @@ def _acceptance_step_rows(steps: Any) -> list[dict[str, Any]]:
         data = _as_mapping(step)
         if not data:
             continue
-        bullets = data.get("bullets", [])
         rows.append({
             "heading": resolve_field_value(data.get("heading", "")),
             "content": resolve_field_value(data.get("content", "")),
-            "bullets": _resolve_list(bullets),
+            "bullets": [item["text"] if item["level"] == 1 else f"  {item['text']}" for item in _structured_bullets(data.get("bullets", []))],
         })
     return rows
 
@@ -338,6 +364,14 @@ def _partner_team_rows(team: Any) -> list[dict[str, Any]]:
             "name": resolve_field_value(data.get("name", "")),
         })
     return rows
+
+
+def _role_rate_value(resources_cost_estimates: dict[str, Any], role: str) -> Any:
+    for row in resources_cost_estimates.get("role_rates", []) if isinstance(resources_cost_estimates.get("role_rates", []), list) else []:
+        data = _as_mapping(row)
+        if data.get("role") == role:
+            return resolve_field_value(data.get("rate", {}), 100)
+    return 100
 
 
 def _phase_hours_rows(table: Any) -> list[dict[str, Any]]:
@@ -497,25 +531,28 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(milestones_rows, list):
         milestones_rows = []
 
-    # --- Executive Summary ---
-    customer_intro = resolve_field_value(executive_summary.get("customer_intro", ""))
-    problem_statement = resolve_field_value(executive_summary.get("problem_statement", ""))
-    proposed_solution = resolve_field_value(executive_summary.get("proposed_solution", ""))
+    # --- Executive Summary (Phase 1: group model rendered through existing template blocks) ---
+    executive_summary_groups = _group_rows(executive_summary.get("groups", []))
+    customer_intro = ""
+    problem_statement = ""
+    proposed_solution = ""
+    phases_overview: list[str] = []
+    current_pain_points: list[str] = []
+    poc_objectives: list[str] = []
+    custom_blocks = [
+        {
+            "heading": group["category_name"],
+            "content": "",
+            "bullets": group["bullets"],
+            "bullets_structured": group.get("bullets_structured", []),
+        }
+        for group in executive_summary_groups
+    ]
 
-    # list[FieldValue] → resolved lists
-    phases_overview = _resolve_list(executive_summary.get("phases_overview", []))
-    current_pain_points = _resolve_list(executive_summary.get("current_pain_points", []))
-    poc_objectives = _resolve_list(executive_summary.get("poc_objectives", []))
-    custom_blocks = executive_summary.get("custom_blocks", [])
-    if not isinstance(custom_blocks, list):
-        custom_blocks = []
-
-    # --- Business Case (nested under executive_summary) ---
-    business_case = _section(executive_summary, "business_case")
-    business_case_problem = resolve_field_value(business_case.get("problem_definition", ""))
-    business_case_roi = resolve_field_value(business_case.get("roi_calculation", ""))
-    business_case_sponsor = resolve_field_value(business_case.get("executive_sponsor", ""))
-    business_case_commitment = resolve_field_value(business_case.get("production_commitment", ""))
+    business_case_problem = ""
+    business_case_roi = ""
+    business_case_sponsor = ""
+    business_case_commitment = ""
 
     # --- Success Criteria / Assumptions (v2: bullets not items) ---
     success_criteria_groups = _group_rows(success_criteria.get("groups", []))
@@ -540,10 +577,13 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
     acceptance_steps = _acceptance_step_rows(acceptance.get("steps", []))
 
     # --- Resources & Cost Estimates (v2: staffing data from resources_cost_estimates) ---
-    partner_technical_team = _partner_team_rows(resources_cost_estimates.get("partner_technical_team", []))
+    partner_technical_team = _partner_team_rows(project_team)
     phase_hours_table = _phase_hours_rows(resources_cost_estimates.get("phase_hours_table", []))
     total_hours = _totals_row(resources_cost_estimates.get("total_hours", {}))
     total_cost = _totals_row(resources_cost_estimates.get("total_cost", {}))
+    role_rates = resources_cost_estimates.get("role_rates", [])
+    if not isinstance(role_rates, list):
+        role_rates = []
 
     # --- Client signatures (v2: from resources_cost_estimates) ---
     client_signature_customer_name = resolve_field_value(resources_cost_estimates.get("client_signature_customer_name", ""))
@@ -575,6 +615,12 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
         "current_pain_points": current_pain_points,
         "poc_objectives": poc_objectives,
         "custom_blocks": custom_blocks,
+        "executive_summary_groups": executive_summary_groups,
+        "executive_summary": "\n".join(
+            f"{group['category_name']}\n{group['bullets_text']}"
+            for group in executive_summary_groups
+            if group.get("category_name") or group.get("bullets_text")
+        ),
 
         # --- Business Case (flattened from nested) ---
         "business_case_problem": business_case_problem,
@@ -612,7 +658,7 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
             {
                 "phase": _resolve_field(row.get("phase", "")),
                 "completion_date": _resolve_field(row.get("completion_date", "")),
-                "deliverables": _resolve_field(row.get("deliverables", "")),
+                "deliverables": _flatten_structured_bullets(row.get("deliverables", [])),
             }
             for row in milestones_rows
             if isinstance(row, dict)
@@ -630,9 +676,10 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
 
         # --- Resources & Cost Estimates ---
         "partner_technical_team": partner_technical_team,
-        "rate_solution_architect": resolve_field_value(resources_cost_estimates.get("rate_solution_architect", "")),
-        "rate_engineer": resolve_field_value(resources_cost_estimates.get("rate_engineer", "")),
-        "rate_other": resolve_field_value(resources_cost_estimates.get("rate_other", "")),
+        "role_rates": [{"role": _as_mapping(rate).get("role", ""), "rate": resolve_field_value(_as_mapping(rate).get("rate", {}), 100)} for rate in role_rates],
+        "rate_solution_architect": _role_rate_value(resources_cost_estimates, "SA"),
+        "rate_engineer": _role_rate_value(resources_cost_estimates, "AI Service Engineer"),
+        "rate_other": 100,
         "phase_hours_table": phase_hours_table,
         "total_hours": total_hours,
         "total_cost": total_cost,

@@ -30,16 +30,23 @@ export interface TeamMember {
   name: FieldValue
 }
 
+export type BulletLevel = 1 | 2
+
+export interface StructuredBullet {
+  text: FieldValue
+  level: BulletLevel
+}
+
 export interface Phase {
   phase: FieldValue
   completion_date: FieldValue
-  deliverables: FieldValue
+  deliverables: StructuredBullet[]
 }
 
 export interface AcceptanceStep {
   heading: FieldValue
   content: FieldValue
-  bullets: FieldValue[]
+  bullets: StructuredBullet[]
 }
 
 export interface CostBreakdownRow {
@@ -68,6 +75,22 @@ export interface PhaseHours {
   total: number
 }
 
+export interface RoleRate {
+  role: string
+  rate: FieldValue
+}
+
+export interface RoleHours {
+  role: string
+  hours: number
+}
+
+export interface ResourcePhaseHours {
+  phase: FieldValue
+  role_hours: RoleHours[]
+  total: number
+}
+
 export interface TotalsRow {
   sa: string
   eng: string
@@ -83,11 +106,8 @@ export interface StakeholdersSection {
 }
 
 export interface ResourcesCostEstimatesSection {
-  partner_technical_team: TeamMember[]
-  rate_solution_architect: FieldValue
-  rate_engineer: FieldValue
-  rate_other: FieldValue
-  phase_hours_table: PhaseHours[]
+  role_rates: RoleRate[]
+  phase_hours_table: ResourcePhaseHours[]
   total_hours: TotalsRow
   total_cost: TotalsRow
   contribution: Contribution
@@ -109,7 +129,7 @@ export interface MilestonesSectionData {
 
 export interface CategoryGroup {
   category_name: FieldValue
-  bullets: FieldValue[]
+  bullets: StructuredBullet[]
 }
 
 export interface BusinessCase {
@@ -120,21 +140,14 @@ export interface BusinessCase {
 }
 
 export interface ExecutiveSummarySection {
-  customer_intro: FieldValue
-  problem_statement: FieldValue
-  proposed_solution: FieldValue
-  phases_overview: FieldValue[]
-  current_pain_points: FieldValue[]
-  poc_objectives: FieldValue[]
-  business_case: BusinessCase
-  custom_blocks: Record<string, any>[]
+  groups: CategoryGroup[]
 }
 
 export interface ScopeTask {
   task_category: FieldValue
   schedule: FieldValue
-  details: FieldValue
-  personnel: FieldValue
+  details: StructuredBullet[]
+  personnel: StructuredBullet[]
 }
 
 export interface ScopeOfWorkSection {

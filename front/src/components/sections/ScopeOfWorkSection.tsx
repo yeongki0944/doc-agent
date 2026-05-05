@@ -3,6 +3,7 @@ import { useDocumentStore, type ScopeOfWorkSection as ScopeOfWorkModel, type Sco
 import { useSessionStore } from '../../store/sessionStore'
 import { EditableComboField } from '../editors/EditableComboField'
 import { ListEditor } from '../editors/ListEditor'
+import { StructuredBulletListEditor } from '../editors/StructuredBulletListEditor'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { SectionGuideButton } from '../SectionGuideButton'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
@@ -11,8 +12,6 @@ import { useDocLang } from '../LangContext'
 import { color, font, size, space } from '../../styles/tokens'
 import {
   TASK_CATEGORY_PRESETS,
-  PERSONNEL_PRESETS,
-  DELIVERABLE_PHRASE_PRESETS,
   SCHEDULE_PATTERN_PRESETS,
 } from '../../constants/documentPresets'
 
@@ -28,8 +27,8 @@ function createEmptyScopeTask(): ScopeTask {
   return {
     task_category: emptyField(),
     schedule: emptyField(),
-    details: emptyField(),
-    personnel: emptyField(),
+    details: [],
+    personnel: [],
   }
 }
 
@@ -53,12 +52,21 @@ export function ScopeOfWorkSection() {
   )
 
   // --- Task field updates (via EditableComboField) ---
-  const updateTaskField = useCallback((index: number, field: keyof ScopeTask) => (newField: FieldValue) => {
+  const updateTaskField = useCallback((index: number, field: 'task_category' | 'schedule') => (newField: FieldValue) => {
     const sections = useDocumentStore.getState().sections || {}
     const current = (sections.scope_of_work || {}) as ScopeOfWorkModel
     const currentTasks = [...(current.tasks ?? [])]
     const oldTask = currentTasks[index] || createEmptyScopeTask()
     currentTasks[index] = { ...oldTask, [field]: newField }
+    setDocument({ sections: { ...sections, scope_of_work: { ...current, tasks: currentTasks } } } as any)
+  }, [setDocument])
+
+  const updateTaskItems = useCallback((index: number, field: 'details' | 'personnel') => (items: ScopeTask['details']) => {
+    const sections = useDocumentStore.getState().sections || {}
+    const current = (sections.scope_of_work || {}) as ScopeOfWorkModel
+    const currentTasks = [...(current.tasks ?? [])]
+    const oldTask = currentTasks[index] || createEmptyScopeTask()
+    currentTasks[index] = { ...oldTask, [field]: items }
     setDocument({ sections: { ...sections, scope_of_work: { ...current, tasks: currentTasks } } } as any)
   }, [setDocument])
 
@@ -97,7 +105,7 @@ export function ScopeOfWorkSection() {
     return (
       <div>
         <h2 style={headingStyle}>
-          2.5 Scope of Work
+          3. Scope of Work
           <SectionGuideButton sectionKey="scope_of_work" />
         </h2>
         <div style={emptyContainer}>
@@ -154,7 +162,7 @@ export function ScopeOfWorkSection() {
   return (
     <div>
       <h2 style={headingStyle}>
-        2.5 Scope of Work
+        3. Scope of Work
         <SectionGuideButton sectionKey="scope_of_work" />
       </h2>
 
@@ -212,24 +220,23 @@ export function ScopeOfWorkSection() {
                     />
                   </td>
                   <td style={td}>
-                    <EditableComboField
-                      field={task.details}
-                      dotPath={`sections.scope_of_work.tasks.${index}.details.user_input`}
+                    <StructuredBulletListEditor
+                      items={task.details ?? []}
+                      listDotPath={`sections.scope_of_work.tasks.${index}.details`}
                       docId={docId}
                       placeholder="Details"
-                      multiline
-                      presets={DELIVERABLE_PHRASE_PRESETS}
-                      onLocalUpdate={updateTaskField(index, 'details')}
+                      compact
+                      onItemsChange={updateTaskItems(index, 'details')}
                     />
                   </td>
                   <td style={td}>
-                    <EditableComboField
-                      field={task.personnel}
-                      dotPath={`sections.scope_of_work.tasks.${index}.personnel.user_input`}
+                    <StructuredBulletListEditor
+                      items={task.personnel ?? []}
+                      listDotPath={`sections.scope_of_work.tasks.${index}.personnel`}
                       docId={docId}
                       placeholder="Personnel"
-                      presets={PERSONNEL_PRESETS}
-                      onLocalUpdate={updateTaskField(index, 'personnel')}
+                      compact
+                      onItemsChange={updateTaskItems(index, 'personnel')}
                     />
                   </td>
                   <td style={td}>

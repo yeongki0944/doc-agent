@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import type { CategoryGroup, FieldValue } from '../../store/documentStore'
 import { FieldValueEditor } from './FieldValueEditor'
+import { StructuredBulletListEditor, createStructuredBullet } from './StructuredBulletListEditor'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
@@ -29,8 +30,7 @@ export interface CategoryGroupEditorProps {
 }
 
 /**
- * Renders a list of CategoryGroup entries with editable category_name and bullets[].
- * Used by Success Criteria and Assumptions sections.
+ * Renders a list of CategoryGroup entries with editable category_name and StructuredBullet[].
  *
  * - Edit category_name: dot-path `{sectionDotPath}.{groupIndex}.category_name.user_input`
  * - Edit bullet: dot-path `{sectionDotPath}.{groupIndex}.bullets.{bulletIndex}.user_input`
@@ -57,17 +57,7 @@ export function CategoryGroupEditor({
 
   const handleAddBullet = useCallback((groupIndex: number) => {
     const updated = groups.map((g, i) =>
-      i === groupIndex ? { ...g, bullets: [...g.bullets, emptyField()] } : g,
-    )
-    onGroupsChange(updated)
-    doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
-  }, [groups, onGroupsChange, doArraySave, docId, sectionDotPath])
-
-  const handleRemoveBullet = useCallback((groupIndex: number, bulletIndex: number) => {
-    const updated = groups.map((g, i) =>
-      i === groupIndex
-        ? { ...g, bullets: g.bullets.filter((_, bi) => bi !== bulletIndex) }
-        : g,
+      i === groupIndex ? { ...g, bullets: [...g.bullets, createStructuredBullet()] } : g,
     )
     onGroupsChange(updated)
     doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
@@ -80,11 +70,9 @@ export function CategoryGroupEditor({
     onGroupsChange(updated)
   }, [groups, onGroupsChange])
 
-  const handleBulletUpdate = useCallback((groupIndex: number, bulletIndex: number, newField: FieldValue) => {
+  const handleBulletsChange = useCallback((groupIndex: number, bullets: CategoryGroup['bullets']) => {
     const updated = groups.map((g, i) =>
-      i === groupIndex
-        ? { ...g, bullets: g.bullets.map((b, bi) => (bi === bulletIndex ? newField : b)) }
-        : g,
+      i === groupIndex ? { ...g, bullets } : g,
     )
     onGroupsChange(updated)
   }, [groups, onGroupsChange])
@@ -94,6 +82,7 @@ export function CategoryGroupEditor({
       {groups.map((group, groupIndex) => (
         <div key={groupIndex} style={groupCard}>
           <div style={groupHeader}>
+            <span style={groupNumber}>({groupIndex + 1})</span>
             <FieldValueEditor
               field={group.category_name}
               dotPath={`${sectionDotPath}.${groupIndex}.category_name.user_input`}
@@ -111,28 +100,16 @@ export function CategoryGroupEditor({
           </div>
 
           <div style={bulletsContainer}>
-            {group.bullets.map((bullet, bulletIndex) => (
-              <div key={bulletIndex} style={bulletRow}>
-                <span style={bulletMarker}>•</span>
-                <FieldValueEditor
-                  field={bullet}
-                  dotPath={`${sectionDotPath}.${groupIndex}.bullets.${bulletIndex}.user_input`}
-                  docId={docId}
-                  placeholder="항목 입력"
-                  onLocalUpdate={(newField) => handleBulletUpdate(groupIndex, bulletIndex, newField)}
-                />
-                <button
-                  onClick={() => handleRemoveBullet(groupIndex, bulletIndex)}
-                  style={removeBtnStyle}
-                  title="삭제"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
+            <StructuredBulletListEditor
+              items={group.bullets ?? []}
+              listDotPath={`${sectionDotPath}.${groupIndex}.bullets`}
+              docId={docId}
+              placeholder="항목 입력"
+              onItemsChange={(bullets) => handleBulletsChange(groupIndex, bullets)}
+            />
             <button
               onClick={() => handleAddBullet(groupIndex)}
-              style={addBulletBtn}
+              style={{ display: 'none' }}
             >
               + 항목 추가
             </button>
@@ -162,25 +139,19 @@ const groupHeader: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
+  gap: 6,
   marginBottom: 8,
   fontWeight: 600,
 }
 
+const groupNumber: React.CSSProperties = {
+  color: color.textMuted,
+  fontSize: 13,
+  flexShrink: 0,
+}
+
 const bulletsContainer: React.CSSProperties = {
   paddingLeft: 8,
-}
-
-const bulletRow: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 4,
-  marginBottom: 4,
-}
-
-const bulletMarker: React.CSSProperties = {
-  color: color.textMuted,
-  fontSize: 14,
-  minWidth: 14,
 }
 
 const removeBtnStyle: React.CSSProperties = {
@@ -190,16 +161,6 @@ const removeBtnStyle: React.CSSProperties = {
   color: color.textMuted,
   fontSize: 14,
   padding: '2px 4px',
-}
-
-const addBulletBtn: React.CSSProperties = {
-  background: 'none',
-  border: 'none',
-  cursor: 'pointer',
-  color: color.textSecondary,
-  fontSize: 12,
-  padding: '4px 0',
-  marginTop: 4,
 }
 
 const addGroupBtn: React.CSSProperties = {

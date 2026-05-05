@@ -1,4 +1,4 @@
-import type { FieldValue, FieldStatus, CategoryGroup } from '../store/documentStore'
+import type { FieldValue, FieldStatus, CategoryGroup, StructuredBullet } from '../store/documentStore'
 
 // --- Interfaces ---
 
@@ -28,7 +28,7 @@ export function presetToFieldValue(value: string): FieldValue {
 export function presetGroupToCategoryGroup(preset: PresetGroup): CategoryGroup {
   return {
     category_name: presetToFieldValue(preset.category_name),
-    bullets: preset.bullets.map(presetToFieldValue),
+    bullets: preset.bullets.map((bullet): StructuredBullet => ({ text: presetToFieldValue(bullet), level: 1 })),
   }
 }
 
@@ -74,6 +74,33 @@ export const EXEC_SUMMARY_STARTER_BLOCKS = [
   'Business Objectives',
   'Technical Objectives',
   'Drivers for Moving to AWS Cloud',
+] as const
+
+export const EXEC_SUMMARY_PRESET_GROUPS: readonly PresetGroup[] = [
+  {
+    category_name: 'Customer Overview',
+    bullets: ['Customer description', 'Business context'],
+  },
+  {
+    category_name: 'Current Challenges',
+    bullets: ['Manual process', 'Search delay'],
+  },
+  {
+    category_name: 'Proposed Solution',
+    bullets: ['Amazon Bedrock-based solution', 'RAG/OpenSearch/S3 architecture'],
+  },
+  {
+    category_name: 'PoC Objectives',
+    bullets: ['Validate target GenAI use cases', 'Confirm production-readiness criteria'],
+  },
+  {
+    category_name: 'Business Value',
+    bullets: ['Improve operational efficiency', 'Reduce time spent on repetitive work'],
+  },
+  {
+    category_name: 'Implementation Approach',
+    bullets: ['Deliver by project phase', 'Review results with customer stakeholders'],
+  },
 ] as const
 
 export const PAIN_POINT_PRESETS = [

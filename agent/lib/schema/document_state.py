@@ -102,11 +102,17 @@ class ContactEntry(BaseModel):
     contact: FieldValue = Field(default_factory=FieldValue)
 
 
+class StructuredBullet(BaseModel):
+    """Editable bullet/item with shallow indentation support."""
+    text: FieldValue = Field(default_factory=FieldValue)
+    level: int = 1
+
+
 class Phase(BaseModel):
     """Milestones table row."""
     phase: FieldValue = Field(default_factory=FieldValue)
     completion_date: FieldValue = Field(default_factory=FieldValue)
-    deliverables: FieldValue = Field(default_factory=FieldValue)
+    deliverables: list[StructuredBullet] = Field(default_factory=list)
 
 
 class BusinessCase(BaseModel):
@@ -122,15 +128,15 @@ class BusinessCase(BaseModel):
 class CategoryGroup(BaseModel):
     """Grouped success criteria / assumptions. Template iterates group.bullets."""
     category_name: FieldValue = Field(default_factory=FieldValue)
-    bullets: list[FieldValue] = Field(default_factory=list)
+    bullets: list[StructuredBullet] = Field(default_factory=list)
 
 
 class ScopeTask(BaseModel):
     """Scope of work task row. All fields remain FieldValue for agent patching."""
     task_category: FieldValue = Field(default_factory=FieldValue)
     schedule: FieldValue = Field(default_factory=FieldValue)
-    details: FieldValue = Field(default_factory=FieldValue)
-    personnel: FieldValue = Field(default_factory=FieldValue)
+    details: list[StructuredBullet] = Field(default_factory=list)
+    personnel: list[StructuredBullet] = Field(default_factory=list)
 
 
 class ArchitectureService(BaseModel):
@@ -147,7 +153,7 @@ class AcceptanceStep(BaseModel):
     """Single acceptance criteria step with heading, content, and bullets."""
     heading: FieldValue = Field(default_factory=FieldValue)
     content: FieldValue = Field(default_factory=FieldValue)
-    bullets: list[FieldValue] = Field(default_factory=list)
+    bullets: list[StructuredBullet] = Field(default_factory=list)
 
 
 class CostBreakdownRow(BaseModel):
@@ -186,6 +192,22 @@ class PhaseHours(BaseModel):
     total: int = 0
 
 
+class RoleRate(BaseModel):
+    role: str = ""
+    rate: FieldValue = Field(default_factory=FieldValue)
+
+
+class RoleHours(BaseModel):
+    role: str = ""
+    hours: int = 0
+
+
+class ResourcePhaseHours(BaseModel):
+    phase: FieldValue = Field(default_factory=FieldValue)
+    role_hours: list[RoleHours] = Field(default_factory=list)
+    total: int = 0
+
+
 class TotalsRow(BaseModel):
     """Totals row for hours or cost. Template accesses .sa, .eng, .other, .total."""
     sa: str = ""
@@ -208,14 +230,7 @@ class ExecutiveSummarySection(BaseModel):
     """Executive summary section (v2)."""
     model_config = {"extra": "forbid"}
 
-    customer_intro: FieldValue = Field(default_factory=FieldValue)
-    problem_statement: FieldValue = Field(default_factory=FieldValue)
-    proposed_solution: FieldValue = Field(default_factory=FieldValue)
-    phases_overview: list[FieldValue] = Field(default_factory=list)
-    current_pain_points: list[FieldValue] = Field(default_factory=list)
-    poc_objectives: list[FieldValue] = Field(default_factory=list)
-    business_case: BusinessCase = Field(default_factory=BusinessCase)
-    custom_blocks: list[dict] = Field(default_factory=list)
+    groups: list[CategoryGroup] = Field(default_factory=list)
 
 
 class StakeholdersSection(BaseModel):
@@ -298,11 +313,8 @@ class ResourcesCostEstimatesSection(BaseModel):
     Replaces top-level staffing_plan and client_signatures section."""
     model_config = {"extra": "forbid"}
 
-    partner_technical_team: list[TeamMember] = Field(default_factory=list)
-    rate_solution_architect: FieldValue = Field(default_factory=FieldValue)
-    rate_engineer: FieldValue = Field(default_factory=FieldValue)
-    rate_other: FieldValue = Field(default_factory=FieldValue)
-    phase_hours_table: list[PhaseHours] = Field(default_factory=list)
+    role_rates: list[RoleRate] = Field(default_factory=list)
+    phase_hours_table: list[ResourcePhaseHours] = Field(default_factory=list)
     total_hours: TotalsRow = Field(default_factory=TotalsRow)
     total_cost: TotalsRow = Field(default_factory=TotalsRow)
     contribution: Contribution = Field(default_factory=Contribution)

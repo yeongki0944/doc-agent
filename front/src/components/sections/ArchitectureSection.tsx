@@ -17,7 +17,7 @@ import { saveUserInput } from '../../utils/api'
 import { useDocLang } from '../LangContext'
 import { apiFetch } from '../../auth/api'
 import { color, font, size, space } from '../../styles/tokens'
-import { isBedrockService, sortArchitectureServices } from '../../utils/frontendSchema'
+import { isBedrockService } from '../../utils/frontendSchema'
 import { resolveFieldValue } from '../AiBadge'
 import {
   SERVICE_NAME_PRESETS,
@@ -68,11 +68,12 @@ export function ArchitectureSection() {
   const [fileName, setFileName] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [advancedOpen, setAdvancedOpen] = useState<Record<number, boolean>>({})
 
   const previewUrl = archSection?.preview_url ?? null
   const drawioUrl = archSection?.drawio_url ?? null
   const services: ArchitectureService[] = useMemo(
-    () => sortArchitectureServices(archSection?.services ?? []),
+    () => archSection?.services ?? [],
     [archSection?.services],
   )
   const toolsList: FieldValue[] = useMemo(() => archSection?.tools_list ?? [], [archSection?.tools_list])
@@ -174,7 +175,7 @@ export function ArchitectureSection() {
   return (
     <div>
       <h2 style={headingStyle}>
-        2.6 Architecture
+        4. Architecture
         <SectionGuideButton sectionKey="architecture" />
       </h2>
 
@@ -260,63 +261,65 @@ export function ArchitectureSection() {
                   />
                 </div>
 
-                {/* Sizing rationale */}
-                <div style={{ marginTop: 8 }}>
-                  <div style={label}>Sizing Rationale</div>
-                  <FieldValueEditor
-                    field={service.sizing_rationale}
-                    dotPath={`sections.architecture.services.${index}.sizing_rationale.user_input`}
-                    docId={docId}
-                    placeholder="사이징 근거"
-                    multiline
-                    onLocalUpdate={updateServiceFieldValue(index, 'sizing_rationale')}
-                  />
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setAdvancedOpen(prev => ({ ...prev, [index]: !prev[index] }))}
+                  style={advancedToggle}
+                >
+                  {advancedOpen[index] ? 'Hide advanced' : 'Show advanced'}
+                </button>
 
-                {/* Primitive fields row: priority, category, is_required_for_funding */}
-                <div style={{ marginTop: 10, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-                  {/* Priority */}
-                  <div>
-                    <div style={label}>Priority</div>
-                    <input
-                      type="number"
-                      value={service.priority ?? 99}
-                      onChange={(e) => updateServicePrimitive(index, 'priority', Number(e.target.value) || 0)}
-                      style={primitiveInput}
-                      min={0}
-                    />
+                {advancedOpen[index] && (
+                  <div style={advancedPanel}>
+                    <div>
+                      <div style={label}>Sizing Rationale</div>
+                      <FieldValueEditor
+                        field={service.sizing_rationale}
+                        dotPath={`sections.architecture.services.${index}.sizing_rationale.user_input`}
+                        docId={docId}
+                        placeholder="사이징 근거"
+                        multiline
+                        onLocalUpdate={updateServiceFieldValue(index, 'sizing_rationale')}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
+                      <div>
+                        <div style={label}>Priority</div>
+                        <input
+                          type="number"
+                          value={service.priority ?? 99}
+                          onChange={(e) => updateServicePrimitive(index, 'priority', Number(e.target.value) || 0)}
+                          style={primitiveInput}
+                          min={0}
+                        />
+                      </div>
+                      <div>
+                        <div style={label}>Category</div>
+                        <select
+                          value={service.category ?? 'compute'}
+                          onChange={(e) => updateServicePrimitive(index, 'category', e.target.value as ServiceCategory)}
+                          style={primitiveSelect}
+                        >
+                          {SERVICE_CATEGORIES.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 14 }}>
+                        <input
+                          type="checkbox"
+                          checked={service.is_required_for_funding ?? false}
+                          onChange={(e) => updateServicePrimitive(index, 'is_required_for_funding', e.target.checked)}
+                          id={`funding-${index}`}
+                        />
+                        <label htmlFor={`funding-${index}`} style={{ fontSize: 12, color: color.textSecondary, cursor: 'pointer' }}>
+                          Funding Required
+                        </label>
+                        {isBedrockService(service) && <span style={bedrockChip}>Bedrock</span>}
+                      </div>
+                    </div>
                   </div>
-
-                  {/* Category */}
-                  <div>
-                    <div style={label}>Category</div>
-                    <select
-                      value={service.category ?? 'compute'}
-                      onChange={(e) => updateServicePrimitive(index, 'category', e.target.value as ServiceCategory)}
-                      style={primitiveSelect}
-                    >
-                      {SERVICE_CATEGORIES.map(cat => (
-                        <option key={cat} value={cat}>{cat}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Is required for funding */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 14 }}>
-                    <input
-                      type="checkbox"
-                      checked={service.is_required_for_funding ?? false}
-                      onChange={(e) => updateServicePrimitive(index, 'is_required_for_funding', e.target.checked)}
-                      id={`funding-${index}`}
-                    />
-                    <label htmlFor={`funding-${index}`} style={{ fontSize: 12, color: color.textSecondary, cursor: 'pointer' }}>
-                      Funding Required
-                    </label>
-                    {isBedrockService(service) && (
-                      <span style={bedrockChip}>Bedrock</span>
-                    )}
-                  </div>
-                </div>
+                )}
               </div>
             ))}
           </div>
@@ -393,6 +396,25 @@ const serviceCard: React.CSSProperties = {
   border: `1px solid ${color.border}`,
   borderRadius: 8,
   background: color.bgSurface,
+}
+
+const advancedToggle: React.CSSProperties = {
+  marginTop: 10,
+  background: 'none',
+  border: `1px solid ${color.border}`,
+  borderRadius: 4,
+  padding: '4px 8px',
+  cursor: 'pointer',
+  color: color.textSecondary,
+  fontSize: 12,
+}
+
+const advancedPanel: React.CSSProperties = {
+  marginTop: 8,
+  padding: 10,
+  border: `1px dashed ${color.border}`,
+  borderRadius: 6,
+  background: color.bgPrimary,
 }
 
 const addButton: React.CSSProperties = {

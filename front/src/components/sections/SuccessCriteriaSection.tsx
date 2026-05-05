@@ -59,7 +59,7 @@ export function SuccessCriteriaSection() {
     return (
       <div>
         <h2 style={headingStyle}>
-          2.3 Success Criteria / KPIs
+          2.3 Project Success Criteria
           <SectionGuideButton sectionKey="success_criteria" />
         </h2>
         <div style={emptyContainer}>
@@ -87,7 +87,7 @@ export function SuccessCriteriaSection() {
   return (
     <div>
       <h2 style={headingStyle}>
-        2.3 Success Criteria / KPIs
+        2.3 Project Success Criteria
         <SectionGuideButton sectionKey="success_criteria" />
       </h2>
       <div style={{ marginBottom: space.md, display: 'flex', gap: space.sm }}>

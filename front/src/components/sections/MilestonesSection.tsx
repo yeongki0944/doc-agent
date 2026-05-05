@@ -3,6 +3,7 @@ import { useDocumentStore, type MilestonesSectionData, type Phase, type FieldVal
 import { useSessionStore } from '../../store/sessionStore'
 import { FieldValueEditor } from '../editors/FieldValueEditor'
 import { EditableComboField } from '../editors/EditableComboField'
+import { StructuredBulletListEditor } from '../editors/StructuredBulletListEditor'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { SectionGuideButton } from '../SectionGuideButton'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
@@ -11,7 +12,6 @@ import { useDocLang } from '../LangContext'
 import { color, font, size, space } from '../../styles/tokens'
 import {
   PROJECT_PHASE_PRESETS,
-  MILESTONE_DELIVERABLE_PRESETS,
 } from '../../constants/documentPresets'
 
 const emptyField = (): FieldValue => ({
@@ -26,7 +26,7 @@ function createEmptyPhase(): Phase {
   return {
     phase: emptyField(),
     completion_date: emptyField(),
-    deliverables: emptyField(),
+    deliverables: [],
   }
 }
 
@@ -43,12 +43,21 @@ export function MilestonesSection() {
   const hasContent = phases.length > 0
 
   // --- Phase field updates (via EditableComboField / FieldValueEditor) ---
-  const updatePhaseField = useCallback((index: number, field: keyof Phase) => (newField: FieldValue) => {
+  const updatePhaseField = useCallback((index: number, field: 'phase' | 'completion_date') => (newField: FieldValue) => {
     const sections = useDocumentStore.getState().sections || {}
     const current = (sections.milestones || {}) as MilestonesSectionData
     const currentPhases = [...(current.phases ?? [])]
     const oldPhase = currentPhases[index] || createEmptyPhase()
     currentPhases[index] = { ...oldPhase, [field]: newField }
+    setDocument({ sections: { ...sections, milestones: { ...current, phases: currentPhases } } } as any)
+  }, [setDocument])
+
+  const updateDeliverables = useCallback((index: number) => (items: Phase['deliverables']) => {
+    const sections = useDocumentStore.getState().sections || {}
+    const current = (sections.milestones || {}) as MilestonesSectionData
+    const currentPhases = [...(current.phases ?? [])]
+    const oldPhase = currentPhases[index] || createEmptyPhase()
+    currentPhases[index] = { ...oldPhase, deliverables: items }
     setDocument({ sections: { ...sections, milestones: { ...current, phases: currentPhases } } } as any)
   }, [setDocument])
 
@@ -73,7 +82,7 @@ export function MilestonesSection() {
     return (
       <div>
         <h2 style={headingStyle}>
-          2.7 Milestones
+          5. Milestones
           <SectionGuideButton sectionKey="milestones" />
         </h2>
         <div style={emptyContainer}>
@@ -104,7 +113,7 @@ export function MilestonesSection() {
   return (
     <div>
       <h2 style={headingStyle}>
-        2.7 Milestones
+        5. Milestones
         <SectionGuideButton sectionKey="milestones" />
       </h2>
 
@@ -144,14 +153,13 @@ export function MilestonesSection() {
                 />
               </td>
               <td style={td}>
-                <EditableComboField
-                  field={p.deliverables}
-                  dotPath={`sections.milestones.phases.${index}.deliverables.user_input`}
+                <StructuredBulletListEditor
+                  items={p.deliverables ?? []}
+                  listDotPath={`sections.milestones.phases.${index}.deliverables`}
                   docId={docId}
                   placeholder="Deliverables"
-                  multiline
-                  presets={MILESTONE_DELIVERABLE_PRESETS}
-                  onLocalUpdate={updatePhaseField(index, 'deliverables')}
+                  compact
+                  onItemsChange={updateDeliverables(index)}
                 />
               </td>
               <td style={td}>

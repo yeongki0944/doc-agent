@@ -26,11 +26,13 @@ export function EditableComboField({
 }: EditableComboFieldProps) {
   const { saveStatus, handleSave } = useFieldSave(docId)
   const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [query, setQuery] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; openUp: boolean }>({ top: 0, left: 0, openUp: false })
 
   const onSave = useCallback((newValue: string) => {
+    setQuery(newValue)
     handleSave(dotPath, newValue, field, onLocalUpdate)
   }, [handleSave, dotPath, field, onLocalUpdate])
 
@@ -66,6 +68,11 @@ export function EditableComboField({
   }, [dropdownOpen])
 
   const hasPresets = presets.length > 0
+  const currentText = String(resolveFieldValue(field) ?? query ?? '')
+  const filterText = (query || currentText).trim().toLowerCase()
+  const filteredPresets = filterText
+    ? presets.filter(preset => String(preset).toLowerCase().includes(filterText))
+    : presets
 
   return (
     <div ref={containerRef} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, position: 'relative' }}>
@@ -75,6 +82,7 @@ export function EditableComboField({
         onSave={onSave}
         placeholder={placeholder}
         multiline={multiline}
+        onDraftChange={setQuery}
       />
       {hasPresets && (
         <button
@@ -115,7 +123,7 @@ export function EditableComboField({
             minWidth: 180,
           }}
         >
-          {presets.map((preset, idx) => (
+          {filteredPresets.map((preset, idx) => (
             <div
               key={idx}
               onClick={() => onPresetSelect(preset)}
@@ -134,6 +142,11 @@ export function EditableComboField({
               {String(preset)}
             </div>
           ))}
+          {filteredPresets.length === 0 && (
+            <div style={{ padding: `${space.xs}px ${space.sm}px`, fontSize: size.sm, color: color.textMuted }}>
+              No matching presets
+            </div>
+          )}
         </div>
       )}
     </div>

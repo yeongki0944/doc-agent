@@ -87,7 +87,7 @@ export function CostBreakdownSection() {
 
   return (
     <div>
-      <h2 style={{ marginBottom: 16 }}>2.8 Cost Breakdown <SectionGuideButton sectionKey="cost_breakdown" /></h2>
+      <h2 style={{ marginBottom: 16 }}>5.1 Expected AWS Cost Breakdown <SectionGuideButton sectionKey="cost_breakdown" /></h2>
 
       {/* --- Editable scalar fields --- */}
       <div style={fieldGrid}>

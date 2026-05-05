@@ -11,6 +11,7 @@ export interface FieldValueEditorProps {
   placeholder?: string
   multiline?: boolean
   type?: 'text' | 'date'
+  transformValue?: (value: string) => string
   onLocalUpdate: (newField: FieldValue) => void  // optimistic Zustand update
 }
 
@@ -19,12 +20,12 @@ export interface FieldValueEditorProps {
  * Section editors compose this rather than calling saveUserInput directly.
  */
 export function FieldValueEditor({
-  field, dotPath, docId, placeholder, multiline, type, onLocalUpdate,
+  field, dotPath, docId, placeholder, multiline, type, transformValue, onLocalUpdate,
 }: FieldValueEditorProps) {
   const { saveStatus, handleSave } = useFieldSave(docId)
 
   const onSave = (newValue: string) => {
-    handleSave(dotPath, newValue, field, onLocalUpdate)
+    handleSave(dotPath, transformValue ? transformValue(newValue) : newValue, field, onLocalUpdate)
   }
 
   return (
