@@ -12,7 +12,10 @@ import io
 import json
 import os
 import tempfile
+import zipfile
+from copy import deepcopy
 from typing import Any
+from xml.etree import ElementTree as ET
 
 import boto3
 
@@ -21,6 +24,10 @@ ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET") or os.environ.get("S3_BUCK
 TEMPLATE_S3_KEY = os.environ.get("TEMPLATE_S3_KEY", "templates/apn-poc-template_v2.docx")
 REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+STRUCTURED_BULLET_L1 = "__DOCAGENT_STRUCTURED_BULLET_L1__"
+STRUCTURED_BULLET_L2 = "__DOCAGENT_STRUCTURED_BULLET_L2__"
+WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+W = f"{{{WORD_NS}}}"
 
 
 def _response(payload: dict[str, Any]) -> dict[str, str]:
@@ -195,14 +202,15 @@ def _structured_bullets(value: Any) -> list[dict[str, Any]]:
 def _flatten_structured_bullets(value: Any) -> str:
     lines: list[str] = []
     for item in _structured_bullets(value):
-        prefix = "o " if item["level"] == 2 else "• "
-        lines.append(f"{prefix}{item['text']}")
+        marker = STRUCTURED_BULLET_L2 if item["level"] == 2 else STRUCTURED_BULLET_L1
+        lines.append(f"{marker}{item['text']}")
     return "\n".join(lines)
 
 
 def _template_bullet_text(item: dict[str, Any]) -> str:
-    """Text for template paragraphs that already carry Word bullet formatting."""
-    return f"o {item['text']}" if item["level"] == 2 else str(item["text"])
+    """Marked text for post-render conversion to the correct Word list level."""
+    marker = STRUCTURED_BULLET_L2 if item["level"] == 2 else STRUCTURED_BULLET_L1
+    return f"{marker}{item['text']}"
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +748,95 @@ def _download_template(s3: Any, bucket: str, template_key: str) -> bytes:
     return body.read() if hasattr(body, "read") else body
 
 
+def _paragraph_text(paragraph: ET.Element) -> str:
+    parts: list[str] = []
+    for node in paragraph.iter():
+        if node.tag == f"{W}t":
+            parts.append(node.text or "")
+        elif node.tag == f"{W}br":
+            parts.append("\n")
+    return "".join(parts)
+
+
+def _set_paragraph_text(paragraph: ET.Element, text: str) -> None:
+    ppr = paragraph.find(f"{W}pPr")
+    paragraph.clear()
+    if ppr is not None:
+        paragraph.append(deepcopy(ppr))
+    run = ET.SubElement(paragraph, f"{W}r")
+    text_node = ET.SubElement(run, f"{W}t")
+    text_node.text = text
+
+
+def _set_bullet_level(paragraph: ET.Element, level: int) -> None:
+    ppr = paragraph.find(f"{W}pPr")
+    if ppr is None:
+        ppr = ET.Element(f"{W}pPr")
+        paragraph.insert(0, ppr)
+    num_pr = ppr.find(f"{W}numPr")
+    if num_pr is None:
+        num_pr = ET.SubElement(ppr, f"{W}numPr")
+
+    ilvl = num_pr.find(f"{W}ilvl")
+    if ilvl is None:
+        ilvl = ET.SubElement(num_pr, f"{W}ilvl")
+    ilvl.set(f"{W}val", "1" if level == 2 else "0")
+
+    num_id = num_pr.find(f"{W}numId")
+    if num_id is None:
+        num_id = ET.SubElement(num_pr, f"{W}numId")
+    # Template numbering numId=5 has level 0 as "•" and level 1 as "o".
+    num_id.set(f"{W}val", "5")
+
+
+def _structured_bullet_lines(text: str) -> list[tuple[int, str]] | None:
+    if STRUCTURED_BULLET_L1 not in text and STRUCTURED_BULLET_L2 not in text:
+        return None
+    lines: list[tuple[int, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(STRUCTURED_BULLET_L2):
+            lines.append((2, line.removeprefix(STRUCTURED_BULLET_L2).strip()))
+        elif line.startswith(STRUCTURED_BULLET_L1):
+            lines.append((1, line.removeprefix(STRUCTURED_BULLET_L1).strip()))
+    return lines or None
+
+
+def _postprocess_structured_bullets(docx_bytes: bytes) -> bytes:
+    ET.register_namespace("w", WORD_NS)
+    with zipfile.ZipFile(io.BytesIO(docx_bytes), "r") as zin:
+        files = {name: zin.read(name) for name in zin.namelist()}
+
+    document_xml = "word/document.xml"
+    root = ET.fromstring(files[document_xml])
+    parent_by_child = {child: parent for parent in root.iter() for child in list(parent)}
+
+    for paragraph in list(root.iter(f"{W}p")):
+        lines = _structured_bullet_lines(_paragraph_text(paragraph))
+        if not lines:
+            continue
+        parent = parent_by_child.get(paragraph)
+        if parent is None:
+            continue
+        parent_children = list(parent)
+        index = parent_children.index(paragraph)
+        parent.remove(paragraph)
+        for offset, (level, text) in enumerate(lines):
+            new_paragraph = deepcopy(paragraph)
+            _set_paragraph_text(new_paragraph, text)
+            _set_bullet_level(new_paragraph, level)
+            parent.insert(index + offset, new_paragraph)
+
+    files[document_xml] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name, data in files.items():
+            zout.writestr(name, data)
+    return output.getvalue()
+
+
 def _render_docx(template_bytes: bytes, context: dict[str, Any]) -> bytes:
     from docxtpl import DocxTemplate
 
@@ -752,7 +849,7 @@ def _render_docx(template_bytes: bytes, context: dict[str, Any]) -> bytes:
 
         output = io.BytesIO()
         doc.save(output)
-        return output.getvalue()
+        return _postprocess_structured_bullets(output.getvalue())
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
