@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import type { AcceptanceStep, FieldValue } from '../../store/documentStore'
 import { FieldValueEditor } from './FieldValueEditor'
 import { StructuredBulletListEditor } from './StructuredBulletListEditor'
+import { sanitizeListPasteText } from '../../utils/textSanitizer'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
@@ -107,6 +108,7 @@ export function AcceptanceStepEditor({
               dotPath={`${sectionDotPath}.${stepIndex}.heading.user_input`}
               docId={docId}
               placeholder="단계 제목"
+              transformValue={sanitizeListPasteText}
               onLocalUpdate={(newField) => handleHeadingUpdate(stepIndex, newField)}
             />
           </div>

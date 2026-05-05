@@ -195,9 +195,14 @@ def _structured_bullets(value: Any) -> list[dict[str, Any]]:
 def _flatten_structured_bullets(value: Any) -> str:
     lines: list[str] = []
     for item in _structured_bullets(value):
-        prefix = "  - " if item["level"] == 2 else "- "
+        prefix = "o " if item["level"] == 2 else "• "
         lines.append(f"{prefix}{item['text']}")
     return "\n".join(lines)
+
+
+def _template_bullet_text(item: dict[str, Any]) -> str:
+    """Text for template paragraphs that already carry Word bullet formatting."""
+    return f"o {item['text']}" if item["level"] == 2 else str(item["text"])
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +245,7 @@ def _group_rows(groups: Any) -> list[dict[str, Any]]:
         rows.append({
             "category_name": resolve_field_value(data.get("category_name", data.get("name", ""))),
             "bullets_text": _flatten_structured_bullets(data.get("bullets", [])),
-            "bullets": [item["text"] if item["level"] == 1 else f"  {item['text']}" for item in bullets],
+            "bullets": [_template_bullet_text(item) for item in bullets],
             "bullets_structured": bullets,
         })
     return rows
@@ -344,7 +349,7 @@ def _acceptance_step_rows(steps: Any) -> list[dict[str, Any]]:
         rows.append({
             "heading": resolve_field_value(data.get("heading", "")),
             "content": resolve_field_value(data.get("content", "")),
-            "bullets": [item["text"] if item["level"] == 1 else f"  {item['text']}" for item in _structured_bullets(data.get("bullets", []))],
+            "bullets": [_template_bullet_text(item) for item in _structured_bullets(data.get("bullets", []))],
         })
     return rows
 
@@ -372,6 +377,34 @@ def _role_rate_value(resources_cost_estimates: dict[str, Any], role: str) -> Any
         if data.get("role") == role:
             return resolve_field_value(data.get("rate", {}), 100)
     return 100
+
+
+def _role_rate_rows(project_team: Any, resources_cost_estimates: dict[str, Any]) -> list[dict[str, Any]]:
+    team_rows = _partner_team_rows(project_team)
+    rates = resources_cost_estimates.get("role_rates", [])
+    if not isinstance(rates, list):
+        rates = []
+
+    rate_by_role: dict[str, Any] = {}
+    for row in rates:
+        data = _as_mapping(row)
+        role = str(data.get("role", "")).strip()
+        if role:
+            rate_by_role[role] = resolve_field_value(data.get("rate", {}), 100)
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for member in team_rows:
+        role = str(member.get("role", "")).strip() or "Unassigned"
+        entry = grouped.setdefault(role, {"role": role, "count": 0, "members": [], "rate": rate_by_role.get(role, 100)})
+        entry["count"] += 1
+        name = str(member.get("name", "")).strip()
+        if name:
+            entry["members"].append(name)
+
+    return [
+        {**row, "members": ", ".join(row["members"])}
+        for row in grouped.values()
+    ]
 
 
 def _phase_hours_rows(table: Any) -> list[dict[str, Any]]:
@@ -578,12 +611,10 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
 
     # --- Resources & Cost Estimates (v2: staffing data from resources_cost_estimates) ---
     partner_technical_team = _partner_team_rows(project_team)
+    dynamic_role_rates = _role_rate_rows(project_team, resources_cost_estimates)
     phase_hours_table = _phase_hours_rows(resources_cost_estimates.get("phase_hours_table", []))
     total_hours = _totals_row(resources_cost_estimates.get("total_hours", {}))
     total_cost = _totals_row(resources_cost_estimates.get("total_cost", {}))
-    role_rates = resources_cost_estimates.get("role_rates", [])
-    if not isinstance(role_rates, list):
-        role_rates = []
 
     # --- Client signatures (v2: from resources_cost_estimates) ---
     client_signature_customer_name = resolve_field_value(resources_cost_estimates.get("client_signature_customer_name", ""))
@@ -676,7 +707,7 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
 
         # --- Resources & Cost Estimates ---
         "partner_technical_team": partner_technical_team,
-        "role_rates": [{"role": _as_mapping(rate).get("role", ""), "rate": resolve_field_value(_as_mapping(rate).get("rate", {}), 100)} for rate in role_rates],
+        "role_rates": dynamic_role_rates,
         "rate_solution_architect": _role_rate_value(resources_cost_estimates, "SA"),
         "rate_engineer": _role_rate_value(resources_cost_estimates, "AI Service Engineer"),
         "rate_other": 100,

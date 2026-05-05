@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import type { CategoryGroup, FieldValue } from '../../store/documentStore'
 import { FieldValueEditor } from './FieldValueEditor'
 import { StructuredBulletListEditor, createStructuredBullet } from './StructuredBulletListEditor'
+import { sanitizeListPasteText } from '../../utils/textSanitizer'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
@@ -88,6 +89,7 @@ export function CategoryGroupEditor({
               dotPath={`${sectionDotPath}.${groupIndex}.category_name.user_input`}
               docId={docId}
               placeholder="카테고리 이름"
+              transformValue={sanitizeListPasteText}
               onLocalUpdate={(newField) => handleCategoryNameUpdate(groupIndex, newField)}
             />
             <button
