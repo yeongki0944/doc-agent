@@ -26,6 +26,7 @@ REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 STRUCTURED_BULLET_L1 = "__DOCAGENT_STRUCTURED_BULLET_L1__"
 STRUCTURED_BULLET_L2 = "__DOCAGENT_STRUCTURED_BULLET_L2__"
+PHASE_HOURS_MATRIX_MARKER = "__DOCAGENT_PHASE_HOURS_MATRIX__"
 WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 W = f"{{{WORD_NS}}}"
 
@@ -123,6 +124,18 @@ def money_format(value: Any) -> str:
     if number.is_integer():
         return f"{int(number):,}"
     return f"{number:,.2f}".rstrip("0").rstrip(".")
+
+
+def usd_format(value: Any) -> str:
+    """Render a number as USD currency for APN resource cost tables."""
+    resolved = resolve_field_value(value)
+    if resolved in ("", None):
+        return "$0.00"
+    try:
+        number = float(resolved)
+    except (TypeError, ValueError):
+        number = 0.0
+    return f"${number:,.2f}"
 
 
 def bool_status(value: Any, true_text: str = "Yes", false_text: str = "No") -> str:
@@ -427,18 +440,12 @@ def _phase_hours_context(
     table: Any,
     role_rates: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Build dynamic resource phase-hours context for DOCX rendering.
-
-    The web UI renders dynamic role columns. The DOCX template uses a stable
-    row-oriented fallback so removed roles are hidden and old static
-    SA/Engineer/Other fields are ignored.
-    """
+    """Build dynamic resource phase-hours context for DOCX matrix rendering."""
     roles = [str(row.get("role", "")).strip() for row in role_rates if str(row.get("role", "")).strip()]
     rate_by_role = {str(row.get("role", "")): _safe_float(row.get("rate", 100), 100.0) for row in role_rates}
     count_by_role = {str(row.get("role", "")): _safe_int(row.get("count", 0), 0) for row in role_rates}
 
     phase_rows: list[dict[str, Any]] = []
-    detail_rows: list[dict[str, Any]] = []
     total_hours_by_role = {role: 0.0 for role in roles}
     if not isinstance(table, list):
         table = []
@@ -465,9 +472,9 @@ def _phase_hours_context(
                 "rate_display": money_format(rate),
                 "cost": cost,
                 "cost_display": money_format(cost),
+                "cost_usd": usd_format(cost),
             }
             display_role_hours.append(role_row)
-            detail_rows.append({"phase": phase, **role_row})
 
         phase_rows.append({
             "phase": phase,
@@ -494,17 +501,18 @@ def _phase_hours_context(
             "rate_display": money_format(rate),
             "cost": cost,
             "cost_display": money_format(cost),
+            "cost_usd": usd_format(cost),
         })
 
     return {
         "roles": roles,
         "phase_rows": phase_rows,
-        "detail_rows": detail_rows,
         "total_rows": total_rows,
         "grand_total_hours": grand_total_hours,
         "grand_total_hours_display": money_format(grand_total_hours),
         "grand_total_cost": grand_total_cost,
         "grand_total_cost_display": money_format(grand_total_cost),
+        "grand_total_cost_usd": usd_format(grand_total_cost),
     }
 
 
@@ -784,10 +792,6 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
         "role_rates": dynamic_role_rates,
         "phase_hours": phase_hours,
         "phase_hours_table": phase_hours["phase_rows"],
-        "phase_hours_rows": phase_hours["detail_rows"],
-        "phase_hours_totals": phase_hours["total_rows"],
-        "grand_total_hours": phase_hours["grand_total_hours_display"],
-        "grand_total_cost": phase_hours["grand_total_cost_display"],
 
         # --- Contribution ---
         "contribution": contribution_context["parties"],
@@ -870,7 +874,143 @@ def _structured_bullet_lines(text: str) -> list[tuple[int, str]] | None:
     return lines or None
 
 
-def _postprocess_structured_bullets(docx_bytes: bytes) -> bytes:
+def _w_attr(name: str) -> str:
+    return f"{W}{name}"
+
+
+def _w_el(tag: str, attrs: dict[str, str] | None = None) -> ET.Element:
+    return ET.Element(f"{W}{tag}", {_w_attr(key): value for key, value in (attrs or {}).items()})
+
+
+def _w_sub(parent: ET.Element, tag: str, attrs: dict[str, str] | None = None) -> ET.Element:
+    return ET.SubElement(parent, f"{W}{tag}", {_w_attr(key): value for key, value in (attrs or {}).items()})
+
+
+def _table_cell(
+    text: str,
+    width: int,
+    *,
+    bold: bool = False,
+    shade: bool = False,
+    align: str = "left",
+) -> ET.Element:
+    cell = _w_el("tc")
+    tc_pr = _w_sub(cell, "tcPr")
+    _w_sub(tc_pr, "tcW", {"w": str(width), "type": "dxa"})
+    _w_sub(tc_pr, "vAlign", {"val": "center"})
+    if shade:
+        _w_sub(tc_pr, "shd", {"val": "clear", "color": "auto", "fill": "D9D9D9"})
+
+    paragraph = _w_sub(cell, "p")
+    ppr = _w_sub(paragraph, "pPr")
+    if align:
+        _w_sub(ppr, "jc", {"val": align})
+    run = _w_sub(paragraph, "r")
+    if bold:
+        rpr = _w_sub(run, "rPr")
+        _w_sub(rpr, "b")
+    text_node = _w_sub(run, "t")
+    text_node.text = text
+    return cell
+
+
+def _table_row(cells: list[ET.Element]) -> ET.Element:
+    row = _w_el("tr")
+    for cell in cells:
+        row.append(cell)
+    return row
+
+
+def _phase_hours_matrix_table(context: dict[str, Any]) -> ET.Element:
+    phase_hours = context.get("phase_hours", {}) if isinstance(context.get("phase_hours", {}), dict) else {}
+    role_rates = context.get("role_rates", []) if isinstance(context.get("role_rates", []), list) else []
+    phase_rows = phase_hours.get("phase_rows", []) if isinstance(phase_hours.get("phase_rows", []), list) else []
+    total_rows = phase_hours.get("total_rows", []) if isinstance(phase_hours.get("total_rows", []), list) else []
+
+    role_headers = [
+        f"{row.get('role', '')} ({row.get('count', 0)})"
+        for row in role_rates
+        if str(row.get("role", "")).strip()
+    ]
+    role_count = len(role_headers)
+    first_width = 1900
+    total_width = 1500
+    role_width = 1600 if role_count <= 5 else max(1150, int(8000 / max(role_count, 1)))
+    widths = [first_width, *([role_width] * role_count), total_width]
+
+    table = _w_el("tbl")
+    tbl_pr = _w_sub(table, "tblPr")
+    _w_sub(tbl_pr, "tblStyle", {"val": "TableGrid"})
+    _w_sub(tbl_pr, "tblW", {"w": "0", "type": "auto"})
+    _w_sub(tbl_pr, "tblLook", {
+        "val": "04A0",
+        "firstRow": "1",
+        "lastRow": "1",
+        "firstColumn": "1",
+        "lastColumn": "0",
+        "noHBand": "0",
+        "noVBand": "1",
+    })
+    grid = _w_sub(table, "tblGrid")
+    for width in widths:
+        _w_sub(grid, "gridCol", {"w": str(width)})
+
+    headers = ["Project Phase", *role_headers, "Total Hours"]
+    table.append(_table_row([
+        _table_cell(text, width, bold=True, shade=True, align="center")
+        for text, width in zip(headers, widths)
+    ]))
+
+    for row in phase_rows:
+        role_hours = row.get("role_hours", []) if isinstance(row.get("role_hours", []), list) else []
+        values = [
+            str(row.get("phase", "")),
+            *[str(item.get("hours_display", "0")) for item in role_hours],
+            str(row.get("total_display", "0")),
+        ]
+        table.append(_table_row([
+            _table_cell(value, width, align="left" if index == 0 else "center")
+            for index, (value, width) in enumerate(zip(values, widths))
+        ]))
+
+    total_hour_values = [
+        "Total Hours",
+        *[str(row.get("hours_display", "0")) for row in total_rows],
+        str(phase_hours.get("grand_total_hours_display", "0")),
+    ]
+    table.append(_table_row([
+        _table_cell(value, width, bold=True, align="left" if index == 0 else "center")
+        for index, (value, width) in enumerate(zip(total_hour_values, widths))
+    ]))
+
+    total_cost_values = [
+        "Total Cost",
+        *[str(row.get("cost_usd", "$0.00")) for row in total_rows],
+        str(phase_hours.get("grand_total_cost_usd", "$0.00")),
+    ]
+    table.append(_table_row([
+        _table_cell(value, width, bold=True, align="left" if index == 0 else "center")
+        for index, (value, width) in enumerate(zip(total_cost_values, widths))
+    ]))
+
+    return table
+
+
+def _replace_phase_hours_matrix_marker(root: ET.Element, context: dict[str, Any]) -> None:
+    parent_by_child = {child: parent for parent in root.iter() for child in list(parent)}
+    for paragraph in list(root.iter(f"{W}p")):
+        if PHASE_HOURS_MATRIX_MARKER not in _paragraph_text(paragraph):
+            continue
+        parent = parent_by_child.get(paragraph)
+        if parent is None:
+            continue
+        index = list(parent).index(paragraph)
+        parent.remove(paragraph)
+        parent.insert(index, _phase_hours_matrix_table(context))
+        return
+
+
+def _postprocess_docx(docx_bytes: bytes, context: dict[str, Any]) -> bytes:
     ET.register_namespace("w", WORD_NS)
     with zipfile.ZipFile(io.BytesIO(docx_bytes), "r") as zin:
         files = {name: zin.read(name) for name in zin.namelist()}
@@ -895,12 +1035,18 @@ def _postprocess_structured_bullets(docx_bytes: bytes) -> bytes:
             _set_bullet_level(new_paragraph, level)
             parent.insert(index + offset, new_paragraph)
 
+    _replace_phase_hours_matrix_marker(root, context)
+
     files[document_xml] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zout:
         for name, data in files.items():
             zout.writestr(name, data)
     return output.getvalue()
+
+
+def _postprocess_structured_bullets(docx_bytes: bytes) -> bytes:
+    return _postprocess_docx(docx_bytes, {})
 
 
 def _render_docx(template_bytes: bytes, context: dict[str, Any]) -> bytes:
@@ -915,7 +1061,7 @@ def _render_docx(template_bytes: bytes, context: dict[str, Any]) -> bytes:
 
         output = io.BytesIO()
         doc.save(output)
-        return _postprocess_structured_bullets(output.getvalue())
+        return _postprocess_docx(output.getvalue(), context)
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
