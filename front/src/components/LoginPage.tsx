@@ -4,7 +4,7 @@ import { useAuth } from '../auth/AuthContext'
 import { color, font, space, radius, shadow } from '../styles/tokens'
 import { input as inputStyle, buttonPrimary } from '../styles/components'
 
-type Mode = 'login' | 'signup' | 'confirm'
+type Mode = 'login' | 'signup' | 'confirm' | 'forgot' | 'reset'
 
 const ALLOWED_DOMAINS = ['mz.co.kr', 'megazone.com']
 
@@ -28,6 +28,18 @@ function validatePassword(pw: string) {
   }
 }
 
+function authErrorMessage(error: any) {
+  const code = error?.code || error?.name
+  const msg = error?.message || String(error)
+  if (code === 'CodeMismatchException') return '인증 코드가 올바르지 않습니다.'
+  if (code === 'ExpiredCodeException') return '인증 코드가 만료되었습니다. 코드를 다시 요청해주세요.'
+  if (code === 'UserNotFoundException' || msg.includes('username/client id combination not found') || msg.includes('Username/client id combination not found')) {
+    return '입력한 이메일을 확인해주세요.'
+  }
+  if (code === 'LimitExceededException') return '요청이 너무 많습니다. 잠시 후 다시 시도해주세요.'
+  return msg
+}
+
 function Check({ ok, label }: { ok: boolean; label: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: ok ? color.success : color.textMuted }}>
@@ -38,7 +50,7 @@ function Check({ ok, label }: { ok: boolean; label: string }) {
 }
 
 export default function LoginPage() {
-  const { login, signUp, confirmSignUp, resendCode } = useAuth()
+  const { login, signUp, confirmSignUp, resendCode, forgotPassword, confirmForgotPassword } = useAuth()
   const [mode, setMode] = useState<Mode>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -54,6 +66,7 @@ export default function LoginPage() {
   const emailValid = emailChecks.format && emailChecks.domain
   const pwValid = pwChecks.minLength && pwChecks.hasLower && pwChecks.hasNumber
   const signUpReady = emailValid && pwValid && pwMatch
+  const resetReady = emailValid && code.trim().length > 0 && pwValid && pwMatch
 
   const clearState = () => { setError(''); setMessage('') }
 
@@ -123,6 +136,45 @@ export default function LoginPage() {
     }
   }
 
+  const handleForgotPassword = async () => {
+    clearState()
+    if (!emailValid) {
+      setError('허용된 회사 이메일을 입력해주세요.')
+      return
+    }
+    setLoading(true)
+    try {
+      await forgotPassword(email)
+      setPassword('')
+      setConfirmPassword('')
+      setCode('')
+      setMode('reset')
+      setMessage('비밀번호 재설정 코드가 이메일로 발송되었습니다.')
+    } catch (e: any) {
+      setError(authErrorMessage(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleConfirmForgotPassword = async () => {
+    clearState()
+    if (!resetReady) return
+    setLoading(true)
+    try {
+      await confirmForgotPassword(email, code.trim(), password)
+      setPassword('')
+      setConfirmPassword('')
+      setCode('')
+      setMode('login')
+      setMessage('비밀번호가 변경되었습니다. 새 비밀번호로 로그인해주세요.')
+    } catch (e: any) {
+      setError(authErrorMessage(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div style={s.container}>
       <div style={s.card}>
@@ -155,24 +207,85 @@ export default function LoginPage() {
               ← 로그인으로 돌아가기
             </button>
           </>
-        ) : (
+        ) : mode === 'reset' ? (
           <>
-            {/* Email */}
-            <div style={{ position: 'relative', marginBottom: mode === 'signup' && email.length > 0 ? 4 : 10 }}>
+            <p style={{ fontSize: 13, color: '#374151', marginBottom: 16 }}>
+              <strong>{email}</strong>로 발송된 인증 코드를 입력하고 새 비밀번호를 설정해주세요.
+            </p>
+            <input
+              style={s.input}
+              placeholder="인증 코드"
+              value={code}
+              onChange={e => setCode(e.target.value)}
+              autoFocus
+            />
+            <div style={{ marginBottom: password.length > 0 ? 4 : 10 }}>
               <input
                 style={{
                   ...s.input, marginBottom: 0,
-                  borderColor: mode === 'signup' && email.length > 0
+                  borderColor: password.length > 0 ? (pwValid ? '#22c55e' : '#ef4444') : '#d1d5db',
+                }}
+                type="password"
+                placeholder="새 비밀번호"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+              />
+            </div>
+            {password.length > 0 && (
+              <div style={s.checkGroup}>
+                <Check ok={pwChecks.minLength} label="8자 이상" />
+                <Check ok={pwChecks.hasLower} label="영문 소문자 포함" />
+                <Check ok={pwChecks.hasNumber} label="숫자 포함" />
+              </div>
+            )}
+            <div style={{ marginBottom: confirmPassword.length > 0 ? 4 : 10 }}>
+              <input
+                style={{
+                  ...s.input, marginBottom: 0,
+                  borderColor: confirmPassword.length > 0 ? (pwMatch ? '#22c55e' : '#ef4444') : '#d1d5db',
+                }}
+                type="password"
+                placeholder="새 비밀번호 확인"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && resetReady && handleConfirmForgotPassword()}
+              />
+            </div>
+            {confirmPassword.length > 0 && (
+              <div style={s.checkGroup}>
+                <Check ok={pwMatch} label="비밀번호 일치" />
+              </div>
+            )}
+            <button
+              onClick={handleConfirmForgotPassword}
+              disabled={loading || !resetReady}
+              style={{ ...s.btn, opacity: loading || !resetReady ? 0.5 : 1, cursor: loading || !resetReady ? 'not-allowed' : 'pointer' }}
+            >
+              {loading ? '변경 중...' : '비밀번호 변경'}
+            </button>
+            <button onClick={() => { setMode('login'); setPassword(''); setConfirmPassword(''); setCode(''); clearState() }} style={s.linkBtn}>
+              ← 로그인으로 돌아가기
+            </button>
+          </>
+        ) : (
+          <>
+            {/* Email */}
+            <div style={{ position: 'relative', marginBottom: (mode === 'signup' || mode === 'forgot') && email.length > 0 ? 4 : 10 }}>
+              <input
+                style={{
+                  ...s.input, marginBottom: 0,
+                  borderColor: (mode === 'signup' || mode === 'forgot') && email.length > 0
                     ? (emailValid ? '#22c55e' : '#ef4444') : '#d1d5db',
                 }}
                 type="email"
                 placeholder="이메일"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && mode === 'forgot' && handleForgotPassword()}
                 autoFocus
               />
             </div>
-            {mode === 'signup' && email.length > 0 && (
+            {(mode === 'signup' || mode === 'forgot') && email.length > 0 && (
               <div style={s.checkGroup}>
                 <Check ok={emailChecks.format} label="올바른 이메일 형식" />
                 <Check ok={emailChecks.domain} label="허용 도메인 (@mz.co.kr / @megazone.com)" />
@@ -180,20 +293,22 @@ export default function LoginPage() {
             )}
 
             {/* Password */}
-            <div style={{ marginBottom: mode === 'signup' && password.length > 0 ? 4 : 10 }}>
-              <input
-                style={{
-                  ...s.input, marginBottom: 0,
-                  borderColor: mode === 'signup' && password.length > 0
-                    ? (pwValid ? '#22c55e' : '#ef4444') : '#d1d5db',
-                }}
-                type="password"
-                placeholder="비밀번호"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && mode === 'login' && handleLogin()}
-              />
-            </div>
+            {mode !== 'forgot' && (
+              <div style={{ marginBottom: mode === 'signup' && password.length > 0 ? 4 : 10 }}>
+                <input
+                  style={{
+                    ...s.input, marginBottom: 0,
+                    borderColor: mode === 'signup' && password.length > 0
+                      ? (pwValid ? '#22c55e' : '#ef4444') : '#d1d5db',
+                  }}
+                  type="password"
+                  placeholder="비밀번호"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && mode === 'login' && handleLogin()}
+                />
+              </div>
+            )}
             {mode === 'signup' && password.length > 0 && (
               <div style={s.checkGroup}>
                 <Check ok={pwChecks.minLength} label="8자 이상" />
@@ -233,8 +348,24 @@ export default function LoginPage() {
                 <button onClick={handleLogin} disabled={loading} style={s.btn}>
                   {loading ? '로그인 중...' : '로그인'}
                 </button>
+                <button onClick={() => { setMode('forgot'); setPassword(''); setConfirmPassword(''); setCode(''); clearState() }} style={s.linkBtn}>
+                  비밀번호를 잊으셨나요?
+                </button>
                 <button onClick={() => { setMode('signup'); clearState() }} style={s.linkBtn}>
                   계정이 없으신가요? 회원가입
+                </button>
+              </>
+            ) : mode === 'forgot' ? (
+              <>
+                <button
+                  onClick={handleForgotPassword}
+                  disabled={loading || !emailValid}
+                  style={{ ...s.btn, opacity: loading || !emailValid ? 0.5 : 1, cursor: loading || !emailValid ? 'not-allowed' : 'pointer' }}
+                >
+                  {loading ? '요청 중...' : '재설정 코드 받기'}
+                </button>
+                <button onClick={() => { setMode('login'); clearState() }} style={s.linkBtn}>
+                  ← 로그인으로 돌아가기
                 </button>
               </>
             ) : (

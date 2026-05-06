@@ -83,6 +83,60 @@ export async function resendConfirmationCode(email: string): Promise<void> {
   })
 }
 
+export async function forgotPassword(email: string): Promise<void> {
+  const user = new CognitoUser({ Username: email, Pool: userPool })
+  return new Promise((resolve, reject) => {
+    let settled = false
+    user.forgotPassword({
+      onSuccess: () => {
+        if (!settled) {
+          settled = true
+          resolve()
+        }
+      },
+      onFailure: (err) => {
+        if (!settled) {
+          settled = true
+          reject(err)
+        }
+      },
+      inputVerificationCode: () => {
+        if (!settled) {
+          settled = true
+          resolve()
+        }
+      },
+    })
+  })
+}
+
+export async function confirmForgotPassword(email: string, code: string, newPassword: string): Promise<void> {
+  const user = new CognitoUser({ Username: email, Pool: userPool })
+  return new Promise((resolve, reject) => {
+    user.confirmPassword(code, newPassword, {
+      onSuccess: () => resolve(),
+      onFailure: (err) => reject(err),
+    })
+  })
+}
+
+export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
+  const user = userPool.getCurrentUser()
+  if (!user) throw new Error('로그인 세션을 찾을 수 없습니다. 다시 로그인해주세요.')
+
+  const session = await getSession()
+  if (!session || !session.isValid()) {
+    throw new Error('로그인 세션이 만료되었습니다. 다시 로그인해주세요.')
+  }
+
+  return new Promise((resolve, reject) => {
+    user.changePassword(oldPassword, newPassword, (err) => {
+      if (err) reject(err)
+      else resolve()
+    })
+  })
+}
+
 export async function getCurrentUser(): Promise<AuthUser | null> {
   const session = await getSession()
   if (!session) return null

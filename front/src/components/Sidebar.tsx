@@ -3,6 +3,7 @@ import { useSessionStore } from '../store/sessionStore'
 import { useAuth } from '../auth/AuthContext'
 import { color, font, space, radius, shadow } from '../styles/tokens'
 import { resolveDisplayText } from '../utils/frontendSchema'
+import { AccountModal } from './AccountModal'
 
 export interface SidebarProps {
   collapsed?: boolean
@@ -19,6 +20,7 @@ export function Sidebar({ collapsed = false, onToggle }: SidebarProps) {
   const deleteDocument = useSessionStore(s => s.deleteDocument)
   const selectDocument = useSessionStore(s => s.selectDocument)
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [accountOpen, setAccountOpen] = useState(false)
 
   useEffect(() => {
     fetchDocuments()
@@ -146,24 +148,36 @@ export function Sidebar({ collapsed = false, onToggle }: SidebarProps) {
         ))}
       </div>
 
-      {/* Footer — user info + logout */}
+      {/* Footer — user info + account actions */}
       <div style={{
         padding: '12px', borderTop: `1px solid ${color.border}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+        display: 'flex', flexDirection: 'column', gap: 8,
       }}>
-        <div style={{ fontSize: 12, color: color.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+        <div style={{ fontSize: 12, color: color.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={user?.email || '사용자'}>
           {user?.email || '사용자'}
         </div>
-        <button
-          onClick={logout}
-          style={{
-            background: 'none', border: `1px solid ${color.border}`, borderRadius: 4,
-            padding: '4px 10px', fontSize: 12, color: color.textSecondary, cursor: 'pointer', flexShrink: 0,
-          }}
-        >
-          로그아웃
-        </button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            onClick={() => setAccountOpen(true)}
+            style={{
+              flex: 1, background: color.bgSurface, border: `1px solid ${color.border}`, borderRadius: 4,
+              padding: '5px 8px', fontSize: 12, color: color.textPrimary, cursor: 'pointer',
+            }}
+          >
+            내 계정
+          </button>
+          <button
+            onClick={logout}
+            style={{
+              flex: 1, background: 'none', border: `1px solid ${color.border}`, borderRadius: 4,
+              padding: '5px 8px', fontSize: 12, color: color.textSecondary, cursor: 'pointer',
+            }}
+          >
+            로그아웃
+          </button>
+        </div>
       </div>
+      <AccountModal open={accountOpen} onClose={() => setAccountOpen(false)} />
     </div>
   )
 }
