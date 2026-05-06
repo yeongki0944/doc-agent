@@ -363,7 +363,7 @@ def _acceptance_step_rows(steps: Any) -> list[dict[str, Any]]:
 
 
 def _partner_team_rows(team: Any) -> list[dict[str, Any]]:
-    """Render partner_technical_team as list of {role, name}."""
+    """Render Partner Project Team rows from Stakeholders."""
     rows: list[dict[str, Any]] = []
     if not isinstance(team, list):
         return rows
@@ -375,16 +375,9 @@ def _partner_team_rows(team: Any) -> list[dict[str, Any]]:
         rows.append({
             "role": resolve_field_value(data.get("role", "")),
             "name": resolve_field_value(data.get("name", "")),
+            "contact": resolve_field_value(data.get("contact", "")),
         })
     return rows
-
-
-def _role_rate_value(resources_cost_estimates: dict[str, Any], role: str) -> Any:
-    for row in resources_cost_estimates.get("role_rates", []) if isinstance(resources_cost_estimates.get("role_rates", []), list) else []:
-        data = _as_mapping(row)
-        if data.get("role") == role:
-            return resolve_field_value(data.get("rate", {}), 100)
-    return 100
 
 
 def _role_rate_rows(project_team: Any, resources_cost_estimates: dict[str, Any]) -> list[dict[str, Any]]:
@@ -396,43 +389,123 @@ def _role_rate_rows(project_team: Any, resources_cost_estimates: dict[str, Any])
     rate_by_role: dict[str, Any] = {}
     for row in rates:
         data = _as_mapping(row)
-        role = str(data.get("role", "")).strip()
+        role = str(resolve_field_value(data.get("role", ""), "")).strip()
         if role:
             rate_by_role[role] = resolve_field_value(data.get("rate", {}), 100)
 
     grouped: dict[str, dict[str, Any]] = {}
     for member in team_rows:
         role = str(member.get("role", "")).strip() or "Unassigned"
-        entry = grouped.setdefault(role, {"role": role, "count": 0, "members": [], "rate": rate_by_role.get(role, 100)})
+        rate = _safe_float(rate_by_role.get(role, 100), 100.0)
+        entry = grouped.setdefault(role, {"role": role, "count": 0, "members": [], "rate": rate})
         entry["count"] += 1
         name = str(member.get("name", "")).strip()
         if name:
             entry["members"].append(name)
 
     return [
-        {**row, "members": ", ".join(row["members"])}
+        {**row, "members": ", ".join(row["members"]), "rate_display": money_format(row["rate"])}
         for row in grouped.values()
     ]
 
 
-def _phase_hours_rows(table: Any) -> list[dict[str, Any]]:
-    """Render phase_hours_table as list of {phase, sa_hours, eng_hours, other_hours, total}."""
-    rows: list[dict[str, Any]] = []
+def _phase_role_hours(data: dict[str, Any]) -> dict[str, float]:
+    role_hours = data.get("role_hours", [])
+    if not isinstance(role_hours, list):
+        return {}
+
+    result: dict[str, float] = {}
+    for item in role_hours:
+        row = _as_mapping(item)
+        role = str(resolve_field_value(row.get("role", ""), "")).strip()
+        if role:
+            result[role] = _safe_float(row.get("hours", 0), 0.0)
+    return result
+
+
+def _phase_hours_context(
+    table: Any,
+    role_rates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build dynamic resource phase-hours context for DOCX rendering.
+
+    The web UI renders dynamic role columns. The DOCX template uses a stable
+    row-oriented fallback so removed roles are hidden and old static
+    SA/Engineer/Other fields are ignored.
+    """
+    roles = [str(row.get("role", "")).strip() for row in role_rates if str(row.get("role", "")).strip()]
+    rate_by_role = {str(row.get("role", "")): _safe_float(row.get("rate", 100), 100.0) for row in role_rates}
+    count_by_role = {str(row.get("role", "")): _safe_int(row.get("count", 0), 0) for row in role_rates}
+
+    phase_rows: list[dict[str, Any]] = []
+    detail_rows: list[dict[str, Any]] = []
+    total_hours_by_role = {role: 0.0 for role in roles}
     if not isinstance(table, list):
-        return rows
+        table = []
 
     for entry in table:
         data = _as_mapping(entry)
         if not data:
             continue
-        rows.append({
-            "phase": resolve_field_value(data.get("phase", "")),
-            "sa_hours": _safe_int(data.get("sa_hours", 0), 0),
-            "eng_hours": _safe_int(data.get("eng_hours", 0), 0),
-            "other_hours": _safe_int(data.get("other_hours", 0), 0),
-            "total": _safe_int(data.get("total", 0), 0),
+        phase = resolve_field_value(data.get("phase", ""))
+        role_hours_by_role = _phase_role_hours(data)
+        display_role_hours: list[dict[str, Any]] = []
+        phase_total = 0.0
+        for role in roles:
+            hours = _safe_float(role_hours_by_role.get(role, 0), 0.0)
+            rate = rate_by_role.get(role, 100.0)
+            cost = hours * rate
+            phase_total += hours
+            total_hours_by_role[role] += hours
+            role_row = {
+                "role": role,
+                "hours": hours,
+                "hours_display": money_format(hours),
+                "rate": rate,
+                "rate_display": money_format(rate),
+                "cost": cost,
+                "cost_display": money_format(cost),
+            }
+            display_role_hours.append(role_row)
+            detail_rows.append({"phase": phase, **role_row})
+
+        phase_rows.append({
+            "phase": phase,
+            "role_hours": display_role_hours,
+            "total": phase_total,
+            "total_display": money_format(phase_total),
         })
-    return rows
+
+    total_rows: list[dict[str, Any]] = []
+    grand_total_hours = 0.0
+    grand_total_cost = 0.0
+    for role in roles:
+        hours = total_hours_by_role.get(role, 0.0)
+        rate = rate_by_role.get(role, 100.0)
+        cost = hours * rate
+        grand_total_hours += hours
+        grand_total_cost += cost
+        total_rows.append({
+            "role": role,
+            "count": count_by_role.get(role, 0),
+            "hours": hours,
+            "hours_display": money_format(hours),
+            "rate": rate,
+            "rate_display": money_format(rate),
+            "cost": cost,
+            "cost_display": money_format(cost),
+        })
+
+    return {
+        "roles": roles,
+        "phase_rows": phase_rows,
+        "detail_rows": detail_rows,
+        "total_rows": total_rows,
+        "grand_total_hours": grand_total_hours,
+        "grand_total_hours_display": money_format(grand_total_hours),
+        "grand_total_cost": grand_total_cost,
+        "grand_total_cost_display": money_format(grand_total_cost),
+    }
 
 
 def _totals_row(data: Any) -> dict[str, str]:
@@ -620,9 +693,7 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
     # --- Resources & Cost Estimates (v2: staffing data from resources_cost_estimates) ---
     partner_technical_team = _partner_team_rows(project_team)
     dynamic_role_rates = _role_rate_rows(project_team, resources_cost_estimates)
-    phase_hours_table = _phase_hours_rows(resources_cost_estimates.get("phase_hours_table", []))
-    total_hours = _totals_row(resources_cost_estimates.get("total_hours", {}))
-    total_cost = _totals_row(resources_cost_estimates.get("total_cost", {}))
+    phase_hours = _phase_hours_context(resources_cost_estimates.get("phase_hours_table", []), dynamic_role_rates)
 
     # --- Client signatures (v2: from resources_cost_estimates) ---
     client_signature_customer_name = resolve_field_value(resources_cost_estimates.get("client_signature_customer_name", ""))
@@ -655,11 +726,6 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
         "poc_objectives": poc_objectives,
         "custom_blocks": custom_blocks,
         "executive_summary_groups": executive_summary_groups,
-        "executive_summary": "\n".join(
-            f"{group['category_name']}\n{group['bullets_text']}"
-            for group in executive_summary_groups
-            if group.get("category_name") or group.get("bullets_text")
-        ),
 
         # --- Business Case (flattened from nested) ---
         "business_case_problem": business_case_problem,
@@ -716,12 +782,12 @@ def _build_context(params: dict[str, Any]) -> dict[str, Any]:
         # --- Resources & Cost Estimates ---
         "partner_technical_team": partner_technical_team,
         "role_rates": dynamic_role_rates,
-        "rate_solution_architect": _role_rate_value(resources_cost_estimates, "SA"),
-        "rate_engineer": _role_rate_value(resources_cost_estimates, "AI Service Engineer"),
-        "rate_other": 100,
-        "phase_hours_table": phase_hours_table,
-        "total_hours": total_hours,
-        "total_cost": total_cost,
+        "phase_hours": phase_hours,
+        "phase_hours_table": phase_hours["phase_rows"],
+        "phase_hours_rows": phase_hours["detail_rows"],
+        "phase_hours_totals": phase_hours["total_rows"],
+        "grand_total_hours": phase_hours["grand_total_hours_display"],
+        "grand_total_cost": phase_hours["grand_total_cost_display"],
 
         # --- Contribution ---
         "contribution": contribution_context["parties"],
