@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import type { AcceptanceStep, FieldValue } from '../../store/documentStore'
 import { FieldValueEditor } from './FieldValueEditor'
 import { StructuredBulletListEditor } from './StructuredBulletListEditor'
@@ -7,6 +7,7 @@ import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
 import { color } from '../../styles/tokens'
+import { moveItem } from '../../utils/reorder'
 
 const emptyField = (): FieldValue => ({
   user_input: null,
@@ -46,24 +47,34 @@ export function AcceptanceStepEditor({
   steps, sectionDotPath, docId, onStepsChange,
 }: AcceptanceStepEditorProps) {
   const { saveStatus: arraySaveStatus, doSave: doArraySave } = useSaveStatus()
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+
+  const persist = useCallback((updated: AcceptanceStep[]) => {
+    onStepsChange(updated)
+    doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
+  }, [docId, doArraySave, onStepsChange, sectionDotPath])
 
   const handleAddStep = useCallback(() => {
-    const updated = [...steps, createEmptyAcceptanceStep()]
-    onStepsChange(updated)
-    doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
-  }, [steps, onStepsChange, doArraySave, docId, sectionDotPath])
+    persist([...steps, createEmptyAcceptanceStep()])
+  }, [persist, steps])
 
   const handleRemoveStep = useCallback((stepIndex: number) => {
-    const updated = steps.filter((_, i) => i !== stepIndex)
-    onStepsChange(updated)
-    doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
-  }, [steps, onStepsChange, doArraySave, docId, sectionDotPath])
+    persist(steps.filter((_, i) => i !== stepIndex))
+  }, [persist, steps])
 
   const handleAddBullet = useCallback((stepIndex: number) => {
     const updated = steps.map((s, i) => i === stepIndex ? { ...s, bullets: [...s.bullets, { text: emptyField(), level: 1 as const }] } : s)
-    onStepsChange(updated)
-    doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
-  }, [steps, onStepsChange, doArraySave, docId, sectionDotPath])
+    persist(updated)
+  }, [persist, steps])
+
+  const handleDropStep = useCallback((stepIndex: number) => {
+    if (dragIndex === null || dragIndex === stepIndex) {
+      setDragIndex(null)
+      return
+    }
+    persist(moveItem(steps, dragIndex, stepIndex))
+    setDragIndex(null)
+  }, [dragIndex, persist, steps])
 
   const handleHeadingUpdate = useCallback((stepIndex: number, newField: FieldValue) => {
     const updated = steps.map((s, i) =>
@@ -89,9 +100,26 @@ export function AcceptanceStepEditor({
   return (
     <div>
       {steps.map((step, stepIndex) => (
-        <div key={stepIndex} style={stepCard}>
+        <div
+          key={stepIndex}
+          style={{ ...stepCard, opacity: dragIndex === stepIndex ? 0.55 : 1 }}
+          onDragOver={event => event.preventDefault()}
+          onDrop={() => handleDropStep(stepIndex)}
+        >
           <div style={stepHeader}>
-            <span style={stepLabel}>Step {stepIndex + 1}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button
+                type="button"
+                draggable
+                onDragStart={() => setDragIndex(stepIndex)}
+                onDragEnd={() => setDragIndex(null)}
+                style={dragHandle}
+                title="Drag step to reorder"
+              >
+                ↕
+              </button>
+              <span style={stepLabel}>Step {stepIndex + 1}</span>
+            </div>
             <button
               onClick={() => handleRemoveStep(stepIndex)}
               style={removeBtnStyle}
@@ -173,6 +201,16 @@ const stepLabel: React.CSSProperties = {
   fontWeight: 600,
   fontSize: 14,
   color: color.textPrimary,
+}
+
+const dragHandle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: color.textMuted,
+  cursor: 'grab',
+  fontSize: 14,
+  padding: '2px 4px',
+  lineHeight: 1,
 }
 
 const fieldRow: React.CSSProperties = {

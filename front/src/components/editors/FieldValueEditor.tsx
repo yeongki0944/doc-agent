@@ -12,6 +12,7 @@ export interface FieldValueEditorProps {
   multiline?: boolean
   type?: 'text' | 'date'
   transformValue?: (value: string) => string
+  onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => void
   onLocalUpdate: (newField: FieldValue) => void  // optimistic Zustand update
 }
 
@@ -20,7 +21,7 @@ export interface FieldValueEditorProps {
  * Section editors compose this rather than calling saveUserInput directly.
  */
 export function FieldValueEditor({
-  field, dotPath, docId, placeholder, multiline, type, transformValue, onLocalUpdate,
+  field, dotPath, docId, placeholder, multiline, type, transformValue, onKeyDown, onLocalUpdate,
 }: FieldValueEditorProps) {
   const { saveStatus, handleSave } = useFieldSave(docId)
 
@@ -37,6 +38,7 @@ export function FieldValueEditor({
         placeholder={placeholder}
         multiline={multiline}
         type={type}
+        onKeyDown={onKeyDown}
       />
       <SaveStatusIndicator status={saveStatus} />
     </div>

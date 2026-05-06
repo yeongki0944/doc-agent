@@ -10,6 +10,7 @@ interface EditableFieldProps {
   multiline?: boolean
   type?: 'text' | 'date'
   onDraftChange?: (value: string) => void
+  onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => void
 }
 
 /**
@@ -17,7 +18,7 @@ interface EditableFieldProps {
  * Shows a pencil icon on hover. AI values get yellow background + badge.
  * type="date" renders a native date picker.
  */
-export function EditableField({ value, isAi, onSave, placeholder, multiline, type = 'text', onDraftChange }: EditableFieldProps) {
+export function EditableField({ value, isAi, onSave, placeholder, multiline, type = 'text', onDraftChange, onKeyDown }: EditableFieldProps) {
   const textValue = resolveDisplayText(value)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(textValue)
@@ -66,7 +67,11 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
             setEditing(false)
           }}
           onBlur={save}
-          onKeyDown={e => { if (e.key === 'Escape') cancel() }}
+          onKeyDown={e => {
+            onKeyDown?.(e)
+            if (e.defaultPrevented) return
+            if (e.key === 'Escape') cancel()
+          }}
           style={style}
         />
       )
@@ -79,6 +84,8 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
           onChange={e => { setDraft(e.target.value); onDraftChange?.(e.target.value) }}
           onBlur={save}
           onKeyDown={e => {
+            onKeyDown?.(e)
+            if (e.defaultPrevented) return
             if (e.key === 'Escape') cancel()
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save() }
           }}
@@ -94,6 +101,8 @@ export function EditableField({ value, isAi, onSave, placeholder, multiline, typ
         onChange={e => { setDraft(e.target.value); onDraftChange?.(e.target.value) }}
         onBlur={save}
         onKeyDown={e => {
+          onKeyDown?.(e)
+          if (e.defaultPrevented) return
           if (e.key === 'Escape') cancel()
           if (e.key === 'Enter') save()
         }}

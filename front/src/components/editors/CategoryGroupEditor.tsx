@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import type { CategoryGroup, FieldValue } from '../../store/documentStore'
 import { FieldValueEditor } from './FieldValueEditor'
 import { StructuredBulletListEditor, createStructuredBullet } from './StructuredBulletListEditor'
@@ -7,6 +7,7 @@ import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
 import { color } from '../../styles/tokens'
+import { moveItem } from '../../utils/reorder'
 
 const emptyField = (): FieldValue => ({
   user_input: null,
@@ -43,26 +44,36 @@ export function CategoryGroupEditor({
   groups, sectionDotPath, docId, onGroupsChange,
 }: CategoryGroupEditorProps) {
   const { saveStatus: arraySaveStatus, doSave: doArraySave } = useSaveStatus()
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+
+  const persist = useCallback((updated: CategoryGroup[]) => {
+    onGroupsChange(updated)
+    doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
+  }, [docId, doArraySave, onGroupsChange, sectionDotPath])
 
   const handleAddGroup = useCallback(() => {
-    const updated = [...groups, createEmptyCategoryGroup()]
-    onGroupsChange(updated)
-    doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
-  }, [groups, onGroupsChange, doArraySave, docId, sectionDotPath])
+    persist([...groups, createEmptyCategoryGroup()])
+  }, [groups, persist])
 
   const handleRemoveGroup = useCallback((groupIndex: number) => {
-    const updated = groups.filter((_, i) => i !== groupIndex)
-    onGroupsChange(updated)
-    doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
-  }, [groups, onGroupsChange, doArraySave, docId, sectionDotPath])
+    persist(groups.filter((_, i) => i !== groupIndex))
+  }, [groups, persist])
 
   const handleAddBullet = useCallback((groupIndex: number) => {
     const updated = groups.map((g, i) =>
       i === groupIndex ? { ...g, bullets: [...g.bullets, createStructuredBullet()] } : g,
     )
-    onGroupsChange(updated)
-    doArraySave(() => saveUserInput(docId, sectionDotPath, updated))
-  }, [groups, onGroupsChange, doArraySave, docId, sectionDotPath])
+    persist(updated)
+  }, [groups, persist])
+
+  const handleDropGroup = useCallback((groupIndex: number) => {
+    if (dragIndex === null || dragIndex === groupIndex) {
+      setDragIndex(null)
+      return
+    }
+    persist(moveItem(groups, dragIndex, groupIndex))
+    setDragIndex(null)
+  }, [dragIndex, groups, persist])
 
   const handleCategoryNameUpdate = useCallback((groupIndex: number, newField: FieldValue) => {
     const updated = groups.map((g, i) =>
@@ -81,8 +92,23 @@ export function CategoryGroupEditor({
   return (
     <div>
       {groups.map((group, groupIndex) => (
-        <div key={groupIndex} style={groupCard}>
+        <div
+          key={groupIndex}
+          style={{ ...groupCard, opacity: dragIndex === groupIndex ? 0.55 : 1 }}
+          onDragOver={event => event.preventDefault()}
+          onDrop={() => handleDropGroup(groupIndex)}
+        >
           <div style={groupHeader}>
+            <button
+              type="button"
+              draggable
+              onDragStart={() => setDragIndex(groupIndex)}
+              onDragEnd={() => setDragIndex(null)}
+              style={dragHandle}
+              title="Drag group to reorder"
+            >
+              ↕
+            </button>
             <span style={groupNumber}>({groupIndex + 1})</span>
             <FieldValueEditor
               field={group.category_name}
@@ -150,6 +176,16 @@ const groupNumber: React.CSSProperties = {
   color: color.textMuted,
   fontSize: 13,
   flexShrink: 0,
+}
+
+const dragHandle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: color.textMuted,
+  cursor: 'grab',
+  fontSize: 14,
+  padding: '2px 4px',
+  lineHeight: 1,
 }
 
 const bulletsContainer: React.CSSProperties = {

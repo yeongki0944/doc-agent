@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import type { ContactEntry, FieldValue } from '../../store/documentStore'
 import { FieldValueEditor } from './FieldValueEditor'
 import { EditableComboField } from './EditableComboField'
@@ -6,6 +6,7 @@ import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
 import { color } from '../../styles/tokens'
+import { moveItem } from '../../utils/reorder'
 
 const COLUMN_LABELS: Record<keyof ContactEntry, string> = {
   name: 'Name',
@@ -44,6 +45,7 @@ export interface ContactTableEditorProps {
   onContactsChange: (contacts: ContactEntry[]) => void
   columns?: (keyof ContactEntry)[]  // which columns to show (varies by list type)
   columnPresets?: Partial<Record<keyof ContactEntry, readonly (string | number)[]>>
+  enableReorder?: boolean
 }
 
 /**
@@ -53,10 +55,11 @@ export interface ContactTableEditorProps {
  * Add/remove rows persist the full array to listDotPath via saveUserInput.
  */
 export function ContactTableEditor({
-  contacts, listDotPath, docId, onContactsChange, columns, columnPresets,
+  contacts, listDotPath, docId, onContactsChange, columns, columnPresets, enableReorder = false,
 }: ContactTableEditorProps) {
   const visibleColumns = columns ?? DEFAULT_COLUMNS
   const { saveStatus: arraySaveStatus, doSave: doArraySave } = useSaveStatus()
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
 
   const handleAdd = useCallback(() => {
     const updated = [...contacts, createEmptyContactEntry()]
@@ -69,6 +72,17 @@ export function ContactTableEditor({
     onContactsChange(updated)
     doArraySave(() => saveUserInput(docId, listDotPath, updated))
   }, [contacts, onContactsChange, doArraySave, docId, listDotPath])
+
+  const handleDropRow = useCallback((index: number) => {
+    if (!enableReorder || dragIndex === null || dragIndex === index) {
+      setDragIndex(null)
+      return
+    }
+    const updated = moveItem(contacts, dragIndex, index)
+    onContactsChange(updated)
+    doArraySave(() => saveUserInput(docId, listDotPath, updated))
+    setDragIndex(null)
+  }, [contacts, docId, doArraySave, dragIndex, enableReorder, listDotPath, onContactsChange])
 
   const handleLocalUpdate = useCallback((index: number, field: keyof ContactEntry, newField: FieldValue) => {
     const updated = contacts.map((entry, i) =>
@@ -83,6 +97,7 @@ export function ContactTableEditor({
         <table style={tableStyle}>
           <thead>
             <tr>
+              {enableReorder && <th style={thStyle} />}
               <th style={thStyle}>#</th>
               {visibleColumns.map(col => (
                 <th key={col} style={thStyle}>{COLUMN_LABELS[col]}</th>
@@ -92,7 +107,26 @@ export function ContactTableEditor({
           </thead>
           <tbody>
             {contacts.map((entry, index) => (
-              <tr key={index}>
+              <tr
+                key={index}
+                style={{ opacity: dragIndex === index ? 0.55 : 1 }}
+                onDragOver={event => enableReorder && event.preventDefault()}
+                onDrop={() => handleDropRow(index)}
+              >
+                {enableReorder && (
+                  <td style={tdStyle}>
+                    <button
+                      type="button"
+                      draggable
+                      onDragStart={() => setDragIndex(index)}
+                      onDragEnd={() => setDragIndex(null)}
+                      style={dragHandle}
+                      title="Drag row to reorder"
+                    >
+                      ↕
+                    </button>
+                  </td>
+                )}
                 <td style={tdStyle}>
                   <span style={{ color: color.textMuted, fontSize: 12 }}>{index + 1}</span>
                 </td>
@@ -134,7 +168,7 @@ export function ContactTableEditor({
             ))}
             {contacts.length === 0 && (
               <tr>
-                <td colSpan={visibleColumns.length + 2} style={{ ...tdStyle, textAlign: 'center', color: color.textMuted }}>
+                <td colSpan={visibleColumns.length + (enableReorder ? 3 : 2)} style={{ ...tdStyle, textAlign: 'center', color: color.textMuted }}>
                   항목이 없습니다
                 </td>
               </tr>
@@ -181,6 +215,16 @@ const removeBtnStyle: React.CSSProperties = {
   color: color.textMuted,
   fontSize: 14,
   padding: '2px 4px',
+}
+
+const dragHandle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: color.textMuted,
+  cursor: 'grab',
+  fontSize: 13,
+  padding: '2px 3px',
+  lineHeight: 1,
 }
 
 const addBtnStyle: React.CSSProperties = {

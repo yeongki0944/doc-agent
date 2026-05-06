@@ -98,6 +98,7 @@ export function StakeholdersSection() {
               onContactsChange={updateList(key)}
               columns={columns}
               columnPresets={columnPresets}
+              enableReorder={key === 'project_team'}
             />
           </div>
         ))}
@@ -123,6 +124,7 @@ export function StakeholdersSection() {
             onContactsChange={updateList(key)}
             columns={columns}
             columnPresets={columnPresets}
+            enableReorder={key === 'project_team'}
           />
         </div>
       ))}

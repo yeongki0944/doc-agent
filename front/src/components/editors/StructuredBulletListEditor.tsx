@@ -1,10 +1,11 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import type { FieldValue, StructuredBullet } from '../../store/documentStore'
 import { FieldValueEditor } from './FieldValueEditor'
 import { SaveStatusIndicator } from '../SaveStatusIndicator'
 import { useSaveStatus } from '../../hooks/useSaveStatus'
 import { saveUserInput } from '../../utils/api'
 import { sanitizeListPasteText } from '../../utils/textSanitizer'
+import { moveItem, normalizeStructuredBulletLevels } from '../../utils/reorder'
 import { color } from '../../styles/tokens'
 
 const emptyField = (): FieldValue => ({
@@ -39,6 +40,7 @@ export function StructuredBulletListEditor({
   items, listDotPath, docId, onItemsChange, placeholder, compact,
 }: StructuredBulletListEditorProps) {
   const { saveStatus: arraySaveStatus, doSave: doArraySave } = useSaveStatus()
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
 
   const persist = useCallback((updated: StructuredBullet[]) => {
     onItemsChange(updated)
@@ -50,9 +52,7 @@ export function StructuredBulletListEditor({
   }, [items, persist])
 
   const handleRemove = useCallback((index: number) => {
-    persist(items.filter((_, i) => i !== index).map((item, i, arr) => (
-      i === 0 && item.level === 2 ? { ...item, level: 1 } : item
-    )))
+    persist(normalizeStructuredBulletLevels(items.filter((_, i) => i !== index)))
   }, [items, persist])
 
   const handleTextUpdate = useCallback((index: number, newField: FieldValue) => {
@@ -64,10 +64,40 @@ export function StructuredBulletListEditor({
     persist(items.map((item, i) => (i === index ? { ...item, level } : item)))
   }, [items, persist])
 
+  const handleDrop = useCallback((index: number) => {
+    if (dragIndex === null || dragIndex === index) {
+      setDragIndex(null)
+      return
+    }
+    persist(normalizeStructuredBulletLevels(moveItem(items, dragIndex, index)))
+    setDragIndex(null)
+  }, [dragIndex, items, persist])
+
+  const handleItemKeyDown = useCallback((index: number) => (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    if (event.key !== 'Tab') return
+    event.preventDefault()
+    setLevel(index, event.shiftKey ? 1 : 2)
+  }, [setLevel])
+
   return (
     <div>
       {items.map((item, index) => (
-        <div key={index} style={{ ...rowStyle, marginLeft: item.level === 2 ? 24 : 0 }}>
+        <div
+          key={index}
+          style={{ ...rowStyle, marginLeft: item.level === 2 ? 24 : 0, opacity: dragIndex === index ? 0.55 : 1 }}
+          onDragOver={event => event.preventDefault()}
+          onDrop={() => handleDrop(index)}
+        >
+          <button
+            type="button"
+            draggable
+            onDragStart={() => setDragIndex(index)}
+            onDragEnd={() => setDragIndex(null)}
+            style={dragHandle}
+            title="Drag to reorder"
+          >
+            ↕
+          </button>
           <span style={markerStyle}>{item.level === 2 ? '◦' : '•'}</span>
           <FieldValueEditor
             field={item.text}
@@ -76,6 +106,7 @@ export function StructuredBulletListEditor({
             placeholder={placeholder ?? 'Item'}
             multiline={compact ? false : true}
             transformValue={sanitizeListPasteText}
+            onKeyDown={handleItemKeyDown(index)}
             onLocalUpdate={(newField) => handleTextUpdate(index, newField)}
           />
           <button type="button" onClick={() => setLevel(index, 1)} disabled={item.level === 1} style={toolBtn} title="Outdent">←</button>
@@ -102,6 +133,16 @@ const markerStyle: React.CSSProperties = {
   color: color.textMuted,
   fontSize: 14,
   minWidth: 14,
+}
+
+const dragHandle: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  color: color.textMuted,
+  cursor: 'grab',
+  fontSize: 13,
+  padding: '2px 3px',
+  lineHeight: 1,
 }
 
 const toolBtn: React.CSSProperties = {
