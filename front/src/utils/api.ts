@@ -57,6 +57,12 @@ export interface ReviewResult {
   suggested_patches?: Array<{ op: string; path: string; value?: any; reason?: string }>
   kb_retrieval?: any
   error?: string
+  // Standard response envelope (hardened backend)
+  standard_status?: 'completed' | 'partial_completed' | 'failed'
+  message?: string
+  warnings?: string[]
+  missing_inputs?: string[]
+  error_reason?: string
 }
 
 export interface ResourcePlanInput {
@@ -83,6 +89,11 @@ export interface ResourcePlanResult {
   warnings?: string[]
   assumptions?: string[]
   error?: string
+  // Standard response envelope (hardened backend)
+  standard_status?: 'completed' | 'partial_completed' | 'failed'
+  message?: string
+  missing_inputs?: string[]
+  error_reason?: string
 }
 
 export async function calculateResourcePlan(

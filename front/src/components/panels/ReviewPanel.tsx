@@ -7,6 +7,7 @@ import {
   type ReviewIssue,
 } from '../../utils/api'
 import { useDocumentStore } from '../../store/documentStore'
+import { StatusBadge, EnvelopeNotices } from './StatusEnvelope'
 
 type Severity = 'critical' | 'high' | 'medium' | 'low'
 
@@ -86,7 +87,12 @@ export function ReviewPanel({ docId }: { docId: string }) {
   return (
     <div style={{ padding: space.md, display: 'flex', flexDirection: 'column', gap: space.md }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Submission Review</h3>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Submission Readiness</h3>
+          <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2 }}>
+            APN / GenAI IC / SOW 기준으로 문서를 점검합니다.
+          </div>
+        </div>
         <button
           onClick={handleRun}
           disabled={loading}
@@ -106,8 +112,17 @@ export function ReviewPanel({ docId }: { docId: string }) {
       </div>
 
       {!result && !loading && (
-        <div style={{ fontSize: 12, color: color.textMuted, padding: space.sm, background: color.bgSubtle, borderRadius: radius.sm }}>
-          Run Review 버튼을 눌러 현재 문서의 submission readiness를 검사합니다.
+        <div style={{
+          fontSize: 12,
+          color: color.textMuted,
+          padding: space.md,
+          background: color.bgSubtle,
+          borderRadius: radius.sm,
+          textAlign: 'center',
+          border: `1px dashed ${color.border}`,
+        }}>
+          <div style={{ fontSize: 20, marginBottom: 4 }}>📋</div>
+          <div>Run Review 버튼을 눌러 현재 문서의 submission readiness를 검사합니다.</div>
         </div>
       )}
 
@@ -141,10 +156,21 @@ function ReviewResultView({
   const issues = result.issues || {}
   const missing = result.missing_questions || []
   const suggested = result.suggested_patches || []
+  const hasAnyIssue = (['critical', 'high', 'medium', 'low'] as Severity[])
+    .some(sev => (issues[sev] || []).length > 0)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
-      <ScoreBadge score={score} />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.sm, flexWrap: 'wrap' }}>
+        <ScoreBadge score={score} />
+        <StatusBadge status={result.standard_status} message={result.message} />
+      </div>
+
+      <EnvelopeNotices
+        warnings={result.warnings}
+        missing_inputs={result.missing_inputs}
+        error_reason={result.error_reason}
+      />
 
       {(['critical', 'high', 'medium', 'low'] as Severity[]).map(sev => {
         const list = issues[sev] || []
@@ -184,7 +210,7 @@ function ReviewResultView({
         </div>
       )}
 
-      {(Object.values(issues).every(v => !v || v.length === 0) && missing.length === 0 && suggested.length === 0) && (
+      {(!hasAnyIssue && missing.length === 0 && suggested.length === 0) && (
         <div style={{ fontSize: 12, color: color.success, padding: space.sm, background: '#f0fdf4', borderRadius: radius.sm, border: '1px solid #bbf7d0' }}>
           ✓ 이슈가 발견되지 않았습니다.
         </div>
@@ -241,7 +267,7 @@ function SuggestedPatchCard({
         >
           {s === 'submitting' ? '생성 중...' :
            s === 'created' ? '✓ Change Request 생성됨' :
-           'Change Request로 만들기'}
+           'Create Change Request'}
         </button>
         {s === 'created' && state?.crId && (
           <code style={{ fontSize: 10, color: color.textMuted }}>{state.crId}</code>

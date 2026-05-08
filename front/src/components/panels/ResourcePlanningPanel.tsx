@@ -7,6 +7,7 @@ import {
   type ResourcePlanResult,
 } from '../../utils/api'
 import { resolveFieldValue } from '../AiBadge'
+import { StatusBadge, EnvelopeNotices } from './StatusEnvelope'
 
 const WARNING_TEXT =
   'This is a Resource Planning draft. Final values must be reviewed with AWS Calculator, Bedrock usage assumption, SOW cost, customer scope, and sales owner.'
@@ -141,7 +142,7 @@ export function ResourcePlanningPanel({ docId }: { docId: string }) {
           color: color.bgSurface,
         }}
       >
-        {loading ? '계산 중...' : 'Calculate'}
+        {loading ? '계산 중...' : 'Calculate Resource Plan'}
       </button>
 
       {error && (
@@ -209,6 +210,18 @@ function ResultView({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, flexWrap: 'wrap' }}>
+        <StatusBadge status={result.standard_status} message={result.message} />
+        {result.message && (
+          <span style={{ fontSize: 11, color: color.textSecondary }}>{result.message}</span>
+        )}
+      </div>
+
+      <EnvelopeNotices
+        missing_inputs={result.missing_inputs}
+        error_reason={result.error_reason}
+      />
+
       <div style={{
         display: 'grid',
         gridTemplateColumns: '1fr 1fr',
@@ -268,7 +281,7 @@ function ResultView({
         >
           {crState.state === 'submitting' ? '생성 중...' :
            crState.state === 'created' ? '✓ Change Request 생성됨' :
-           'Change Request로 만들기'}
+           'Create Change Request'}
         </button>
         {crState.state === 'created' && crState.crId && (
           <code style={{ fontSize: 10, color: color.textMuted }}>{crState.crId}</code>

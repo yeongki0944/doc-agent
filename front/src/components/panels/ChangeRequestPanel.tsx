@@ -72,7 +72,12 @@ export function ChangeRequestPanel({ docId }: { docId: string }) {
   return (
     <div style={{ padding: space.md, display: 'flex', flexDirection: 'column', gap: space.md }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Change Requests</h3>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Change Requests</h3>
+          <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2 }}>
+            AS-IS / TO-BE 제안 — Approve로 반영, Reject로 거절합니다.
+          </div>
+        </div>
         <button
           onClick={load}
           disabled={loading}
@@ -94,17 +99,27 @@ export function ChangeRequestPanel({ docId }: { docId: string }) {
         <div style={{
           fontSize: 12, color: color.error, padding: space.sm,
           background: '#fef2f2', borderRadius: radius.sm, border: '1px solid #fecaca',
+          lineHeight: 1.5,
         }}>
-          ⚠ {error}
+          <div style={{ fontWeight: 600, marginBottom: 2 }}>⚠ Change Request 조회 실패</div>
+          <div>{error}</div>
+          <div style={{ marginTop: 4, color: color.textMuted }}>
+            백엔드 연결을 확인하거나 잠시 후 다시 시도하세요.
+          </div>
         </div>
       )}
 
       {!loading && pending.length === 0 && processed.length === 0 && !error && (
         <div style={{
-          fontSize: 12, color: color.textMuted, padding: space.sm,
+          fontSize: 12, color: color.textMuted, padding: space.md,
           background: color.bgSubtle, borderRadius: radius.sm,
+          textAlign: 'center', border: `1px dashed ${color.border}`,
         }}>
-          대기 중인 Change Request가 없습니다.
+          <div style={{ fontSize: 20, marginBottom: 4 }}>📭</div>
+          <div>대기 중인 Change Request가 없습니다.</div>
+          <div style={{ marginTop: 4 }}>
+            Review 패널의 제안된 패치에서 Change Request를 만들 수 있습니다.
+          </div>
         </div>
       )}
 

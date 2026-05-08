@@ -8,7 +8,10 @@ export interface AgentResultSummary {
   changed_sections?: string[]
   change_request_id?: string
   error?: string
+  error_reason?: string
   actions?: string[]
+  warnings?: string[]
+  missing_inputs?: string[]
 }
 
 const STATUS_META: Record<AgentResultStatus, { label: string; bg: string; fg: string; border: string; icon: string }> = {
@@ -66,6 +69,34 @@ export function AgentResultCard({ result }: { result: AgentResultSummary }) {
         </div>
       )}
 
+      {Array.isArray(result.warnings) && result.warnings.length > 0 && (
+        <div style={{ fontSize: 11, marginTop: 2 }}>
+          <span style={{ fontWeight: 600 }}>Warnings:</span>
+          <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
+            {result.warnings.slice(0, 3).map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+            {result.warnings.length > 3 && (
+              <li>+ {result.warnings.length - 3} more</li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {Array.isArray(result.missing_inputs) && result.missing_inputs.length > 0 && (
+        <div style={{ fontSize: 11 }}>
+          <span style={{ fontWeight: 600 }}>Missing inputs:</span>{' '}
+          {result.missing_inputs.join(', ')}
+        </div>
+      )}
+
+      {result.error_reason && (
+        <div style={{ fontSize: 11, fontFamily: 'monospace', marginTop: 2 }}>
+          <span style={{ fontWeight: 600, fontFamily: 'inherit' }}>Reason:</span>{' '}
+          {result.error_reason}
+        </div>
+      )}
+
       {result.error && (
         <div style={{ fontSize: 11, fontFamily: 'monospace', marginTop: 2 }}>
           {result.error}
@@ -78,7 +109,10 @@ export function AgentResultCard({ result }: { result: AgentResultSummary }) {
 /** Heuristically derive an AgentResultSummary from a raw agent response object. */
 export function parseAgentResult(raw: any): AgentResultSummary | null {
   if (!raw || typeof raw !== 'object') return null
-  const status = (raw.status || raw.result_status || '').toString().toLowerCase()
+  // Prefer the hardened backend envelope field when present.
+  const envelopeStatus = (raw.standard_status || '').toString().toLowerCase()
+  const legacyStatus = (raw.status || raw.result_status || '').toString().toLowerCase()
+  const status = envelopeStatus || legacyStatus
   const mappedStatus: AgentResultStatus =
     status === 'completed' || status === 'ok' || status === 'success' ? 'completed' :
     status === 'partial' || status === 'partial_completed' ? 'partial_completed' :
@@ -95,11 +129,23 @@ export function parseAgentResult(raw: any): AgentResultSummary | null {
     changed_sections: changed,
     change_request_id: raw.change_request_id || raw.change_request?.change_request_id || undefined,
     error: raw.error || undefined,
+    error_reason: raw.error_reason || undefined,
     actions: Array.isArray(raw.actions) ? raw.actions : undefined,
+    warnings: Array.isArray(raw.warnings) ? raw.warnings : undefined,
+    missing_inputs: Array.isArray(raw.missing_inputs) ? raw.missing_inputs : undefined,
   }
 
   // Only render if at least one meaningful field is present
-  const hasContent = !!(summary.message || summary.changed_sections?.length || summary.change_request_id || summary.error || summary.actions?.length)
+  const hasContent = !!(
+    summary.message ||
+    summary.changed_sections?.length ||
+    summary.change_request_id ||
+    summary.error ||
+    summary.error_reason ||
+    summary.actions?.length ||
+    summary.warnings?.length ||
+    summary.missing_inputs?.length
+  )
   if (!hasContent && mappedStatus === 'unknown') return null
   return summary
 }

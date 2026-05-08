@@ -8,10 +8,10 @@ import { SectionSuggestionsPanel } from './SectionSuggestionsPanel'
 type DrawerTab = 'review' | 'change_requests' | 'resources' | 'suggestions'
 
 const TABS: Array<{ id: DrawerTab; label: string; short: string }> = [
-  { id: 'review', label: 'Review', short: 'Review' },
+  { id: 'review', label: 'Submission Readiness', short: 'Review' },
   { id: 'change_requests', label: 'Change Requests', short: 'CR' },
-  { id: 'resources', label: 'Resources', short: 'Res' },
-  { id: 'suggestions', label: 'Suggestions', short: 'Sug' },
+  { id: 'resources', label: 'Resource Planning', short: 'Planning' },
+  { id: 'suggestions', label: 'Section Suggestions', short: 'Presets' },
 ]
 
 /**
