@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { color, font, radius } from '../styles/tokens'
+import { color } from '../styles/tokens'
 import { useDocumentStore, type AgentStatus } from '../store/documentStore'
-import { requestReview, requestExport, getDocument } from '../utils/api'
+import { requestExport, getDocument } from '../utils/api'
 import { CoverSection } from './sections/CoverSection'
 import { ExecutiveSummarySection } from './sections/ExecutiveSummarySection'
 import { StakeholdersSection } from './sections/StakeholdersSection'
@@ -14,6 +14,7 @@ import { CostBreakdownSection } from './sections/CostBreakdownSection'
 import { ResourcesCostEstimatesSection } from './sections/ResourcesCostEstimatesSection'
 import { AcceptanceSection } from './sections/AcceptanceSection'
 import { LangProvider, type DocLang } from './LangContext'
+import { ReviewDrawer } from './panels/ReviewDrawer'
 
 const TABS = [
   '1. Cover',
@@ -30,6 +31,7 @@ const TABS = [
 ] as const
 
 type TabName = typeof TABS[number]
+type DrawerTab = 'review' | 'change_requests' | 'resources' | 'suggestions'
 
 const TAB_COMPONENTS: Record<TabName, React.FC> = {
   '1. Cover': CoverSection,
@@ -51,6 +53,8 @@ export function DocumentPanel({ docId }: { docId: string }) {
   const blockingIssues = useDocumentStore(s => s.blocking_issues ?? [])
   const setDocument = useDocumentStore(s => s.setDocument)
   const [lang, setLang] = useState<DocLang>('ko')
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [drawerTab, setDrawerTab] = useState<DrawerTab>('review')
   const ActiveComponent = TAB_COMPONENTS[activeTab]
 
   // Load document data when docId changes
@@ -62,14 +66,45 @@ export function DocumentPanel({ docId }: { docId: string }) {
     return () => { cancelled = true }
   }, [docId, setDocument])
 
+  // Forward suggestion prompts to the floating chat popup via a window event
+  // so the ChatPanel (which may be mounted in a sibling container) can react.
+  const handleSendPrompt = (prompt: string) => {
+    try {
+      window.dispatchEvent(new CustomEvent('doc-agent:chat-prompt', { detail: { prompt } }))
+    } catch { /* ignore */ }
+  }
+
   return (
     <LangProvider value={lang}>
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0 }}>
-        <Header completionScore={completionScore} blockingIssues={blockingIssues} docId={docId} lang={lang} onLangChange={setLang} />
-        <TabBar tabs={TABS} active={activeTab} onSelect={setActiveTab} />
-        <div style={{ flex: 1, overflow: 'auto', overflowX: 'hidden', padding: 16 }}>
-          <ActiveComponent />
+      <div style={{ display: 'flex', height: '100%', minWidth: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+          <Header
+            completionScore={completionScore}
+            blockingIssues={blockingIssues}
+            docId={docId}
+            lang={lang}
+            onLangChange={setLang}
+            drawerOpen={drawerOpen}
+            onToggleDrawer={(tab?: DrawerTab) => {
+              if (tab) setDrawerTab(tab)
+              setDrawerOpen(prev => !prev || (tab !== undefined && tab !== drawerTab))
+            }}
+          />
+          <TabBar tabs={TABS} active={activeTab} onSelect={setActiveTab} />
+          <div style={{ flex: 1, overflow: 'auto', overflowX: 'hidden', padding: 16 }}>
+            <ActiveComponent />
+          </div>
         </div>
+
+        {drawerOpen && (
+          <ReviewDrawer
+            docId={docId}
+            activeTab={activeTab}
+            initialTab={drawerTab}
+            onClose={() => setDrawerOpen(false)}
+            onSendPrompt={handleSendPrompt}
+          />
+        )}
       </div>
     </LangProvider>
   )
@@ -120,7 +155,18 @@ function AgentStatusBadge() {
   )
 }
 
-function Header({ completionScore, blockingIssues, docId, lang, onLangChange }: { completionScore: number; blockingIssues: any[]; docId: string; lang: DocLang; onLangChange: (l: DocLang) => void }) {
+function Header({
+  completionScore, blockingIssues, docId, lang, onLangChange,
+  drawerOpen, onToggleDrawer,
+}: {
+  completionScore: number
+  blockingIssues: any[]
+  docId: string
+  lang: DocLang
+  onLangChange: (l: DocLang) => void
+  drawerOpen: boolean
+  onToggleDrawer: (tab?: DrawerTab) => void
+}) {
   const exportEnabled = blockingIssues.length === 0
   const docTitle = useDocumentStore(s => (s as any).title || '')
 
@@ -135,7 +181,7 @@ function Header({ completionScore, blockingIssues, docId, lang, onLangChange }: 
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
         <LangToggle lang={lang} onChange={onLangChange} />
-        <ReviewButton docId={docId} />
+        <ReviewToggleButton open={drawerOpen} onClick={() => onToggleDrawer('review')} />
         <ExportButton disabled={!exportEnabled} docId={docId} />
       </div>
     </div>
@@ -187,27 +233,23 @@ function ExportButton({ disabled, docId }: { disabled: boolean; docId: string })
   )
 }
 
-function ReviewButton({ docId }: { docId: string }) {
-  const [loading, setLoading] = useState(false)
-
-  const handleReview = async () => {
-    setLoading(true)
-    try {
-      await requestReview(docId)
-    } catch {
-      // Error handled by status channel
-    } finally {
-      setLoading(false)
-    }
-  }
-
+function ReviewToggleButton({ open, onClick }: { open: boolean; onClick: () => void }) {
   return (
     <button
-      onClick={handleReview}
-      disabled={loading}
-      style={{ padding: '6px 14px', borderRadius: 6, border: `1px solid ${color.border}`, fontSize: 13, cursor: loading ? 'wait' : 'pointer', background: color.bgSurface, color: color.textPrimary }}
+      onClick={onClick}
+      title="Submission Review · Change Requests · Resource Planning · Suggestions"
+      style={{
+        padding: '6px 14px',
+        borderRadius: 6,
+        border: `1px solid ${open ? color.mzRed : color.border}`,
+        fontSize: 13,
+        cursor: 'pointer',
+        background: open ? '#fef2f2' : color.bgSurface,
+        color: open ? color.mzRed : color.textPrimary,
+        fontWeight: open ? 600 : 400,
+      }}
     >
-      {loading ? '리뷰 중...' : '리뷰 요청'}
+      {open ? '✕ Review' : '📋 Review'}
     </button>
   )
 }

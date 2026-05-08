@@ -11,6 +11,7 @@ import { getDocument } from '../utils/api'
 import { onUserEdit } from '../utils/userEditEvent'
 import { useSessionStore } from '../store/sessionStore'
 import { color, font, space, radius } from '../styles/tokens'
+import { AgentResultCard, parseAgentResult, type AgentResultSummary } from './AgentResultCard'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'https://7wejbdujd6.execute-api.ap-northeast-2.amazonaws.com'
 const SESSION_ID = 'default'
@@ -25,6 +26,7 @@ interface Message {
   role: 'user' | 'agent'
   text: string
   thinking?: string[]  // progress steps (collapsible)
+  agentResult?: AgentResultSummary
 }
 
 function toHistoryMessage(m: Message): HistoryMessage {
@@ -135,6 +137,19 @@ export function ChatPanel({ docId }: ChatPanelProps) {
     })
   }, [])
 
+  // Listen for suggestion prompts pushed from ReviewDrawer's SectionSuggestions tab
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const ce = ev as CustomEvent<{ prompt: string }>
+      const prompt = ce.detail?.prompt
+      if (typeof prompt === 'string' && prompt.trim()) {
+        setInput(prev => (prev ? `${prev}\n${prompt}` : prompt))
+      }
+    }
+    window.addEventListener('doc-agent:chat-prompt', handler as EventListener)
+    return () => window.removeEventListener('doc-agent:chat-prompt', handler as EventListener)
+  }, [])
+
   // Load history from server on mount (document reopen)
   useEffect(() => {
     if (historyLoaded) return
@@ -213,10 +228,12 @@ export function ChatPanel({ docId }: ChatPanelProps) {
 
       // Sync fallback (non-202 responses)
       const data = await res.json()
+      const agentResultSummary = parseAgentResult(data)
       const agentMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'agent',
-        text: data.agent_response || '처리 완료',
+        text: data.agent_response || (agentResultSummary ? '' : '처리 완료'),
+        agentResult: agentResultSummary ?? undefined,
       }
       const finalMessages = [...updatedMessages, agentMsg]
       setMessages(finalMessages)
@@ -244,16 +261,23 @@ export function ChatPanel({ docId }: ChatPanelProps) {
           m.thinking ? (
             <ThinkingBlock key={m.id} steps={m.thinking} latestStep={m.text} />
           ) : (
-            <div key={m.id} style={{
-              marginBottom: 8, padding: '8px 12px', borderRadius: 8,
-              background: m.role === 'user' ? color.bgSubtle : color.bgSurface,
-              border: m.role === 'agent' ? `1px solid ${color.border}` : undefined,
-              maxWidth: '85%', marginLeft: m.role === 'user' ? 'auto' : 0,
-            }}>
-              <div style={{ fontSize: 11, color: color.textMuted, marginBottom: 2 }}>
-                {m.role === 'user' ? '나' : 'Agent'}
+            <div key={m.id} style={{ marginBottom: 8 }}>
+              <div style={{
+                padding: '8px 12px', borderRadius: 8,
+                background: m.role === 'user' ? color.bgSubtle : color.bgSurface,
+                border: m.role === 'agent' ? `1px solid ${color.border}` : undefined,
+                maxWidth: '85%', marginLeft: m.role === 'user' ? 'auto' : 0,
+              }}>
+                <div style={{ fontSize: 11, color: color.textMuted, marginBottom: 2 }}>
+                  {m.role === 'user' ? '나' : 'Agent'}
+                </div>
+                {m.text || (m.agentResult ? null : '—')}
               </div>
-              {m.text}
+              {m.agentResult && (
+                <div style={{ marginTop: 4, marginLeft: m.role === 'user' ? 'auto' : 0 }}>
+                  <AgentResultCard result={m.agentResult} />
+                </div>
+              )}
             </div>
           )
         ))}
