@@ -259,14 +259,49 @@ def build_task_plan(user_message: str) -> TaskPlan:
     Uses Bedrock Sonnet to classify intent based on the agent registry.
     Falls back to discovery_agent if LLM call fails.
     """
+    from agent.lib.progress import get_current_publisher
+
+    publisher = get_current_publisher()
+    if publisher is not None:
+        try:
+            publisher.publish("task_planner", "🧭 라우터 판단 중...", step="start")
+        except Exception:
+            pass
+
     rule_based = _rule_based_plan(user_message)
     if rule_based:
+        if publisher is not None:
+            try:
+                agents = [t.agent for t in rule_based.tasks]
+                publisher.publish(
+                    "task_planner",
+                    f"✅ 규칙 기반 라우팅 → {', '.join(agents) or '(none)'}",
+                    step="done",
+                )
+            except Exception:
+                pass
         return rule_based
+
+    if publisher is not None:
+        try:
+            publisher.model_call_start("task_planner", ROUTER_MODEL)
+        except Exception:
+            pass
 
     result = _call_llm(user_message)
 
     if not result or "tasks" not in result:
         logger.warning("LLM router returned no tasks, falling back to discovery")
+        if publisher is not None:
+            try:
+                publisher.model_call_end("task_planner", ROUTER_MODEL)
+                publisher.publish(
+                    "task_planner",
+                    "⚠ LLM 라우팅 실패 → discovery_agent로 fallback",
+                    step="fallback",
+                )
+            except Exception:
+                pass
         return _fallback_plan(user_message)
 
     tasks: list[Task] = []
@@ -281,6 +316,23 @@ def build_task_plan(user_message: str) -> TaskPlan:
             tasks.append(Task(agent=agent, action=action, params=params))
 
     if not tasks:
+        if publisher is not None:
+            try:
+                publisher.model_call_end("task_planner", ROUTER_MODEL)
+            except Exception:
+                pass
         return _fallback_plan(user_message)
+
+    if publisher is not None:
+        try:
+            publisher.model_call_end("task_planner", ROUTER_MODEL)
+            agent_names = [t.agent for t in tasks]
+            publisher.publish(
+                "task_planner",
+                f"✅ LLM 라우팅 → {', '.join(agent_names)}",
+                step="done",
+            )
+        except Exception:
+            pass
 
     return TaskPlan(tasks=tasks, chat_response="")

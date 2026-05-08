@@ -10,7 +10,7 @@ import { apiFetch } from '../auth/api'
 import { getDocument } from '../utils/api'
 import { onUserEdit } from '../utils/userEditEvent'
 import { useSessionStore } from '../store/sessionStore'
-import { color, font, space, radius } from '../styles/tokens'
+import { color, space } from '../styles/tokens'
 import { AgentResultCard, parseAgentResult, type AgentResultSummary } from './AgentResultCard'
 
 const API_BASE = import.meta.env.VITE_API_URL || 'https://7wejbdujd6.execute-api.ap-northeast-2.amazonaws.com'
@@ -21,11 +21,26 @@ interface ChatPanelProps {
   docId: string
 }
 
+/** One entry inside the live thinking timeline. */
+interface ThinkingEntry {
+  kind: 'step' | 'model' | 'tool' | 'reasoning' | 'token'
+  agent?: string
+  text: string
+  status?: 'start' | 'end' | 'error'
+  reasoning?: string          // accumulated reasoning (for kind='reasoning')
+  tokens?: string             // accumulated response tokens (for kind='token')
+  model_id?: string
+  tool_name?: string
+  duration_ms?: number
+}
+
 interface Message {
   id: string
   role: 'user' | 'agent'
   text: string
-  thinking?: string[]  // progress steps (collapsible)
+  thinking?: string[]         // legacy flat steps from DynamoDB history
+  thinkingLive?: ThinkingEntry[]  // live entries built from AppSync events
+  status?: 'thinking' | 'done'
   agentResult?: AgentResultSummary
 }
 
@@ -33,36 +48,204 @@ function toHistoryMessage(m: Message): HistoryMessage {
   return { id: m.id, role: m.role, content: m.text, timestamp: new Date().toISOString() }
 }
 
-function ThinkingBlock({ steps, latestStep }: { steps: string[]; latestStep: string }) {
-  const [expanded, setExpanded] = useState(false)
-  const isDone = latestStep.includes('✅')
+// ---------------------------------------------------------------------------
+// ThinkingBlock — Claude-style collapsible reasoning UI
+// ---------------------------------------------------------------------------
+
+function ThinkingBlock({
+  steps,
+  entries,
+  latestStep,
+  status,
+}: {
+  steps?: string[]
+  entries?: ThinkingEntry[]
+  latestStep: string
+  status?: 'thinking' | 'done'
+}) {
+  const [expanded, setExpanded] = useState(true)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const isDone = status === 'done' || latestStep.includes('✅')
+  const count = entries?.length ?? steps?.length ?? 0
+
+  // Auto-collapse once done (after 2s) so the chat stays clean.
+  useEffect(() => {
+    if (!isDone) return
+    const t = setTimeout(() => setExpanded(false), 2000)
+    return () => clearTimeout(t)
+  }, [isDone])
+
+  // Keep the body scrolled to the latest entry.
+  useEffect(() => {
+    if (expanded && bodyRef.current) {
+      bodyRef.current.scrollTop = bodyRef.current.scrollHeight
+    }
+  }, [expanded, count])
 
   return (
     <div style={{
-      marginBottom: 8, padding: '6px 12px', borderRadius: 8,
-      background: color.bgPrimary, border: `1px solid ${color.border}`,
-      maxWidth: '85%', fontSize: 13,
+      marginBottom: 8,
+      padding: '8px 12px',
+      borderRadius: 8,
+      background: color.bgPrimary,
+      border: `1px solid ${color.border}`,
+      maxWidth: '92%',
+      fontSize: 13,
     }}>
       <div
         onClick={() => setExpanded(!expanded)}
-        style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, color: color.textSecondary }}
+        style={{
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          color: color.textSecondary,
+        }}
       >
         <span style={{ fontSize: 10 }}>{expanded ? '▼' : '▶'}</span>
-        <span>{isDone ? '✅ Thinking 완료' : `⏳ ${latestStep}`}</span>
-        <span style={{ fontSize: 11, color: color.textMuted, marginLeft: 'auto' }}>{steps.length}단계</span>
+        <span style={{ fontWeight: 500 }}>
+          {isDone ? '✅ Thinking 완료' : (
+            <>
+              <ThinkingDot /> {latestStep || 'Thinking...'}
+            </>
+          )}
+        </span>
+        <span style={{ fontSize: 11, color: color.textMuted, marginLeft: 'auto' }}>
+          {count}단계
+        </span>
       </div>
       {expanded && (
-        <div style={{ marginTop: 6, paddingLeft: 16, borderLeft: `2px solid ${color.border}` }}>
-          {steps.map((step, i) => (
-            <div key={i} style={{ fontSize: 12, color: color.textMuted, padding: '2px 0' }}>
-              {step}
-            </div>
-          ))}
+        <div
+          ref={bodyRef}
+          style={{
+            marginTop: 6,
+            paddingLeft: 14,
+            borderLeft: `2px solid ${color.border}`,
+            maxHeight: 260,
+            overflow: 'auto',
+          }}
+        >
+          {entries
+            ? entries.map((e, i) => <EntryLine key={i} entry={e} />)
+            : (steps || []).map((s, i) => (
+              <div key={i} style={lineStyle}>{s}</div>
+            ))}
         </div>
       )}
     </div>
   )
 }
+
+const lineStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: color.textMuted,
+  padding: '3px 0',
+  lineHeight: 1.5,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+}
+
+function EntryLine({ entry }: { entry: ThinkingEntry }) {
+  // Render depending on kind; adds hierarchy and subtle colour.
+  switch (entry.kind) {
+    case 'model':
+      return (
+        <div style={lineStyle}>
+          <span style={{ color: '#4f46e5', fontWeight: 600 }}>
+            {entry.status === 'end' ? '🧠→' : '🧠'}
+          </span>{' '}
+          {entry.text}
+          {entry.duration_ms ? (
+            <span style={{ color: color.textMuted, fontSize: 11 }}> · {entry.duration_ms}ms</span>
+          ) : null}
+        </div>
+      )
+    case 'tool':
+      return (
+        <div style={lineStyle}>
+          <span style={{
+            color: entry.status === 'error' ? color.error : '#0891b2',
+            fontWeight: 600,
+          }}>
+            {entry.status === 'end' ? '🔧←' : '🔧'}
+          </span>{' '}
+          {entry.text}
+        </div>
+      )
+    case 'reasoning':
+      return (
+        <div style={{
+          ...lineStyle,
+          background: '#fffbea',
+          border: '1px solid #fef3c7',
+          borderRadius: 6,
+          padding: '6px 8px',
+          marginTop: 4,
+          color: '#78350f',
+          fontStyle: 'italic',
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 2, letterSpacing: 0.5 }}>
+            REASONING
+          </div>
+          {entry.reasoning || entry.text}
+        </div>
+      )
+    case 'token':
+      return (
+        <div style={{
+          ...lineStyle,
+          color: color.textSecondary,
+          background: color.bgSurface,
+          border: `1px solid ${color.border}`,
+          borderRadius: 6,
+          padding: '6px 8px',
+          marginTop: 4,
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 2, letterSpacing: 0.5, color: color.textMuted }}>
+            RESPONSE
+          </div>
+          {entry.tokens || entry.text}
+        </div>
+      )
+    default:
+      return <div style={lineStyle}>{entry.text}</div>
+  }
+}
+
+function ThinkingDot() {
+  return (
+    <span
+      aria-label="thinking"
+      style={{
+        display: 'inline-block',
+        width: 8,
+        height: 8,
+        borderRadius: '50%',
+        background: color.textMuted,
+        marginRight: 6,
+        animation: 'thinking-pulse 1.4s ease-in-out infinite',
+      }}
+    />
+  )
+}
+
+// Keyframe declaration once
+const STYLE_ONCE_ID = '__doc_agent_thinking_style'
+if (typeof document !== 'undefined' && !document.getElementById(STYLE_ONCE_ID)) {
+  const style = document.createElement('style')
+  style.id = STYLE_ONCE_ID
+  style.textContent = `
+    @keyframes thinking-pulse {
+      0%, 80%, 100% { opacity: 0.3; transform: scale(0.9); }
+      40% { opacity: 1; transform: scale(1.2); }
+    }
+  `
+  document.head.appendChild(style)
+}
+
+// ---------------------------------------------------------------------------
+// ChatPanel
+// ---------------------------------------------------------------------------
 
 export function ChatPanel({ docId }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([
@@ -72,25 +255,51 @@ export function ChatPanel({ docId }: ChatPanelProps) {
   const [loading, setLoading] = useState(false)
   const [historyLoaded, setHistoryLoaded] = useState(false)
   const setAgentStatus = useDocumentStore(s => s.setAgentStatus)
+  const appsyncConnected = useDocumentStore(s => s.appsyncConnected)
+  const scrollRef = useRef<HTMLDivElement>(null)
 
-  const streamMsgIdRef = useRef<string | null>(null)
-  const thinkingStepsRef = useRef<string[]>([])
-  const thinkingIdRef = useRef<string>('')
+  // The live thinking message id for the currently-running turn.
+  const activeThinkingIdRef = useRef<string | null>(null)
+  const loadingRef = useRef(false)
 
-  // Initialize AppSync subscription on mount
-  // Initialize AppSync subscription — refresh signal triggers history re-fetch
+  useEffect(() => { loadingRef.current = loading }, [loading])
+
+  // Auto-scroll to bottom on new messages.
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [messages])
+
+  // Initialize AppSync subscription — refresh signal triggers history re-fetch.
   const fetchHistory = useCallback(() => {
     loadHistory(API_BASE, docId, SESSION_ID).then(data => {
       if (data && data.messages && data.messages.length > 0) {
-        const restored: Message[] = data.messages.map((m: any) => {
-          if (m.type === 'thinking' && m.thinking_steps) {
-            return { id: m.id, role: m.role as 'user' | 'agent', text: m.content, thinking: m.thinking_steps }
+        setMessages(prev => {
+          // Preserve any live-thinking entries built since the last fetch.
+          const liveThinking = new Map<string, Message>()
+          for (const m of prev) {
+            if (m.thinkingLive && m.thinkingLive.length > 0) {
+              liveThinking.set(m.id, m)
+            }
           }
-          return { id: m.id, role: m.role as 'user' | 'agent', text: m.content }
+          const restored: Message[] = data.messages.map((m: any) => {
+            if (m.type === 'thinking' && m.thinking_steps) {
+              const live = liveThinking.get(m.id)
+              return {
+                id: m.id,
+                role: m.role as 'user' | 'agent',
+                text: m.content,
+                thinking: m.thinking_steps,
+                thinkingLive: live?.thinkingLive,
+                status: live?.status,
+              }
+            }
+            return { id: m.id, role: m.role as 'user' | 'agent', text: m.content }
+          })
+          return restored
         })
-        setMessages(restored)
       }
-      // Also refresh agent status from document
       getDocument(docId).then(doc => {
         if (doc) {
           useDocumentStore.getState().setDocument(doc)
@@ -102,17 +311,175 @@ export function ChatPanel({ docId }: ChatPanelProps) {
     }).catch(() => {})
   }, [docId, setAgentStatus])
 
-  useEffect(() => {
-    const unsubscribe = initDocumentSubscription(docId, (msg: AppSyncMessage) => {
-      console.log('[chat] AppSync message:', msg.type)
+  // --- AppSync live events ---
+  const handleLiveEvent = useCallback((msg: AppSyncMessage) => {
+    const type = (msg as any).type as string
 
-      if ((msg.type as string) === 'refresh' || msg.type === 'status' || (msg.type as string) === 'progress' || msg.type === 'chat_done') {
-        // DynamoDB is source of truth — re-fetch on any signal
-        fetchHistory()
+    // Helpers to append entries to the active thinking message.
+    const ensureThinking = (): string => {
+      let id = activeThinkingIdRef.current
+      if (id) return id
+      id = `thinking-live-${Date.now()}`
+      activeThinkingIdRef.current = id
+      setMessages(prev => [
+        ...prev,
+        { id, role: 'agent', text: '시작…', thinkingLive: [], status: 'thinking' },
+      ])
+      return id
+    }
+
+    const appendEntry = (entry: ThinkingEntry) => {
+      const id = ensureThinking()
+      setMessages(prev => prev.map(m => {
+        if (m.id !== id) return m
+        const existing = m.thinkingLive || []
+        let merged = existing
+        // Coalesce consecutive reasoning/token deltas from the same agent.
+        const last = existing[existing.length - 1]
+        if (
+          last &&
+          (entry.kind === 'reasoning' || entry.kind === 'token') &&
+          last.kind === entry.kind &&
+          last.agent === entry.agent
+        ) {
+          merged = [...existing.slice(0, -1), {
+            ...last,
+            reasoning: entry.kind === 'reasoning' ? (last.reasoning || '') + (entry.reasoning || '') : last.reasoning,
+            tokens: entry.kind === 'token' ? (last.tokens || '') + (entry.tokens || '') : last.tokens,
+            text: entry.text || last.text,
+          }]
+        } else {
+          merged = [...existing, entry]
+        }
+        return {
+          ...m,
+          thinkingLive: merged,
+          text: entry.text || m.text,
+        }
+      }))
+    }
+
+    const finishThinking = () => {
+      const id = activeThinkingIdRef.current
+      if (!id) return
+      setMessages(prev => prev.map(m => m.id === id ? { ...m, status: 'done' } : m))
+      activeThinkingIdRef.current = null
+    }
+
+    switch (type) {
+      case 'progress': {
+        const m = msg as any
+        const step: string = m.step || m.message || ''
+        const agent: string = m.agent || ''
+        const message: string = m.message || step || ''
+        if (!message && !step) return
+        // 'complete' step or explicit 'done' finishes the timeline.
+        if (step === 'complete' || /✅ 완료/.test(message) || /작업 완료/.test(message)) {
+          appendEntry({ kind: 'step', agent, text: message, status: 'end' })
+          finishThinking()
+          // Also trigger history re-fetch to load the final agent reply
+          fetchHistory()
+          return
+        }
+        appendEntry({ kind: 'step', agent, text: message })
+        return
       }
-    })
+      case 'model_call_start': {
+        const m = msg as any
+        appendEntry({
+          kind: 'model',
+          agent: m.agent,
+          model_id: m.model_id,
+          text: `${m.agent || 'model'} — 모델 호출 시작${m.model_id ? ` (${shortModelId(m.model_id)})` : ''}`,
+          status: 'start',
+        })
+        return
+      }
+      case 'model_call_end': {
+        const m = msg as any
+        appendEntry({
+          kind: 'model',
+          agent: m.agent,
+          model_id: m.model_id,
+          duration_ms: m.duration_ms,
+          text: `${m.agent || 'model'} — 모델 응답 완료`,
+          status: 'end',
+        })
+        return
+      }
+      case 'tool_call_start': {
+        const m = msg as any
+        appendEntry({
+          kind: 'tool',
+          agent: m.agent,
+          tool_name: m.tool_name,
+          text: `${m.agent || 'agent'} → '${m.tool_name}' 도구 호출${m.tool_input_preview ? ` · ${m.tool_input_preview}` : ''}`,
+          status: 'start',
+        })
+        return
+      }
+      case 'tool_call_end': {
+        const m = msg as any
+        appendEntry({
+          kind: 'tool',
+          agent: m.agent,
+          tool_name: m.tool_name,
+          text: m.success
+            ? `${m.agent || 'agent'} ← '${m.tool_name}' 완료${m.tool_output_preview ? ` · ${m.tool_output_preview}` : ''}`
+            : `${m.agent || 'agent'} ← '${m.tool_name}' 실패${m.error ? ` · ${m.error}` : ''}`,
+          status: m.success ? 'end' : 'error',
+        })
+        return
+      }
+      case 'reasoning_delta': {
+        const m = msg as any
+        appendEntry({
+          kind: 'reasoning',
+          agent: m.agent,
+          text: '',
+          reasoning: m.delta || '',
+        })
+        return
+      }
+      case 'token_delta': {
+        const m = msg as any
+        appendEntry({
+          kind: 'token',
+          agent: m.agent,
+          text: '',
+          tokens: m.delta || '',
+        })
+        return
+      }
+      case 'status': {
+        const s = (msg as any).status as string
+        if (s === 'idle') setLoading(false)
+        return
+      }
+      case 'refresh':
+      case 'chat_done': {
+        finishThinking()
+        fetchHistory()
+        return
+      }
+    }
+  }, [fetchHistory])
+
+  useEffect(() => {
+    const unsubscribe = initDocumentSubscription(docId, handleLiveEvent)
     return unsubscribe
-  }, [docId, fetchHistory])
+  }, [docId, handleLiveEvent])
+
+  // Polling fallback when WebSocket is not connected — keeps thinking visible
+  // even if AppSync is unreachable.
+  useEffect(() => {
+    if (appsyncConnected) return
+    if (!loadingRef.current) return
+    const iv = setInterval(() => {
+      if (loadingRef.current) fetchHistory()
+    }, 3000)
+    return () => clearInterval(iv)
+  }, [appsyncConnected, fetchHistory])
 
   // Reset state when docId changes
   useEffect(() => {
@@ -121,8 +488,7 @@ export function ChatPanel({ docId }: ChatPanelProps) {
     ])
     setHistoryLoaded(false)
     setLoading(false)
-    streamMsgIdRef.current = null
-    thinkingStepsRef.current = []
+    activeThinkingIdRef.current = null
   }, [docId])
 
   // Listen for user direct edits on document fields → inject as user message for LLM context
@@ -181,9 +547,6 @@ export function ChatPanel({ docId }: ChatPanelProps) {
     return () => { cancelled = true }
   }, [historyLoaded, docId])
 
-  // History is managed by handler.py (DynamoDB source of truth)
-  // No client-side scheduleSave needed
-
   const handleSend = async () => {
     const text = input.trim()
     if (!text || loading) return
@@ -194,6 +557,7 @@ export function ChatPanel({ docId }: ChatPanelProps) {
     setInput('')
     setLoading(true)
     setAgentStatus('processing')
+    activeThinkingIdRef.current = null  // new turn
 
     try {
       const historyMsgs = updatedMessages
@@ -208,12 +572,8 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       })
 
       if (res.status === 202) {
-        // Async processing — handler.py saves to DynamoDB
-        // Loading state stays true until refresh signal arrives
-        // Loading state stays true until chat_done arrives via AppSync
-        // Add a timeout fallback: if no response in 90s, show error
         setTimeout(() => {
-          if (loading) {
+          if (loadingRef.current) {
             setMessages(prev => [...prev, {
               id: (Date.now() + 1).toString(),
               role: 'agent',
@@ -226,7 +586,6 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         return
       }
 
-      // Sync fallback (non-202 responses)
       const data = await res.json()
       const agentResultSummary = parseAgentResult(data)
       const agentMsg: Message = {
@@ -244,22 +603,46 @@ export function ChatPanel({ docId }: ChatPanelProps) {
       useSessionStore.getState().fetchDocuments()
       setAgentStatus('idle')
     } catch {
-      const errorMsg: Message = { id: (Date.now() + 1).toString(), role: 'agent', text: 'API 연결 오류가 발생했습니다.' }
-      const finalMessages = [...updatedMessages, errorMsg]
-      setMessages(finalMessages)
+      const errorMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'agent',
+        text: 'API 연결 오류가 발생했습니다.',
+      }
+      setMessages(prev => [...prev, errorMsg])
       setAgentStatus('error')
     } finally {
-      if (!loading) return // async mode keeps loading
+      if (!loadingRef.current) return
       setLoading(false)
     }
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      height: '100%',
+      minHeight: 0,
+      flex: 1,
+    }}>
+      <div
+        ref={scrollRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: 'auto',
+          overscrollBehavior: 'contain',
+          padding: 12,
+        }}
+      >
         {messages.map(m => (
-          m.thinking ? (
-            <ThinkingBlock key={m.id} steps={m.thinking} latestStep={m.text} />
+          (m.thinkingLive && m.thinkingLive.length > 0) || m.thinking ? (
+            <ThinkingBlock
+              key={m.id}
+              entries={m.thinkingLive}
+              steps={m.thinking}
+              latestStep={m.text}
+              status={m.status}
+            />
           ) : (
             <div key={m.id} style={{ marginBottom: 8 }}>
               <div style={{
@@ -267,6 +650,8 @@ export function ChatPanel({ docId }: ChatPanelProps) {
                 background: m.role === 'user' ? color.bgSubtle : color.bgSurface,
                 border: m.role === 'agent' ? `1px solid ${color.border}` : undefined,
                 maxWidth: '85%', marginLeft: m.role === 'user' ? 'auto' : 0,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
               }}>
                 <div style={{ fontSize: 11, color: color.textMuted, marginBottom: 2 }}>
                   {m.role === 'user' ? '나' : 'Agent'}
@@ -281,15 +666,27 @@ export function ChatPanel({ docId }: ChatPanelProps) {
             </div>
           )
         ))}
-        {loading && (
+        {loading && !messages.some(m => m.status === 'thinking') && (
           <div style={{ padding: '8px 12px', color: color.textMuted, fontSize: 13 }}>
-            분석 중...
+            <ThinkingDot /> 분석 중...
           </div>
         )}
       </div>
-      <div style={{ display: 'flex', padding: 8, borderTop: `1px solid ${color.border}`, gap: 8 }}>
+      <div style={{
+        display: 'flex',
+        padding: 8,
+        borderTop: `1px solid ${color.border}`,
+        gap: 8,
+        flexShrink: 0,
+      }}>
         <input
-          style={{ flex: 1, padding: '8px 12px', border: `1px solid ${color.border}`, borderRadius: 6, fontSize: 14 }}
+          style={{
+            flex: 1,
+            padding: '8px 12px',
+            border: `1px solid ${color.border}`,
+            borderRadius: 6,
+            fontSize: 14,
+          }}
           placeholder="프로젝트 정보를 입력하세요..."
           value={input}
           onChange={e => setInput(e.target.value)}
@@ -299,11 +696,24 @@ export function ChatPanel({ docId }: ChatPanelProps) {
         <button
           onClick={handleSend}
           disabled={loading}
-          style={{ padding: '8px 16px', background: loading ? '#F09090' : color.mzRed, color: color.bgSurface, border: 'none', borderRadius: 6, cursor: loading ? 'wait' : 'pointer' }}
+          style={{
+            padding: '8px 16px',
+            background: loading ? '#F09090' : color.mzRed,
+            color: color.bgSurface,
+            border: 'none',
+            borderRadius: 6,
+            cursor: loading ? 'wait' : 'pointer',
+          }}
         >
           전송
         </button>
       </div>
     </div>
   )
+}
+
+function shortModelId(id: string): string {
+  // Trim inference-profile prefix and version for compact display.
+  const last = id.split('.').slice(-2).join('.')
+  return last.replace(/-v\d+:\d+$/, '').replace(/-\d{8}/, '')
 }

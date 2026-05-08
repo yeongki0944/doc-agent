@@ -16,8 +16,66 @@ export interface ChatChunkMessage { type: 'chat_chunk'; text: string }
 export interface ChatDoneMessage { type: 'chat_done'; text?: string; actions?: string[]; document?: any; status?: string }
 export interface StatusMessage { type: 'status'; status: AgentStatus; message?: string }
 export interface PatchMessage { type: 'patch'; operations: PatchOperation[] }
+/** High-level orchestrator / handler.py progress checkpoint */
+export interface ProgressMessage {
+  type: 'progress'
+  agent?: string
+  step?: string
+  message?: string
+  thinking_id?: string
+  thinking_steps?: string[]
+}
+/** Strands BeforeModelCallEvent */
+export interface ModelCallStartMessage {
+  type: 'model_call_start'
+  agent?: string
+  model_id?: string
+  message?: string
+}
+/** Strands AfterModelCallEvent */
+export interface ModelCallEndMessage {
+  type: 'model_call_end'
+  agent?: string
+  model_id?: string
+  usage?: Record<string, any>
+  duration_ms?: number
+  message?: string
+}
+/** Strands BeforeToolCallEvent */
+export interface ToolCallStartMessage {
+  type: 'tool_call_start'
+  agent?: string
+  tool_name?: string
+  tool_input_preview?: string
+  message?: string
+}
+/** Strands AfterToolCallEvent */
+export interface ToolCallEndMessage {
+  type: 'tool_call_end'
+  agent?: string
+  tool_name?: string
+  success?: boolean
+  tool_output_preview?: string
+  error?: string
+  message?: string
+}
+/** Batched response token delta (Strands callback_handler data) */
+export interface TokenDeltaMessage { type: 'token_delta'; agent?: string; delta: string }
+/** Batched reasoning delta (Claude extended thinking) */
+export interface ReasoningDeltaMessage { type: 'reasoning_delta'; agent?: string; delta: string }
+
 export type ChatMessage = ChatChunkMessage | ChatDoneMessage
-export type AppSyncMessage = ChatMessage | StatusMessage | PatchMessage
+export type AppSyncMessage =
+  | ChatMessage
+  | StatusMessage
+  | PatchMessage
+  | ProgressMessage
+  | ModelCallStartMessage
+  | ModelCallEndMessage
+  | ToolCallStartMessage
+  | ToolCallEndMessage
+  | TokenDeltaMessage
+  | ReasoningDeltaMessage
 
 type MessageHandler = (msg: AppSyncMessage) => void
 type Unsubscribe = () => void
@@ -187,6 +245,39 @@ class AppSyncClient {
     this.ws = null
     this._setConnected(false)
   }
+
+  /**
+   * Resurrect the client after destroy() — used by the manual Reconnect
+   * button. Preserves existing subscriptions map if called without clear().
+   */
+  reopen(): void {
+    this.intentionallyClosed = false
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectDelay = 1000
+    if (!this.ws) this._doConnect()
+  }
+
+  /**
+   * Close the current WS (if any) and immediately reconnect, preserving
+   * all active subscriptions. Resets the backoff so the user gets a fast
+   * recovery when they click the Reconnect button.
+   */
+  forceReconnect(): void {
+    this.intentionallyClosed = false
+    this.reconnectDelay = 1000
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    try {
+      this.ws?.close()
+    } catch { /* ignore */ }
+    // onclose will fire → auto-reconnect path. But if we're already
+    // disconnected, trigger directly.
+    if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
+      this._doConnect()
+    }
+  }
 }
 
 // Singleton instance
@@ -200,6 +291,15 @@ if (APPSYNC_WS_URL && APPSYNC_API_KEY) {
 // ---------------------------------------------------------------------------
 // Public API (unchanged interface for consumers)
 // ---------------------------------------------------------------------------
+
+/**
+ * Trigger an immediate reconnect attempt. Used by the "Reconnect" button
+ * in the StatusBar / DocumentPanel when the user wants to recover without
+ * refreshing the page. Preserves existing subscriptions.
+ */
+export function reconnectAppSync(): void {
+  client.forceReconnect()
+}
 
 export function subscribeToChannel(channel: string, onMessage: MessageHandler): Unsubscribe {
   return client.subscribe(channel, onMessage)

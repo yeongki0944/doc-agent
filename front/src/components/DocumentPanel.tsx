@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { color } from '../styles/tokens'
 import { useDocumentStore, type AgentStatus } from '../store/documentStore'
 import { requestExport, getDocument } from '../utils/api'
+import { reconnectAppSync } from '../utils/appsync'
 import { CoverSection } from './sections/CoverSection'
 import { ExecutiveSummarySection } from './sections/ExecutiveSummarySection'
 import { StakeholdersSection } from './sections/StakeholdersSection'
@@ -147,9 +148,27 @@ function AgentStatusBadge() {
       />
       <span style={{ fontWeight: 500 }}>{label}</span>
       {!appsyncConnected && (
-        <span style={{ fontSize: 11, color: '#f59e0b', whiteSpace: 'nowrap' }}>
-          ⚠ 실시간 연결 대기 중
-        </span>
+        <>
+          <span style={{ fontSize: 11, color: '#f59e0b', whiteSpace: 'nowrap' }}>
+            ⚠ 실시간 연결 대기 중
+          </span>
+          <button
+            onClick={() => reconnectAppSync()}
+            style={{
+              fontSize: 10,
+              padding: '2px 8px',
+              border: `1px solid ${color.border}`,
+              borderRadius: 4,
+              background: color.bgSurface,
+              color: color.textSecondary,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+            title="AppSync WebSocket 즉시 재연결"
+          >
+            재연결
+          </button>
+        </>
       )}
     </div>
   )

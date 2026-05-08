@@ -2249,7 +2249,13 @@ def _handle_async_chat(payload: dict) -> dict:
     thinking_msg_id = f"thinking-{uuid.uuid4().hex[:8]}"
 
     def _progress(step: str, agent: str = "runtime"):
-        """Update thinking message in DynamoDB + send refresh signal."""
+        """Update thinking message in DynamoDB + publish progress to AppSync.
+
+        Sends two AppSync events:
+        1. ``progress`` with the step text — frontend updates the thinking
+           box immediately without any REST fetch.
+        2. ``refresh`` to signal history polling as a backup.
+        """
         thinking_steps.append(step)
         _update_agent_status(doc_id, "processing", agent, step)
         # Update the thinking message in history (replace entire message)
@@ -2295,6 +2301,17 @@ def _handle_async_chat(payload: dict) -> dict:
             }), parse_float=Decimal))
         except Exception as e:
             print(f"[progress] DynamoDB update failed: {e}")
+
+        # Publish the step immediately to AppSync so the frontend can update
+        # the thinking message without waiting for a REST fetch round-trip.
+        _publish_event(f"/docs/{doc_id}/chat", {
+            "type": "progress",
+            "agent": agent,
+            "step": step,
+            "thinking_id": thinking_msg_id,
+            "thinking_steps": list(thinking_steps),
+        })
+        # Backup: refresh signal for clients without WebSocket.
         _publish_refresh(doc_id)
 
     try:

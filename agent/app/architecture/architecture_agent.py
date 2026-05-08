@@ -162,9 +162,12 @@ class ArchitectureAgent:
     """
 
     def __init__(self) -> None:
+        from agent.lib.progress import make_runtime_callback_handler, RuntimeProgressHooks
         self.agent = Agent(
             model=CHILD_MODEL,
             system_prompt=ARCHITECTURE_PROMPT,
+            callback_handler=make_runtime_callback_handler("architecture_agent"),
+            hooks=[RuntimeProgressHooks("architecture_agent")],
         )
 
     # ------------------------------------------------------------------

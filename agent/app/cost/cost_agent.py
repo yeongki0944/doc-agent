@@ -122,9 +122,12 @@ class CostAgent:
     """
 
     def __init__(self) -> None:
+        from agent.lib.progress import make_runtime_callback_handler, RuntimeProgressHooks
         self.agent = Agent(
             model=CHILD_MODEL,
             system_prompt=COST_PROMPT,
+            callback_handler=make_runtime_callback_handler("cost_agent"),
+            hooks=[RuntimeProgressHooks("cost_agent")],
         )
 
     # ------------------------------------------------------------------

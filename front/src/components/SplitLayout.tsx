@@ -102,7 +102,13 @@ export function SplitLayout() {
               ✕
             </button>
           </div>
-          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <div style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+          }}>
             <ChatPanel docId={currentDocId} />
           </div>
         </div>

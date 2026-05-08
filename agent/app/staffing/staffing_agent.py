@@ -173,9 +173,12 @@ class StaffingAgent:
     """
 
     def __init__(self) -> None:
+        from agent.lib.progress import make_runtime_callback_handler, RuntimeProgressHooks
         self.agent = Agent(
             model=CHILD_MODEL,
             system_prompt=STAFFING_PROMPT,
+            callback_handler=make_runtime_callback_handler("staffing_agent"),
+            hooks=[RuntimeProgressHooks("staffing_agent")],
         )
         self.role_catalog = _load_json("role_catalog.json")
         self.role_pool = _load_json("role_pool.json")

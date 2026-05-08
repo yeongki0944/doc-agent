@@ -222,6 +222,19 @@ class ParentOrchestrator:
         Returns a TaskPlan with chat_response and new_version for the caller.
         """
         from agent.app.parent.task_planner import build_task_plan
+        from agent.lib.progress import (
+            ProgressPublisher,
+            set_current_publisher,
+            reset_current_publisher,
+        )
+
+        # Set the ProgressPublisher for this request so sub-agent Strands
+        # callbacks/hooks can discover it without having to thread it through.
+        publisher = ProgressPublisher(
+            doc_id=doc_id,
+            table=getattr(self.document_store, "_table", None),
+        )
+        publisher_token = set_current_publisher(publisher)
 
         plan = TaskPlan()
 
@@ -379,6 +392,12 @@ class ParentOrchestrator:
         finally:
             # --- → IDLE ---
             self._transition(OrchestratorState.IDLE)
+            # Flush any pending token/reasoning deltas and detach publisher.
+            try:
+                publisher.flush()
+            except Exception:
+                pass
+            reset_current_publisher(publisher_token)
 
         return plan
 
@@ -411,9 +430,10 @@ class ParentOrchestrator:
         """
         result = AgentResult(success=True)
 
-        # Publish progress via ProgressPublisher
-        from agent.lib.progress import ProgressPublisher
-        progress = ProgressPublisher(
+        # Use the current request's ProgressPublisher if already set by
+        # handle_message; otherwise construct a transient one.
+        from agent.lib.progress import ProgressPublisher, get_current_publisher
+        progress = get_current_publisher() or ProgressPublisher(
             doc_id=doc_state.document_id,
             table=getattr(self.document_store, "_table", None),
         )
