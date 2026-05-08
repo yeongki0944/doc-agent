@@ -19,7 +19,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
@@ -77,6 +80,8 @@ class AgentResult:
     patches: list[dict] = field(default_factory=list)
     chat_response: str = ""
     error: Optional[str] = None
+    status: str = "completed"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -87,6 +92,11 @@ class TaskPlan:
     status_updates: list[AgentStatus] = field(default_factory=list)
     new_version: int = 0
     execution_log: list[dict] = field(default_factory=list)
+    status: str = "completed"
+    changed_sections: list[str] = field(default_factory=list)
+    created_change_request_ids: list[str] = field(default_factory=list)
+    tool_results: dict[str, Any] = field(default_factory=dict)
+    degraded_messages: list[str] = field(default_factory=list)
 
 
 
@@ -199,6 +209,7 @@ class ParentOrchestrator:
         doc_id: str,
         user_message: str,
         history: list[dict],
+        user_id: str = "",
     ) -> TaskPlan:
         """Process user message through the full orchestration pipeline.
 
@@ -231,9 +242,17 @@ class ParentOrchestrator:
 
             # Step 2: Fetch Document_State + version from DynamoDB
             doc_state, current_version = await self._fetch_document_state(doc_id)
+            raw_document = self._fetch_raw_document(doc_id, doc_state)
 
             # Step 3: Build task plan (intent classification)
-            plan = build_task_plan(user_message)
+            planner_plan = build_task_plan(user_message)
+            plan = TaskPlan(
+                tasks=[
+                    Task(agent=t.agent, action=t.action, params=dict(t.params))
+                    for t in planner_plan.tasks
+                ],
+                chat_response=planner_plan.chat_response,
+            )
             logger.info("Task plan: %d tasks — %s", len(plan.tasks), [(t.agent, t.action) for t in plan.tasks])
 
             # --- PLANNING → DELEGATING ---
@@ -243,12 +262,20 @@ class ParentOrchestrator:
             # All routing is handled by LLM-based task_planner — no keyword overrides
             all_patches: list[Patch] = []
             chat_parts: list[str] = [plan.chat_response] if plan.chat_response else []
+            overall_status = "completed"
 
             for task in plan.tasks:
                 logger.info("Executing task: agent=%s action=%s", task.agent, task.action)
                 result = await self.delegate_task(task.agent, task, doc_state)
                 if result.chat_response:
                     chat_parts.append(result.chat_response)
+                if result.metadata:
+                    key = result.metadata.get("tool") or task.action or task.agent
+                    plan.tool_results[key] = result.metadata
+                    if result.metadata.get("degraded_message"):
+                        plan.degraded_messages.append(str(result.metadata["degraded_message"]))
+                if result.status != "completed" or not result.success:
+                    overall_status = "partial_completed" if result.success else "failed"
                 if result.patches:
                     from agent.app.parent.patch_builder import build_patch
                     patch = build_patch(
@@ -281,13 +308,36 @@ class ParentOrchestrator:
             # Step 5: Apply patches with optimistic lock
             new_version = current_version
             if all_patches:
-                new_version = await self.apply_patches(
-                    doc_id, all_patches, current_version
-                )
+                permission = self._resolve_permission(raw_document, user_id)
+                if self._can_apply_direct(raw_document, permission):
+                    new_version = await self.apply_patches(
+                        doc_id, all_patches, current_version
+                    )
+                    plan.changed_sections = _changed_sections(all_patches)
+                elif self._can_create_change_request(permission):
+                    change_request = self._create_change_request_record(
+                        doc_id=doc_id,
+                        requester=user_id or "runtime-placeholder",
+                        patches=all_patches,
+                    )
+                    saved = self._save_runtime_change_request(raw_document, current_version, change_request)
+                    new_version = int(saved.get("version", current_version))
+                    plan.created_change_request_ids.append(change_request["change_request_id"])
+                    overall_status = "partial_completed"
+                    chat_parts.append(
+                        "직접 반영 권한 또는 리뷰 정책 때문에 변경 요청으로 저장했습니다: "
+                        f"{change_request['change_request_id']}"
+                    )
+                else:
+                    overall_status = "failed"
+                    chat_parts.append(
+                        "현재 사용자 권한으로는 문서를 수정하거나 변경 요청을 생성할 수 없습니다."
+                    )
 
             plan.patch_proposals = all_patches
             plan.new_version = new_version
             plan.chat_response = "\n\n".join(chat_parts) if chat_parts else plan.chat_response
+            plan.status = overall_status
 
             # --- PATCHING → RESPONDING ---
             self._transition(OrchestratorState.RESPONDING)
@@ -312,6 +362,7 @@ class ParentOrchestrator:
             plan.chat_response = (
                 "문서 버전 충돌이 발생했습니다. 페이지를 새로고침한 후 다시 시도해주세요."
             )
+            plan.status = "failed"
         except InferenceProfileUnavailableError as exc:
             logger.warning("Inference profile unavailable for doc_id=%s: %s", doc_id, exc)
             await self._publish_degraded_status(doc_id, exc)
@@ -319,10 +370,12 @@ class ParentOrchestrator:
                 "현재 AI 모델 inference profile이 일시적으로 사용 불가합니다. "
                 "잠시 후 다시 시도해주세요."
             )
+            plan.status = "failed"
         except Exception as exc:
             logger.exception("handle_message failed for doc_id=%s", doc_id)
             await self.publish_status(doc_id, AgentStatus.error)
             plan.chat_response = f"처리 중 오류가 발생했습니다: {exc}"
+            plan.status = "failed"
         finally:
             # --- → IDLE ---
             self._transition(OrchestratorState.IDLE)
@@ -360,9 +413,13 @@ class ParentOrchestrator:
 
         # Publish progress via ProgressPublisher
         from agent.lib.progress import ProgressPublisher
-        progress = ProgressPublisher(doc_id=doc_state.document_id, table=self.document_store._table)
+        progress = ProgressPublisher(
+            doc_id=doc_state.document_id,
+            table=getattr(self.document_store, "_table", None),
+        )
 
         agent_labels = {
+            "internal_tools": "🧩 내부 도구",
             "discovery_agent": "📋 정보 수집",
             "section_writer_agent": "✏️ 섹션 작성",
             "staffing_agent": "👥 팀 구성 추천",
@@ -377,7 +434,9 @@ class ParentOrchestrator:
 
         try:
             logger.info("delegate_task: agent=%s action=%s params=%s", agent_name, task.action, {k: v for k, v in task.params.items() if k != "message"})
-            if agent_name == "discovery_agent":
+            if agent_name == "internal_tools":
+                result = await self._delegate_internal_tool(task, doc_state)
+            elif agent_name == "discovery_agent":
                 result = await self._delegate_discovery(task, doc_state)
             elif agent_name == "conversation_agent":
                 result = self._delegate_conversation(task)
@@ -414,6 +473,8 @@ class ParentOrchestrator:
             "params": task.params,
             "success": result.success,
             "patches_count": len(result.patches),
+            "status": result.status,
+            "metadata_keys": sorted(result.metadata.keys()),
         })
 
         # Publish completion progress
@@ -428,6 +489,97 @@ class ParentOrchestrator:
     # ------------------------------------------------------------------
     # Per-agent delegation helpers
     # ------------------------------------------------------------------
+
+    async def _delegate_internal_tool(
+        self, task: Task, doc_state: DocumentState
+    ) -> AgentResult:
+        """Run Parent-owned MCP-style tools with local deterministic fallback."""
+        from agent.app.parent.internal_tools import (
+            calculate_resource_plan,
+            resource_plan_patches,
+            run_submission_lint,
+        )
+
+        action = task.action
+        params = task.params or {}
+        document = doc_state.model_dump(mode="json")
+
+        if action == "run_submission_lint":
+            result = run_submission_lint(document)
+            result["document_id"] = doc_state.document_id
+            issue_count = sum(len(v) for v in result.get("issues", {}).values())
+            chat = (
+                f"Submission readiness review 완료. Readiness score: "
+                f"{result.get('readiness_score', 0)}/100. "
+                f"{issue_count} issue(s) are recommended before submission."
+            )
+            if result.get("kb_retrieval", {}).get("mode") == "fallback":
+                chat += " Approved samples KB is not configured, so deterministic checks were used."
+            return AgentResult(
+                success=True,
+                chat_response=chat,
+                metadata={"tool": "run_submission_lint", "result": result},
+            )
+
+        if action == "calculate_resource_plan":
+            result = calculate_resource_plan(params)
+            chat = (
+                "Resource planning draft completed. "
+                f"Required ARR: ${result.get('required_arr', 0):,.2f}; "
+                f"eligible funding: ${result.get('eligible_funding_amount', 0):,.2f}. "
+                f"{result.get('warnings', [''])[0]}"
+            )
+            patches = resource_plan_patches(result) if params.get("apply") else []
+            return AgentResult(
+                success=True,
+                patches=patches,
+                chat_response=chat,
+                metadata={"tool": "calculate_resource_plan", "result": result},
+            )
+
+        if action == "aws_service_explanation":
+            services = [
+                _field_value_resolve(svc.get("service_name", {})) or svc.get("service_id", "")
+                for svc in document.get("sections", {}).get("architecture", {}).get("services", [])
+                if isinstance(svc, dict)
+            ]
+            service_text = ", ".join(str(s) for s in services if s) or "Amazon Bedrock, AWS Lambda, Amazon S3, Amazon OpenSearch Service"
+            return AgentResult(
+                success=True,
+                chat_response=(
+                    "AWS service explanation draft: "
+                    f"{service_text}. Use Amazon Bedrock for GenAI model capability, "
+                    "Lambda for workflow/API glue, S3 for source and output artifacts, "
+                    "and OpenSearch or Knowledge Bases for retrieval when needed."
+                ),
+                metadata={
+                    "tool": "aws_service_explanation",
+                    "services": services,
+                    "degraded_message": "Gateway not required; returned local service explanation draft.",
+                },
+            )
+
+        if action in ("create_change_request", "apply_document_patch", "fast_edit"):
+            return AgentResult(
+                success=True,
+                status="partial_completed",
+                chat_response=(
+                    "이 요청은 구조화된 JSON Patch가 있어야 안전하게 처리할 수 있습니다. "
+                    "현재 채팅 메시지에서는 변경 대상과 값을 확정하지 않았으므로 문서는 수정하지 않았습니다."
+                ),
+                metadata={
+                    "tool": action,
+                    "degraded_message": "Structured patch was not present in the runtime prompt.",
+                },
+            )
+
+        return AgentResult(
+            success=False,
+            status="failed",
+            chat_response=f"지원하지 않는 내부 도구 액션입니다: {action}",
+            error=f"Unsupported internal tool action: {action}",
+            metadata={"tool": action},
+        )
 
     def _delegate_conversation(self, task: Task) -> AgentResult:
         """Handle simple non-document chat without mutating Document_State."""
@@ -1006,12 +1158,6 @@ class ParentOrchestrator:
                 "source": "calculated",
             })
             total_hours = result.get("total_project_hours", 0)
-            patches.append({
-                "op": "replace",
-                "path": "/sections/milestones/total_project_hours",
-                "value": total_hours,
-                "source": "calculated",
-            })
             chat_parts.append(
                 f"[milestone_sync] 마일스톤 동기화 완료 — {len(phases)}개 phase, "
                 f"총 {total_hours}시간"
@@ -1042,6 +1188,13 @@ class ParentOrchestrator:
         phases: list[dict] = []
         for phase_name in phases_list:
             total_hours = 0.0
+            legacy_roles = resources_cost_estimates.get("roles", {})
+            if isinstance(legacy_roles, dict):
+                for role_data in legacy_roles.values():
+                    if not isinstance(role_data, dict):
+                        continue
+                    phase_data = (role_data.get("phase_hours") or {}).get(phase_name, {})
+                    total_hours += _field_value_number(phase_data)
             # Find matching phase in phase_hours_table
             for ph in phase_hours_table:
                 ph_phase = ph.get("phase", {})
@@ -1050,6 +1203,13 @@ class ParentOrchestrator:
                     total_hours = float(ph.get("total", 0))
                     break
             assigned = []
+            if isinstance(legacy_roles, dict):
+                for role_data in legacy_roles.values():
+                    if not isinstance(role_data, dict):
+                        continue
+                    display_name = role_data.get("display_name")
+                    if display_name and display_name not in assigned:
+                        assigned.append(display_name)
             for member in team:
                 role_fv = member.get("role", {})
                 name = role_fv.get("user_input") or role_fv.get("ai_recommended") or role_fv.get("calculated") or "" if isinstance(role_fv, dict) else str(role_fv)
@@ -1239,6 +1399,8 @@ class ParentOrchestrator:
                 return True
             if task.action in ("recommend", "calculate"):
                 return True
+            if task.action == "calculate_resource_plan" and task.params.get("apply"):
+                return True
         return False
 
     def _detect_review_intent(self, user_message: str) -> bool:
@@ -1405,6 +1567,105 @@ class ParentOrchestrator:
             doc = DocumentState(document_id=doc_id, version=0)
             self.document_store.put(doc)
             return doc, 0
+
+    def _fetch_raw_document(self, doc_id: str, doc_state: DocumentState) -> dict:
+        """Fetch raw document data so permissions/change_requests survive schema validation."""
+        get_raw = getattr(self.document_store, "get_raw", None)
+        if callable(get_raw):
+            try:
+                return get_raw(doc_id)
+            except DocumentNotFoundError:
+                pass
+        return doc_state.model_dump(mode="json")
+
+    def _resolve_permission(self, item: dict, user_id: str) -> str:
+        """Resolve Runtime placeholder permissions.
+
+        Owner is treated as master. If a document has no owner yet, Runtime can
+        operate as master so first-write flows and local tests keep working.
+        """
+        owner = item.get("user_id") or item.get("owner_id") or ""
+        if (owner and user_id and owner == user_id) or (not owner):
+            return "master"
+
+        for key in ("document_permissions", "permissions"):
+            permissions = item.get(key)
+            if isinstance(permissions, dict):
+                role = _permission_value(permissions.get(user_id))
+                if role:
+                    return role
+        if user_id in (item.get("masters") or []):
+            return "master"
+        if user_id in (item.get("editors") or []):
+            return "edit"
+        if user_id in (item.get("suggesters") or []):
+            return "suggest"
+        if user_id in (item.get("readers") or []):
+            return "read"
+        return "read"
+
+    def _can_apply_direct(self, item: dict, permission: str) -> bool:
+        if permission == "master":
+            return True
+        if permission == "edit" and not _document_requires_review(item):
+            return True
+        return False
+
+    @staticmethod
+    def _can_create_change_request(permission: str) -> bool:
+        return permission in {"suggest", "edit", "master"}
+
+    def _create_change_request_record(
+        self,
+        *,
+        doc_id: str,
+        requester: str,
+        patches: list[Patch],
+    ) -> dict:
+        operations = [
+            op.model_dump(mode="json")
+            for patch in patches
+            for op in patch.operations
+        ]
+        now = datetime.now(timezone.utc).isoformat()
+        return {
+            "change_request_id": f"cr-{uuid.uuid4().hex[:12]}",
+            "document_id": doc_id,
+            "requester": requester,
+            "status": "pending",
+            "summary": f"{len(operations)} proposed document change(s)",
+            "changes": [
+                {
+                    "section": _patch_section(op.get("path", "")),
+                    "as_is": None,
+                    "to_be": op.get("value"),
+                    "reason": op.get("reason", ""),
+                    "json_patch": [op],
+                }
+                for op in operations
+            ],
+            "json_patch": operations,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def _save_runtime_change_request(
+        self,
+        raw_document: dict,
+        expected_version: int,
+        change_request: dict,
+    ) -> dict:
+        updated = deepcopy(raw_document)
+        requests = updated.get("change_requests")
+        if not isinstance(requests, list):
+            requests = []
+        requests.append(change_request)
+        updated["change_requests"] = requests
+
+        update_raw = getattr(self.document_store, "update_raw", None)
+        if not callable(update_raw):
+            raise RuntimeError("document store does not support raw change requests")
+        return update_raw(updated, expected_version)
 
     async def _store_session_event(
         self, doc_id: str, user_message: str, agent_response: str
@@ -1819,13 +2080,17 @@ def _discovery_schema_patches(discovery_result: Any) -> list[dict]:
 
 def _milestone_phase_to_field_values(phase: dict[str, Any]) -> dict[str, Any]:
     deliverables = phase.get("deliverables", "")
-    if isinstance(deliverables, list):
-        deliverables = "\n".join(str(d) for d in deliverables if d)
+    if not isinstance(deliverables, list):
+        deliverables = [deliverables] if deliverables else []
     completion_date = phase.get("completion_date") or phase.get("date") or phase.get("end_date") or ""
     return {
         "phase": _ai_field_value(phase.get("phase", "")),
         "completion_date": _ai_field_value(completion_date),
-        "deliverables": _ai_field_value(deliverables),
+        "deliverables": [
+            {"text": _ai_field_value(item), "level": 1}
+            for item in deliverables
+            if item
+        ],
     }
 
 
@@ -1853,6 +2118,63 @@ def _current_aws_monthly_total(doc_state: DocumentState) -> float:
         except (ValueError, TypeError):
             pass
     return 0.0
+
+
+PERMISSION_ORDER = {"read": 0, "suggest": 1, "edit": 2, "master": 3}
+
+
+def _permission_value(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("role") or value.get("permission") or value.get("level")
+    role = str(value or "").strip().lower()
+    return role if role in PERMISSION_ORDER else ""
+
+
+def _document_requires_review(item: dict) -> bool:
+    settings = item.get("settings") if isinstance(item.get("settings"), dict) else {}
+    permission_settings = item.get("permission_settings") if isinstance(item.get("permission_settings"), dict) else {}
+    return bool(
+        settings.get("require_review")
+        or settings.get("requires_review")
+        or item.get("review_required")
+        or permission_settings.get("require_review")
+    )
+
+
+def _patch_section(path: str) -> str:
+    parts = [part for part in str(path or "").strip("/").split("/") if part]
+    if len(parts) >= 2 and parts[0] == "sections":
+        return parts[1]
+    return parts[0] if parts else "document"
+
+
+def _changed_sections(patches: list[Patch]) -> list[str]:
+    sections = {
+        _patch_section(op.path)
+        for patch in patches
+        for op in patch.operations
+    }
+    return sorted(section for section in sections if section)
+
+
+def _field_value_resolve(value: Any) -> Any:
+    if isinstance(value, dict) and any(key in value for key in ("user_input", "ai_recommended", "calculated")):
+        for key in ("user_input", "ai_recommended", "calculated"):
+            candidate = value.get(key)
+            if candidate not in (None, ""):
+                return candidate
+        return ""
+    return value
+
+
+def _field_value_number(value: Any) -> float:
+    resolved = _field_value_resolve(value)
+    if resolved in (None, ""):
+        return 0.0
+    try:
+        return float(str(resolved).replace("$", "").replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _apply_operation(doc_dict: dict, op: PatchOperation) -> None:

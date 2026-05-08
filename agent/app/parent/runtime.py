@@ -154,7 +154,12 @@ def invoke(payload: dict) -> dict:
 
     try:
         plan = asyncio.run(
-            orchestrator.handle_message(doc_id, prompt, history)
+            orchestrator.handle_message(
+                doc_id,
+                prompt,
+                history,
+                user_id=str(payload.get("user_id", "") or ""),
+            )
         )
     except RuntimeError:
         # Already inside a running event loop (e.g. AgentCore Runtime)
@@ -162,7 +167,12 @@ def invoke(payload: dict) -> dict:
         with concurrent.futures.ThreadPoolExecutor() as pool:
             plan = pool.submit(
                 asyncio.run,
-                orchestrator.handle_message(doc_id, prompt, history),
+                orchestrator.handle_message(
+                    doc_id,
+                    prompt,
+                    history,
+                    user_id=str(payload.get("user_id", "") or ""),
+                ),
             ).result()
     except Exception as exc:
         logger.exception("orchestrator invocation failed")
@@ -175,7 +185,12 @@ def invoke(payload: dict) -> dict:
     return {
         "result": plan.chat_response,
         "version": plan.new_version,
-        "status": "ok",
+        "status": "ok" if plan.status in ("completed", "partial_completed") else "error",
+        "orchestration_status": plan.status,
+        "changed_sections": plan.changed_sections,
+        "created_change_request_ids": plan.created_change_request_ids,
+        "tool_results": plan.tool_results,
+        "degraded_messages": plan.degraded_messages,
         "execution_log": plan.execution_log,
     }
 

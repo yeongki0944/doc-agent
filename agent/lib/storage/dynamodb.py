@@ -55,11 +55,33 @@ class DocumentStore:
             raise DocumentNotFoundError(f"Document {document_id} not found")
         return DocumentState.model_validate(deepcopy(raw))
 
+    def get_raw(self, document_id: str) -> dict:
+        """Retrieve a raw document dict, preserving non-schema workflow fields."""
+        raw = self._store.get(document_id)
+        if raw is None:
+            raise DocumentNotFoundError(f"Document {document_id} not found")
+        return deepcopy(raw)
+
     def put(self, doc: DocumentState) -> DocumentState:
         """Create or overwrite a document (no version check)."""
         doc.updated_at = datetime.utcnow()
         self._store[doc.document_id] = doc.model_dump(mode="json")
         return doc
+
+    def update_raw(self, item: dict, expected_version: int) -> dict:
+        """Update a raw document dict while preserving extra workflow fields."""
+        document_id = item.get("document_id")
+        existing = self._store.get(document_id)
+        if existing is not None and existing.get("version", 0) != expected_version:
+            raise VersionConflictError(
+                f"Version conflict: expected {expected_version}, "
+                f"got {existing.get('version')}"
+            )
+        saved = deepcopy(item)
+        saved["version"] = expected_version + 1
+        saved["updated_at"] = datetime.utcnow().isoformat()
+        self._store[document_id] = saved
+        return deepcopy(saved)
 
     def update(self, doc: DocumentState, expected_version: int) -> DocumentState:
         """Update with optimistic locking.
@@ -130,6 +152,14 @@ class DynamoDBDocumentStore:
             raise DocumentNotFoundError(f"Document {document_id} not found")
         return DocumentState.model_validate(item)
 
+    def get_raw(self, document_id: str) -> dict:
+        """Retrieve raw DynamoDB item, preserving non-schema workflow fields."""
+        response = self._table.get_item(Key={"document_id": document_id})
+        item = response.get("Item")
+        if item is None:
+            raise DocumentNotFoundError(f"Document {document_id} not found")
+        return deepcopy(item)
+
     # ------------------------------------------------------------------
     # Write (unconditional)
     # ------------------------------------------------------------------
@@ -166,6 +196,23 @@ class DynamoDBDocumentStore:
                 f"stored version differs"
             )
         return doc
+
+    def update_raw(self, item: dict, expected_version: int) -> dict:
+        """Update raw DynamoDB item with optimistic locking."""
+        saved = deepcopy(item)
+        saved["version"] = expected_version + 1
+        saved["updated_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            self._table.put_item(
+                Item=_to_dynamodb_value(saved),
+                ConditionExpression=Attr("version").eq(expected_version),
+            )
+        except self._resource.meta.client.exceptions.ConditionalCheckFailedException:
+            raise VersionConflictError(
+                f"Version conflict: expected {expected_version}, "
+                f"stored version differs"
+            )
+        return saved
 
     # ------------------------------------------------------------------
     # Delete / exists

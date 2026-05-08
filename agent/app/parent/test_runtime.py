@@ -17,10 +17,16 @@ import pytest
 
 
 class _FakeRuntimeOrchestrator:
-    async def handle_message(self, doc_id, prompt, history):
+    async def handle_message(self, doc_id, prompt, history, user_id=""):
         return SimpleNamespace(
             chat_response=f"handled {doc_id}: {prompt}",
             new_version=1,
+            status="completed",
+            changed_sections=[],
+            created_change_request_ids=[],
+            tool_results={},
+            degraded_messages=[],
+            execution_log={"planned": [], "executed": []},
         )
 
 
@@ -108,7 +114,7 @@ class TestInvoke:
 
         result = invoke({"doc_id": "doc-001", "prompt": "test"})
 
-        assert set(result.keys()) == {"result", "version", "status"}
+        assert {"result", "version", "status"}.issubset(result.keys())
 
     def test_history_defaults_to_empty_list(self):
         from agent.app.parent.runtime import invoke
@@ -213,7 +219,7 @@ class TestPayloadEdgeCases:
         })
 
         assert result["status"] == "ok"
-        assert set(result.keys()) == {"result", "version", "status"}
+        assert {"result", "version", "status"}.issubset(result.keys())
 
     def test_non_string_doc_id_returns_error(self):
         from agent.app.parent.runtime import invoke

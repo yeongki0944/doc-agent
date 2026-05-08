@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,12 @@ class TaskPlan:
     chat_response: str = ""
     status_updates: list = field(default_factory=list)
     new_version: int = 0
+    execution_log: list = field(default_factory=list)
+    status: str = "completed"
+    changed_sections: list[str] = field(default_factory=list)
+    created_change_request_ids: list[str] = field(default_factory=list)
+    tool_results: dict[str, Any] = field(default_factory=dict)
+    degraded_messages: list[str] = field(default_factory=list)
 
 # ---------------------------------------------------------------------------
 # Agent registry (loaded once at module level)
@@ -141,10 +148,109 @@ def _call_llm(user_message: str) -> dict:
 
 def _fallback_plan(user_message: str) -> TaskPlan:
     """Fallback when LLM call fails — route to discovery_agent."""
+    rule_based = _rule_based_plan(user_message)
+    if rule_based:
+        return rule_based
     return TaskPlan(
         tasks=[Task(agent="discovery_agent", action="collect_info", params={"message": user_message})],
         chat_response="",
     )
+
+
+def _rule_based_plan(user_message: str) -> TaskPlan | None:
+    """Route high-signal MCP workflow intents before calling the LLM router."""
+    message = user_message or ""
+    msg_lower = message.lower()
+
+    if _contains_any(msg_lower, ("review_submission", "submission lint", "review", "lint", "readiness", "리뷰", "검토", "검증")):
+        return TaskPlan(tasks=[
+            Task(agent="internal_tools", action="run_submission_lint", params={"message": message})
+        ])
+
+    if _contains_any(msg_lower, ("resource_planning", "resource planning", "funding", "funding amount", "arr", "mrr", "sow cost", "리소스", "펀딩", "지원금", "비용 계획")):
+        params = {"message": message, **_extract_resource_numbers(message)}
+        if _contains_any(msg_lower, ("apply", "update document", "save", "반영", "적용", "저장")):
+            params["apply"] = True
+        return TaskPlan(tasks=[
+            Task(agent="internal_tools", action="calculate_resource_plan", params=params)
+        ])
+
+    if _contains_any(msg_lower, ("team", "staffing", "팀 구성", "인력", "역할", "role")):
+        return TaskPlan(tasks=[
+            Task(agent="staffing_agent", action="recommend", params={"message": message})
+        ])
+
+    if _contains_any(msg_lower, ("create_change_request", "change request", "변경 요청", "cr 생성")):
+        return TaskPlan(tasks=[
+            Task(agent="internal_tools", action="create_change_request", params={"message": message})
+        ])
+
+    if _contains_any(msg_lower, ("apply_document_patch", "json patch", "patch 적용", "패치 적용")):
+        return TaskPlan(tasks=[
+            Task(agent="internal_tools", action="apply_document_patch", params={"message": message})
+        ])
+
+    if _contains_any(msg_lower, ("export_docx", "docx", "export", "download", "내보내기", "다운로드")):
+        return TaskPlan(tasks=[
+            Task(agent="formatter_agent", action="export_docx", params={"message": message})
+        ])
+
+    if _contains_any(msg_lower, ("architecture_design", "architecture design", "architecture", "아키텍처", "서비스 구성", "drawio", ".drawio")):
+        action = "analyze_existing" if _contains_any(msg_lower, ("drawio", ".drawio", "업로드", "file", "파일")) else "design_new"
+        return TaskPlan(tasks=[
+            Task(agent="architecture_agent", action=action, params={"message": message})
+        ])
+
+    if _contains_any(msg_lower, ("aws_service_explanation", "explain aws", "aws service", "서비스 설명", "bedrock 설명", "lambda 설명")):
+        return TaskPlan(tasks=[
+            Task(agent="internal_tools", action="aws_service_explanation", params={"message": message})
+        ])
+
+    if _contains_any(msg_lower, ("section_recommendation", "section recommendation", "섹션 추천", "섹션 보완")):
+        return TaskPlan(tasks=[
+            Task(agent="section_writer_agent", action="recommend", params={"message": message})
+        ])
+
+    if _contains_any(msg_lower, ("fast_edit", "quick edit", "빠른 수정", "간단히 수정")):
+        return TaskPlan(tasks=[
+            Task(agent="internal_tools", action="fast_edit", params={"message": message})
+        ])
+
+    if _contains_any(msg_lower, ("guided_draft", "guided draft", "초안", "draft", "작성 시작")):
+        return TaskPlan(tasks=[
+            Task(agent="discovery_agent", action="collect_info", params={"message": message})
+        ])
+
+    return None
+
+
+def _contains_any(message: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in message for needle in needles)
+
+
+def _extract_resource_numbers(message: str) -> dict[str, float]:
+    params: dict[str, float] = {}
+    patterns = {
+        "target_funding_amount": r"(?:target[_ ]?funding[_ ]?amount|funding|지원금|펀딩)\D{0,20}(\d[\d,]*(?:\.\d+)?)",
+        "arr": r"\barr\D{0,20}(\d[\d,]*(?:\.\d+)?)",
+        "mrr": r"\bmrr\D{0,20}(\d[\d,]*(?:\.\d+)?)",
+        "sow_cost": r"(?:sow[_ ]?cost|sow cost|sow|계약금액)\D{0,20}(\d[\d,]*(?:\.\d+)?)",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, message, flags=re.IGNORECASE)
+        if match:
+            try:
+                params[key] = float(match.group(1).replace(",", ""))
+            except ValueError:
+                continue
+    if "target_funding_amount" not in params:
+        numbers = re.findall(r"\d[\d,]*(?:\.\d+)?", message)
+        if numbers and _contains_any(message.lower(), ("funding", "지원금", "펀딩")):
+            try:
+                params["target_funding_amount"] = float(numbers[0].replace(",", ""))
+            except ValueError:
+                pass
+    return params
 
 
 def build_task_plan(user_message: str) -> TaskPlan:
@@ -153,6 +259,10 @@ def build_task_plan(user_message: str) -> TaskPlan:
     Uses Bedrock Sonnet to classify intent based on the agent registry.
     Falls back to discovery_agent if LLM call fails.
     """
+    rule_based = _rule_based_plan(user_message)
+    if rule_based:
+        return rule_based
+
     result = _call_llm(user_message)
 
     if not result or "tasks" not in result:
