@@ -36,6 +36,11 @@ resource "aws_cloudformation_stack" "appsync_events" {
         Type = "AWS::AppSync::ApiKey"
         Properties = {
           ApiId = { "Fn::GetAtt" = ["EventApi", "ApiId"] }
+          # Expires as Unix timestamp (UTC). Bump this value before it
+          # expires to rotate the key. AppSync Events API keys must be
+          # between 1 and 365 days out from creation.
+          #   2027-05-07T23:00:00Z = 1809730800
+          Expires = 1809730800
         }
       }
 
