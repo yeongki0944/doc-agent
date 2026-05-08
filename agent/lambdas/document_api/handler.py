@@ -169,6 +169,153 @@ def _response(status: int, body: Any) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Standard response envelope (hardened)
+# ---------------------------------------------------------------------------
+#
+# Applied to NEW hardened APIs only — existing endpoints keep their current
+# response shape to avoid breaking the frontend. The standard envelope adds:
+#   status         — "completed" | "partial_completed" | "failed"
+#   message        — short human-readable summary
+#   warnings       — list of strings; present whenever degraded
+#   missing_inputs — list of strings; present when inputs were insufficient
+#   error_reason   — short error class/description; present only on failed
+#   changed_sections / change_request_id — when applicable
+#
+# The envelope is purely additive: callers can still read their existing
+# fields (readiness_score, mode, etc.). Any existing "status" value set by
+# the caller is preserved as-is; this function does NOT overwrite it.
+
+_ENVELOPE_DEFAULTS = {
+    "completed": "Request completed.",
+    "partial_completed": "Request completed with partial results.",
+    "failed": "Request failed.",
+}
+
+_STANDARD_STATUSES = frozenset({"completed", "partial_completed", "failed"})
+
+
+def _standard_envelope(
+    *,
+    status: str,
+    message: str | None = None,
+    warnings: list | None = None,
+    missing_inputs: list | None = None,
+    error_reason: str | None = None,
+    changed_sections: list | None = None,
+    change_request_id: str | None = None,
+) -> dict:
+    """Build the standard response envelope fields.
+
+    Callers merge these into their payload dict. Fields with default values
+    are omitted so existing API shapes stay clean.
+    """
+    if status not in _STANDARD_STATUSES:
+        status = "failed"
+    env: dict[str, Any] = {
+        "standard_status": status,
+        "message": message or _ENVELOPE_DEFAULTS[status],
+    }
+    if warnings:
+        env["warnings"] = [str(w) for w in warnings if w]
+    if missing_inputs:
+        env["missing_inputs"] = [str(x) for x in missing_inputs if x]
+    if error_reason:
+        env["error_reason"] = str(error_reason)
+    if changed_sections:
+        env["changed_sections"] = [str(s) for s in changed_sections if s]
+    if change_request_id:
+        env["change_request_id"] = str(change_request_id)
+    return env
+
+
+def _ok(body: dict | None = None, **envelope_kwargs) -> dict:
+    """Return 200 with standard ``completed`` envelope merged into body."""
+    payload: dict[str, Any] = dict(body or {})
+    payload.update(_standard_envelope(status="completed", **envelope_kwargs))
+    return _response(200, payload)
+
+
+def _partial(body: dict | None = None, *, warnings: list | None = None, **envelope_kwargs) -> dict:
+    """Return 200 with standard ``partial_completed`` envelope.
+
+    ``warnings`` is required in practice — a partial result without a reason
+    is effectively fake success. We keep the parameter optional for call-site
+    convenience but will emit a single default warning if omitted.
+    """
+    payload: dict[str, Any] = dict(body or {})
+    if not warnings:
+        warnings = ["partial result — see mode/fallback for details"]
+    payload.update(_standard_envelope(
+        status="partial_completed",
+        warnings=warnings,
+        **envelope_kwargs,
+    ))
+    return _response(200, payload)
+
+
+def _failed(
+    status_code: int,
+    *,
+    error_reason: str,
+    message: str | None = None,
+    warnings: list | None = None,
+    missing_inputs: list | None = None,
+    extra: dict | None = None,
+) -> dict:
+    """Return non-2xx with the standard ``failed`` envelope.
+
+    Keeps the legacy ``error`` and optional ``stage`` fields that existing
+    frontend error paths already read.
+    """
+    payload: dict[str, Any] = dict(extra or {})
+    payload.setdefault("error", error_reason)
+    payload.update(_standard_envelope(
+        status="failed",
+        message=message,
+        warnings=warnings,
+        missing_inputs=missing_inputs,
+        error_reason=error_reason,
+    ))
+    return _response(status_code, payload)
+
+
+def _safe_error_reason(exc: BaseException, max_len: int = 160) -> str:
+    """Produce a short, log-safe error description.
+
+    Avoids dumping full payloads or tracebacks. Only exception class +
+    truncated message is returned so logs and API responses do not leak
+    secrets or large blobs.
+    """
+    text = str(exc)
+    if len(text) > max_len:
+        text = text[:max_len] + "..."
+    return f"{type(exc).__name__}: {text}"
+
+
+def _log(action: str, level: str, **fields: Any) -> None:
+    """Consistent, secret-safe log line.
+
+    Format: ``[doc-api:<action>] level=<lvl> key1=v1 key2=v2``
+    Values longer than 160 chars are truncated with ``...``.
+    Only scalar values are included — dicts/lists are summarised by type.
+    """
+    parts = [f"[doc-api:{action}] level={level}"]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if isinstance(value, (dict, list, tuple, set)):
+            val_repr = f"{type(value).__name__}(len={len(value)})"
+        elif isinstance(value, bool):
+            val_repr = "true" if value else "false"
+        else:
+            val_repr = str(value)
+        if len(val_repr) > 160:
+            val_repr = val_repr[:160] + "..."
+        parts.append(f"{key}={val_repr}")
+    print(" ".join(parts))
+
+
 def _set_nested(obj: dict, path: str, value: Any) -> None:
     parts = [p for p in path.strip("/").split("/") if p]
     cur = obj
@@ -677,7 +824,14 @@ def get_user_id(event: dict) -> Optional[str]:
 def _require_user(event: dict):
     user_id = get_user_id(event)
     if not user_id:
-        return None, _response(401, {"error": "user_id required (X-User-Id header)"})
+        body = {"error": "user_id required (X-User-Id header)"}
+        body.update(_standard_envelope(
+            status="failed",
+            message="Authentication required.",
+            error_reason="missing_user_id",
+            missing_inputs=["X-User-Id header"],
+        ))
+        return None, _response(401, body)
     return user_id, None
 
 
@@ -685,7 +839,13 @@ def _check_ownership(item: dict, user_id: str) -> Optional[dict]:
     """소유권 검증. 위반 시 403 응답, OK면 None."""
     owner = item.get("user_id")
     if owner and owner != user_id:
-        return _response(403, {"error": "forbidden"})
+        body = {"error": "forbidden"}
+        body.update(_standard_envelope(
+            status="failed",
+            message="Forbidden.",
+            error_reason="ownership_denied",
+        ))
+        return _response(403, body)
     return None
 
 
@@ -760,13 +920,25 @@ def _document_permission(item: dict, user_id: str) -> str:
 def _authorize_document(item: dict, user_id: str, required: str) -> tuple[str, Optional[dict]]:
     role = _document_permission(item, user_id)
     if not role:
-        return "", _response(403, {"error": "forbidden"})
+        body = {"error": "forbidden"}
+        body.update(_standard_envelope(
+            status="failed",
+            message="Forbidden.",
+            error_reason="forbidden",
+        ))
+        return "", _response(403, body)
     if PERMISSION_ORDER[role] < PERMISSION_ORDER[required]:
-        return role, _response(403, {
+        body = {
             "error": "insufficient_permission",
             "required": required,
             "permission": role,
-        })
+        }
+        body.update(_standard_envelope(
+            status="failed",
+            message=f"Requires {required} permission.",
+            error_reason="insufficient_permission",
+        ))
+        return role, _response(403, body)
     return role, None
 
 
@@ -883,7 +1055,13 @@ def _load_document_for_action(doc_id: str, event: dict, required: str) -> tuple[
     resp = table.get_item(Key={"document_id": doc_id})
     item = resp.get("Item")
     if not item:
-        return user_id, "", None, _response(404, {"error": "not found"})
+        body = {"error": "not found"}
+        body.update(_standard_envelope(
+            status="failed",
+            message="Document not found.",
+            error_reason="not_found",
+        ))
+        return user_id, "", None, _response(404, body)
     permission, auth_err = _authorize_document(item, user_id, required)
     if auth_err:
         return user_id, permission, None, auth_err
@@ -2284,18 +2462,23 @@ def _invoke_gateway_tool(function_name: str, payload: dict) -> tuple[dict | None
             Payload=json.dumps({"inputPayload": _json(payload)}).encode("utf-8"),
         )
     except Exception as exc:
-        return None, f"invoke_error: {type(exc).__name__}: {exc}"
+        return None, f"invoke_error: {_safe_error_reason(exc)}"
 
     body = _read_lambda_payload(resp.get("Payload"))
     if resp.get("FunctionError"):
-        return None, f"lambda_error: {body}"
+        # Emit only a short error class + snippet — avoid dumping large payloads.
+        if isinstance(body, dict):
+            err_cls = str(body.get("errorType") or body.get("error") or "LambdaFunctionError")
+            err_msg = str(body.get("errorMessage") or body.get("message") or "")[:160]
+            return None, f"lambda_error: {err_cls}: {err_msg}"
+        return None, f"lambda_error: {str(body)[:160]}"
 
     output_raw = body.get("outputPayload", body) if isinstance(body, dict) else {}
     if isinstance(output_raw, str):
         try:
             parsed = json.loads(output_raw)
         except Exception as exc:
-            return None, f"parse_error: {exc}"
+            return None, f"parse_error: {_safe_error_reason(exc)}"
     elif isinstance(output_raw, dict):
         parsed = output_raw
     else:
@@ -2335,6 +2518,10 @@ def _handle_generate_architecture_diagram(doc_id: str, body: dict, event: dict) 
     if not isinstance(services, list) or not services:
         services = _services_from_document(item)
 
+    missing_inputs: list[str] = []
+    if not services:
+        missing_inputs.append("services")
+
     payload = {
         "doc_id": doc_id,
         "services": services,
@@ -2349,8 +2536,7 @@ def _handle_generate_architecture_diagram(doc_id: str, body: dict, event: dict) 
     )
     result, error = _invoke_gateway_tool(function_name, payload)
     if result is None:
-        # Build an in-process engineer-friendly draft so the caller always has
-        # something renderable even if the downstream Lambda is unavailable.
+        # Downstream Lambda unreachable — build an in-process engineer draft.
         names = []
         for svc in services:
             if isinstance(svc, dict):
@@ -2367,7 +2553,9 @@ def _handle_generate_architecture_diagram(doc_id: str, body: dict, event: dict) 
             "notes": ["downstream Lambda unavailable — in-process fallback"],
             "warning": "generate_architecture_diagram invoke failed",
         }
-        return _response(200, {
+        _log("generate_architecture_diagram", "warn",
+             doc_id=doc_id, error_reason=error or "unknown")
+        return _partial({
             "document_id": doc_id,
             "permission": permission,
             "mode": "engineer_draft",
@@ -2375,12 +2563,39 @@ def _handle_generate_architecture_diagram(doc_id: str, body: dict, event: dict) 
             "preview_s3_key": "",
             "services_extracted": names,
             "engineer_draft": fallback_draft,
-            "warnings": [error or "unknown error"],
-        })
+            "changed_sections": [],
+        }, warnings=[
+            "generate_architecture_diagram Lambda unavailable — engineer draft returned",
+            error or "unknown error",
+        ], missing_inputs=missing_inputs or None)
 
+    # Downstream succeeded — but it may still have returned engineer_draft
+    # mode (empty services, skip_drawio, or S3 failure). Treat that as
+    # partial_completed so the frontend does not claim full success.
     result["document_id"] = doc_id
     result["permission"] = permission
-    return _response(200, result)
+    mode = str(result.get("mode") or "")
+    tool_warnings = []
+    draft = result.get("engineer_draft") or {}
+    if isinstance(draft, dict) and draft.get("warning"):
+        tool_warnings.append(str(draft["warning"]))
+    if result.get("error"):
+        tool_warnings.append(str(result["error"]))
+
+    _log("generate_architecture_diagram", "info",
+         doc_id=doc_id, mode=mode, services=len(services))
+
+    if mode == "drawio" and result.get("drawio_s3_key"):
+        return _ok(result, message="Architecture diagram generated.",
+                   warnings=tool_warnings or None)
+    return _partial(
+        result,
+        message="Architecture engineer draft returned.",
+        warnings=tool_warnings or [
+            "drawio artefact unavailable — engineer draft returned",
+        ],
+        missing_inputs=missing_inputs or None,
+    )
 
 
 def _handle_create_calculator_link(doc_id: str, body: dict, event: dict) -> dict:
@@ -2391,6 +2606,10 @@ def _handle_create_calculator_link(doc_id: str, body: dict, event: dict) -> dict
     services = body.get("services")
     if not isinstance(services, list) or not services:
         services = _services_from_document(item)
+
+    missing_inputs: list[str] = []
+    if not services:
+        missing_inputs.append("services")
 
     payload = {
         "doc_id": doc_id,
@@ -2404,8 +2623,7 @@ def _handle_create_calculator_link(doc_id: str, body: dict, event: dict) -> dict
     )
     result, error = _invoke_gateway_tool(function_name, payload)
     if result is None:
-        # In-process fallback that preserves document_local_summary even
-        # when the downstream Lambda is unreachable.
+        # Downstream unreachable — local fallback preserves document_local_summary.
         fallback_rows = []
         total = 0.0
         for svc in services:
@@ -2422,7 +2640,9 @@ def _handle_create_calculator_link(doc_id: str, body: dict, event: dict) -> dict
                 "service_code": svc.get("service_code", "") if isinstance(svc, dict) else "",
                 "monthly_cost": hint_num,
             })
-        return _response(200, {
+        _log("create_calculator_link", "warn",
+             doc_id=doc_id, error_reason=error or "unknown")
+        return _partial({
             "document_id": doc_id,
             "permission": permission,
             "mode": "fallback",
@@ -2441,12 +2661,35 @@ def _handle_create_calculator_link(doc_id: str, body: dict, event: dict) -> dict
                 "message": "Calculator Link Lambda unavailable",
                 "items": fallback_rows,
             },
-            "warnings": [error or "unknown error"],
-        })
+            "changed_sections": [],
+        }, warnings=[
+            "Calculator Link Lambda unavailable — document-local summary only",
+            error or "unknown error",
+        ], missing_inputs=missing_inputs or None)
 
+    # Downstream responded — inspect mode and warnings to decide envelope.
     result["document_id"] = doc_id
     result["permission"] = permission
-    return _response(200, result)
+    mode = str(result.get("mode") or "")
+    downstream_warnings = []
+    if isinstance(result.get("warnings"), list):
+        downstream_warnings = [str(w) for w in result["warnings"] if w]
+
+    _log("create_calculator_link", "info",
+         doc_id=doc_id, mode=mode, services=len(services))
+
+    if mode in {"node_lambda", "mcp"} and result.get("calculator_share_url"):
+        return _ok(result,
+                   message="Calculator link created.",
+                   warnings=downstream_warnings or None)
+    return _partial(
+        result,
+        message="Calculator link unavailable — fallback summary returned.",
+        warnings=downstream_warnings or [
+            "No calculator backend configured — fallback card returned",
+        ],
+        missing_inputs=missing_inputs or None,
+    )
 
 
 def _handle_explain_aws_services(doc_id: str, body: dict, event: dict) -> dict:
@@ -2462,6 +2705,10 @@ def _handle_explain_aws_services(doc_id: str, body: dict, event: dict) -> dict:
         ]
         services = [s for s in services if s]
 
+    missing_inputs: list[str] = []
+    if not services:
+        missing_inputs.append("services")
+
     payload = {
         "services": services,
         "use_case": str(body.get("use_case", "")),
@@ -2473,22 +2720,49 @@ def _handle_explain_aws_services(doc_id: str, body: dict, event: dict) -> dict:
     )
     result, error = _invoke_gateway_tool(function_name, payload)
     if result is None:
-        # In-process minimal fallback: return empty explanations but do not
-        # fail the request — the frontend can keep existing text.
-        return _response(200, {
+        _log("explain_aws_services", "warn",
+             doc_id=doc_id, error_reason=error or "unknown")
+        return _partial({
             "document_id": doc_id,
             "permission": permission,
             "mode": "static",
             "explanations": [],
-            "warnings": [
-                "explain_aws_services Lambda unavailable",
-                error or "unknown error",
-            ],
-        })
+            "changed_sections": [],
+        }, warnings=[
+            "explain_aws_services Lambda unavailable",
+            error or "unknown error",
+        ], missing_inputs=missing_inputs or None)
 
     result["document_id"] = doc_id
     result["permission"] = permission
-    return _response(200, result)
+    mode = str(result.get("mode") or "")
+    downstream_warnings = []
+    if isinstance(result.get("warnings"), list):
+        downstream_warnings = [str(w) for w in result["warnings"] if w]
+
+    explanations = result.get("explanations") or []
+    placeholders = sum(
+        1 for e in explanations
+        if isinstance(e, dict) and e.get("source") == "unknown"
+    )
+
+    _log("explain_aws_services", "info",
+         doc_id=doc_id, mode=mode,
+         explanations=len(explanations), unknown=placeholders)
+
+    # No services OR any unknown placeholder OR llm_fallback → partial.
+    if not explanations or placeholders > 0 or mode == "llm_fallback":
+        return _partial(
+            result,
+            message="Service explanations completed with gaps.",
+            warnings=downstream_warnings or [
+                "one or more services had no static explanation",
+            ],
+            missing_inputs=missing_inputs or None,
+        )
+    return _ok(result,
+               message="Service explanations returned.",
+               warnings=downstream_warnings or None)
 
 
 def _handle_export(doc_id: str, event: dict) -> dict:
@@ -2506,7 +2780,7 @@ def _handle_export(doc_id: str, event: dict) -> dict:
         return forbidden
 
     version = int(item.get("version", 0))
-    print(f"[export] start doc_id={doc_id} version={version}")
+    _log("export", "info", doc_id=doc_id, version=version, stage="start")
 
     payload = {
         "doc_id": doc_id,
@@ -2530,18 +2804,25 @@ def _handle_export(doc_id: str, event: dict) -> dict:
             ).encode("utf-8"),
         )
     except Exception as exc:
-        print(f"[export] error stage=invoke error={exc}")
-        return _response(500, {"error": str(exc), "stage": "invoke"})
+        reason = _safe_error_reason(exc)
+        _log("export", "error", doc_id=doc_id, stage="invoke", error_reason=reason)
+        return _failed(500, error_reason=reason,
+                       message="Export Lambda invocation failed.",
+                       extra={"stage": "invoke"})
 
     try:
         lambda_body = _read_lambda_payload(invoke_resp.get("Payload"))
         if invoke_resp.get("FunctionError"):
-            print(f"[export] error stage=lambda error={lambda_body}")
-            return _response(500, {
-                "error": "export lambda failed",
-                "stage": "lambda",
-                "details": lambda_body,
-            })
+            if isinstance(lambda_body, dict):
+                err_cls = str(lambda_body.get("errorType") or "LambdaFunctionError")
+                err_msg = str(lambda_body.get("errorMessage") or "")[:160]
+                reason = f"{err_cls}: {err_msg}"
+            else:
+                reason = str(lambda_body)[:160]
+            _log("export", "error", doc_id=doc_id, stage="lambda", error_reason=reason)
+            return _failed(500, error_reason=reason,
+                           message="Export Lambda returned an error.",
+                           extra={"stage": "lambda"})
 
         output_payload = lambda_body.get("outputPayload", "{}")
         if isinstance(output_payload, str):
@@ -2551,22 +2832,30 @@ def _handle_export(doc_id: str, event: dict) -> dict:
         else:
             output = {}
     except Exception as exc:
-        print(f"[export] error stage=parse_response error={exc}")
-        return _response(500, {"error": str(exc), "stage": "parse_response"})
+        reason = _safe_error_reason(exc)
+        _log("export", "error", doc_id=doc_id, stage="parse_response", error_reason=reason)
+        return _failed(500, error_reason=reason,
+                       message="Export response parse failed.",
+                       extra={"stage": "parse_response"})
 
     if output.get("error"):
-        print(f"[export] error stage={output.get('stage', 'export_docx')} error={output.get('error')}")
-        return _response(500, output)
+        stage = str(output.get("stage", "export_docx"))
+        reason = str(output.get("error"))[:160]
+        _log("export", "error", doc_id=doc_id, stage=stage, error_reason=reason)
+        return _failed(500, error_reason=reason,
+                       message="Export failed in downstream stage.",
+                       extra={"stage": stage, "details": output})
 
     if not output.get("download_url"):
-        print(f"[export] error stage=missing_download_url error={output}")
-        return _response(500, {
-            "error": "export did not return download_url",
-            "stage": "missing_download_url",
-            "details": output,
-        })
+        _log("export", "error", doc_id=doc_id, stage="missing_download_url")
+        return _failed(500, error_reason="missing_download_url",
+                       message="Export did not return download_url.",
+                       extra={"stage": "missing_download_url", "details": output})
 
-    print(f"[export] success s3_key={output.get('s3_key')}")
+    _log("export", "info", doc_id=doc_id, s3_key=output.get("s3_key"))
+    # Keep the export success shape unchanged for backward compatibility with
+    # the frontend and existing tests — envelope fields are intentionally NOT
+    # merged in here. Error paths above still include the standard envelope.
     return _response(200, output)
 
 
@@ -2754,6 +3043,7 @@ def _handle_run_submission_lint(doc_id: str, event: dict) -> dict:
         return err
     doc_dict = json.loads(_json(item))
     result = _document_lint_result(doc_dict)
+    kb_warnings: list[str] = []
     # Attach short top-hit excerpts for the Reviewer — safe metadata only.
     try:
         sections = doc_dict.get("sections", {}) if isinstance(doc_dict.get("sections"), dict) else {}
@@ -2766,11 +3056,48 @@ def _handle_run_submission_lint(doc_id: str, event: dict) -> dict:
                     services.append(str(name))
         sample_hits = _query_approved_samples(services=services, top_k=3)
         result["kb_retrieval"] = sample_hits
+        if isinstance(sample_hits, dict) and sample_hits.get("mode") == "fallback":
+            kb_warnings.append(
+                "Approved samples KB not configured — using static fallback"
+            )
     except Exception as exc:
-        print(f"[approved_samples] attach to lint failed: {exc}")
+        _log("run_submission_lint", "warn",
+             doc_id=doc_id, kb_attach_error=_safe_error_reason(exc))
+        kb_warnings.append("Failed to attach KB excerpts")
     result["document_id"] = doc_id
     result["permission"] = permission
-    return _response(200, result)
+
+    issues = result.get("issues") or {}
+    critical = len(issues.get("critical") or [])
+    high = len(issues.get("high") or [])
+    missing = result.get("missing_questions") or []
+    readiness = result.get("readiness_score")
+
+    _log("run_submission_lint", "info",
+         doc_id=doc_id, readiness=readiness,
+         critical=critical, high=high, missing=len(missing))
+
+    # Lint is read-only so always completes; partial only when KB attach failed.
+    if critical or high:
+        # Lint ran to completion; issues are findings, not partial-completion.
+        return _ok(
+            result,
+            message=f"Submission lint completed ({critical} critical, {high} high).",
+            warnings=kb_warnings or None,
+            missing_inputs=[str(q) for q in missing] or None,
+        )
+    if kb_warnings:
+        return _partial(
+            result,
+            message="Submission lint completed with KB attach warning.",
+            warnings=kb_warnings,
+            missing_inputs=[str(q) for q in missing] or None,
+        )
+    return _ok(
+        result,
+        message="Submission lint completed.",
+        missing_inputs=[str(q) for q in missing] or None,
+    )
 
 
 def _handle_query_approved_samples(doc_id: str, body: dict, event: dict) -> dict:
@@ -2790,7 +3117,18 @@ def _handle_query_approved_samples(doc_id: str, body: dict, event: dict) -> dict
     )
     result["document_id"] = doc_id
     result["permission"] = permission
-    return _response(200, result)
+    mode = str(result.get("mode") or "")
+
+    _log("query_approved_samples", "info",
+         doc_id=doc_id, mode=mode,
+         examples=len(result.get("examples") or []))
+
+    if mode in {"kb", "configured"}:
+        return _ok(result, message="Approved samples retrieved.")
+    # fallback / unknown → partial with reason from result.message
+    warning = str(result.get("message") or "Using static fallback")
+    return _partial(result, warnings=[warning],
+                    message="Approved samples returned from fallback.")
 
 
 def _handle_get_section_recommendations(doc_id: str, event: dict) -> dict:
@@ -2801,24 +3139,70 @@ def _handle_get_section_recommendations(doc_id: str, event: dict) -> dict:
     section = ""
     if isinstance(query, dict):
         section = str(query.get("section", "") or "")
+    missing_inputs = [] if section else ["section"]
     recommendations = _get_section_recommendations(section)
-    return _response(200, {
+    payload = {
         "document_id": doc_id,
         "permission": permission,
         "section": section,
         "recommendations": recommendations,
         "source": "static_presets",
-    })
+    }
+    _log("section_recommendations", "info",
+         doc_id=doc_id, section=section or "",
+         count=len(recommendations))
+    if not section:
+        return _partial(payload,
+                        warnings=["section query parameter is required"],
+                        missing_inputs=missing_inputs,
+                        message="section query parameter missing.")
+    if not recommendations:
+        return _partial(payload,
+                        warnings=[f"no static presets for section '{section}'"],
+                        message="No static presets for this section.")
+    return _ok(payload, message="Section recommendations returned.")
 
 
 def _handle_calculate_resource_plan(doc_id: str, body: dict, event: dict) -> dict:
     _user_id, permission, _item, err = _load_document_for_action(doc_id, event, "read")
     if err:
         return err
+
+    # Accept numeric strings too; validate required inputs.
+    target = _to_float(body.get("target_funding_amount"))
+    mrr = _to_float(body.get("mrr"))
+    arr = _to_float(body.get("arr"))
+    sow_cost = _to_float(body.get("sow_cost"))
+
+    missing_inputs: list[str] = []
+    if target <= 0:
+        missing_inputs.append("target_funding_amount")
+    if arr <= 0 and mrr <= 0:
+        missing_inputs.append("arr_or_mrr")
+    if sow_cost <= 0:
+        missing_inputs.append("sow_cost")
+
     result = _resource_plan(body)
     result["document_id"] = doc_id
     result["permission"] = permission
-    return _response(200, result)
+    warnings = [str(w) for w in (result.get("warnings") or []) if w]
+
+    _log("calculate_resource_plan", "info",
+         doc_id=doc_id, target=target, arr=arr, sow_cost=sow_cost,
+         missing=len(missing_inputs))
+
+    if missing_inputs:
+        return _partial(
+            result,
+            message="Resource plan draft with missing inputs.",
+            warnings=warnings or None,
+            missing_inputs=missing_inputs,
+        )
+    return _ok(
+        result,
+        message="Resource plan draft computed.",
+        warnings=warnings or None,
+    )
 
 
 def _handle_user_input(doc_id: str, body: dict, event: dict) -> dict:

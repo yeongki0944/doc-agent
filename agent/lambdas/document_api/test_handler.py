@@ -979,3 +979,213 @@ def test_lint_architecture_cost_alignment_check(monkeypatch):
     body = _body(response)
     medium_codes = [i["code"] for i in body["issues"]["medium"]]
     assert "BEDROCK_COST_NOT_REFLECTED" in medium_codes
+
+
+# ---------------------------------------------------------------------------
+# Standard response envelope (hardening)
+# ---------------------------------------------------------------------------
+
+def test_standard_envelope_completed_for_lint_without_arch_services(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = document_api._default_sections()
+    item["sections"]["architecture"]["services"] = []
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    monkeypatch.delenv("APPROVED_SAMPLES_KB_ID", raising=False)
+
+    response = document_api.handler(
+        _post_event("/documents/doc-1/run_submission_lint", {}),
+        None,
+    )
+    body = _body(response)
+    # Standard envelope must be present.
+    assert body["standard_status"] in ("completed", "partial_completed")
+    assert "message" in body
+    # Lint ran — KB not configured still returns results → warnings allowed
+    # but the lint itself completed.
+
+
+def test_standard_envelope_partial_on_calculator_fallback(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = document_api._default_sections()
+    item["sections"]["architecture"]["services"] = [
+        {"service_name": _field(ai_recommended="AWS Lambda"), "service_id": "aws_lambda"},
+    ]
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+
+    fake_client = MagicMock()
+    fake_client.invoke.side_effect = RuntimeError("calculator link lambda not deployed")
+    monkeypatch.setattr(document_api.boto3, "client", lambda *a, **kw: fake_client)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/create_calculator_link",
+            {
+                "services": [
+                    {"service_name": "AWS Lambda", "service_code": "aWSLambda",
+                     "monthly_cost_hint": 244.13},
+                ],
+                "region": "ap-northeast-2",
+            },
+        ),
+        None,
+    )
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["standard_status"] == "partial_completed"
+    assert body["message"]
+    assert body["warnings"] and isinstance(body["warnings"], list)
+    # document-local summary preserved (APN guarantee)
+    assert body["document_local_summary"]["monthly_cost_total"] == 244.13
+
+
+def test_standard_envelope_partial_on_explain_empty_services(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = document_api._default_sections()
+    item["sections"]["architecture"]["services"] = []
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+
+    # Lambda invoke will error — simulate downstream unavailable
+    fake_client = MagicMock()
+    fake_client.invoke.side_effect = RuntimeError("not deployed")
+    monkeypatch.setattr(document_api.boto3, "client", lambda *a, **kw: fake_client)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/explain_aws_services",
+            {"services": []},
+        ),
+        None,
+    )
+    body = _body(response)
+    assert body["standard_status"] == "partial_completed"
+    assert "missing_inputs" in body
+    assert "services" in body["missing_inputs"]
+
+
+def test_standard_envelope_missing_inputs_on_resource_plan(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {"Item": _doc_item(version=2)}
+    monkeypatch.setattr(document_api, "table", table)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/calculate_resource_plan",
+            {},  # no inputs at all
+        ),
+        None,
+    )
+    body = _body(response)
+    assert body["standard_status"] == "partial_completed"
+    assert "missing_inputs" in body
+    # Expect the three required inputs to be flagged.
+    assert "target_funding_amount" in body["missing_inputs"]
+    assert "arr_or_mrr" in body["missing_inputs"]
+    assert "sow_cost" in body["missing_inputs"]
+
+
+def test_standard_envelope_completed_on_full_resource_plan(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {"Item": _doc_item(version=2)}
+    monkeypatch.setattr(document_api, "table", table)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/calculate_resource_plan",
+            {"target_funding_amount": 50000, "mrr": 20000, "sow_cost": 90000},
+        ),
+        None,
+    )
+    body = _body(response)
+    assert body["standard_status"] == "completed"
+    assert body["message"]
+
+
+def test_standard_envelope_partial_on_section_recommendations_unknown(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {"Item": _doc_item(version=2)}
+    monkeypatch.setattr(document_api, "table", table)
+
+    event = {
+        "requestContext": {
+            "http": {"method": "GET", "path": "/documents/doc-1/section_recommendations"}
+        },
+        "headers": {"X-User-Id": "user-1"},
+        "queryStringParameters": {"section": "made_up_section"},
+    }
+    response = document_api.handler(event, None)
+    body = _body(response)
+    assert body["standard_status"] == "partial_completed"
+    assert body["warnings"]
+
+
+def test_safe_error_reason_truncates_long_message():
+    exc = RuntimeError("x" * 500)
+    reason = document_api._safe_error_reason(exc)
+    assert reason.startswith("RuntimeError: ")
+    assert len(reason) <= 200
+    assert "..." in reason
+
+
+def test_safe_error_reason_preserves_class():
+    exc = ValueError("bad thing")
+    reason = document_api._safe_error_reason(exc)
+    assert reason == "ValueError: bad thing"
+
+
+def test_standard_envelope_on_missing_user_id_returns_401_failed(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {"Item": _doc_item(version=2)}
+    monkeypatch.setattr(document_api, "table", table)
+
+    event = {
+        "requestContext": {"http": {"method": "POST", "path": "/documents/doc-1/run_submission_lint"}},
+        "headers": {},  # no X-User-Id
+        "body": "{}",
+    }
+    response = document_api.handler(event, None)
+    assert response["statusCode"] == 401
+    body = _body(response)
+    assert body["standard_status"] == "failed"
+    assert body["error_reason"] == "missing_user_id"
+    assert "missing_inputs" in body
+
+
+def test_standard_envelope_on_document_not_found_returns_404_failed(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {}  # missing
+    monkeypatch.setattr(document_api, "table", table)
+
+    response = document_api.handler(
+        _post_event("/documents/doc-ghost/run_submission_lint", {}),
+        None,
+    )
+    assert response["statusCode"] == 404
+    body = _body(response)
+    assert body["standard_status"] == "failed"
+    assert body["error_reason"] == "not_found"
+    # Legacy error field preserved
+    assert body["error"] == "not found"
+
+
+def test_standard_envelope_on_forbidden_returns_403_failed(monkeypatch):
+    item = _doc_item(version=2)
+    item["user_id"] = "someone-else"
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+
+    response = document_api.handler(
+        _post_event("/documents/doc-1/run_submission_lint", {}, user_id="user-1"),
+        None,
+    )
+    assert response["statusCode"] == 403
+    body = _body(response)
+    assert body["standard_status"] == "failed"
+    assert body["error_reason"] == "forbidden"
+    assert body["error"] == "forbidden"
