@@ -855,3 +855,127 @@ def test_run_submission_lint_attaches_sample_excerpts_in_fallback(monkeypatch):
     assert kb["mode"] == "fallback"
     assert "examples" in kb
     assert isinstance(kb["examples"], list)
+
+
+def test_generate_architecture_diagram_fallback_when_lambda_unavailable(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = document_api._default_sections()
+    item["sections"]["architecture"]["services"] = [
+        {"service_name": _field(ai_recommended="Amazon Bedrock"), "service_id": "amazon_bedrock"},
+        {"service_name": _field(ai_recommended="AWS Lambda"), "service_id": "aws_lambda"},
+    ]
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+
+    # Simulate boto3 lambda client unable to invoke
+    fake_client = MagicMock()
+    fake_client.invoke.side_effect = RuntimeError("lambda not found")
+    monkeypatch.setattr(document_api.boto3, "client", lambda *a, **kw: fake_client)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/generate_architecture_diagram",
+            {"use_case": "RAG chatbot"},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["mode"] == "engineer_draft"
+    assert body["drawio_s3_key"] == ""
+    assert body["preview_s3_key"] == ""
+    assert "engineer_draft" in body
+    assert "warnings" in body
+    assert body["engineer_draft"]["use_case"] == "RAG chatbot"
+    assert "Amazon Bedrock" in body["services_extracted"]
+
+
+def test_create_calculator_link_fallback_when_lambda_unavailable(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = document_api._default_sections()
+    item["sections"]["architecture"]["services"] = [
+        {"service_name": _field(ai_recommended="AWS Lambda"), "service_id": "aws_lambda"},
+    ]
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+
+    fake_client = MagicMock()
+    fake_client.invoke.side_effect = RuntimeError("calculator link lambda not deployed")
+    monkeypatch.setattr(document_api.boto3, "client", lambda *a, **kw: fake_client)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/create_calculator_link",
+            {
+                "services": [
+                    {"service_name": "AWS Lambda", "service_code": "aWSLambda",
+                     "monthly_cost_hint": 244.13},
+                ],
+                "region": "ap-northeast-2",
+            },
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["mode"] == "fallback"
+    assert body["calculator_share_url"] is None
+    # Document-local summary must always be present (APN guarantee)
+    assert "document_local_summary" in body
+    assert body["document_local_summary"]["monthly_cost_total"] == 244.13
+    assert body["document_local_summary"]["currency"] == "USD"
+    assert body["fallback_card"] is not None
+    assert "warnings" in body
+
+
+def test_explain_aws_services_fallback_when_lambda_unavailable(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = document_api._default_sections()
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+
+    fake_client = MagicMock()
+    fake_client.invoke.side_effect = RuntimeError("explain lambda not deployed")
+    monkeypatch.setattr(document_api.boto3, "client", lambda *a, **kw: fake_client)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/explain_aws_services",
+            {"services": ["Amazon Bedrock", "AWS Lambda"], "use_case": "RAG chatbot"},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["mode"] == "static"
+    assert body["explanations"] == []
+    assert any("unavailable" in w.lower() for w in body.get("warnings", []))
+
+
+def test_lint_architecture_cost_alignment_check(monkeypatch):
+    """Architecture lists Bedrock but cost basis has no Bedrock row or URL → medium issue."""
+    item = _doc_item(version=2)
+    item["sections"] = document_api._default_sections()
+    item["sections"]["architecture"]["services"] = [
+        {"service_name": _field(ai_recommended="Amazon Bedrock"), "service_id": "amazon_bedrock"},
+    ]
+    item["sections"]["architecture"]["overview"] = _field(user_input="Bedrock-based RAG", status="draft")
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    monkeypatch.delenv("APPROVED_SAMPLES_KB_ID", raising=False)
+
+    response = document_api.handler(
+        _post_event("/documents/doc-1/run_submission_lint", {}),
+        None,
+    )
+    assert response["statusCode"] == 200
+    body = _body(response)
+    medium_codes = [i["code"] for i in body["issues"]["medium"]]
+    assert "BEDROCK_COST_NOT_REFLECTED" in medium_codes

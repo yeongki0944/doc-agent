@@ -1568,6 +1568,52 @@ def _document_lint_result(item: dict) -> dict:
             "How do the listed AWS services support the target workload and sizing?",
         ))
 
+    # Architecture ↔ Cost alignment — services must be reflected in cost basis.
+    if services:
+        breakdown_table = cost.get("breakdown_table") if isinstance(cost, dict) else None
+        if not isinstance(breakdown_table, list):
+            breakdown_table = []
+        if not breakdown_table and not _has_resolved_value(calculator_url):
+            issues["medium"].append(_make_issue(
+                "medium",
+                "ARCHITECTURE_COST_ALIGNMENT_MISSING",
+                "Architecture lists AWS services but cost basis has neither a Calculator URL nor a breakdown table.",
+                "cost_breakdown",
+                "Which AWS services map to which cost breakdown rows (or Calculator URL)?",
+            ))
+        # Bedrock specific — if the architecture lists Bedrock but the cost
+        # basis has no Bedrock-related row nor calculator URL, flag it.
+        arch_service_names = []
+        for svc in services:
+            if isinstance(svc, dict):
+                name = _resolve_field_value(svc.get("service_name")) or svc.get("service_id", "")
+            else:
+                name = svc
+            if name:
+                arch_service_names.append(str(name))
+        arch_has_bedrock = any("bedrock" in s.lower() for s in arch_service_names)
+        cost_has_bedrock_row = False
+        for row in breakdown_table:
+            if not isinstance(row, dict):
+                continue
+            label = ""
+            for key in ("service_name", "service", "category", "name"):
+                val = _resolve_field_value(row.get(key))
+                if val:
+                    label = str(val)
+                    break
+            if "bedrock" in label.lower():
+                cost_has_bedrock_row = True
+                break
+        if arch_has_bedrock and not cost_has_bedrock_row and not _has_resolved_value(calculator_url):
+            issues["medium"].append(_make_issue(
+                "medium",
+                "BEDROCK_COST_NOT_REFLECTED",
+                "Architecture lists Amazon Bedrock but cost basis has no Bedrock row or Calculator URL.",
+                "cost_breakdown",
+                "Add a Bedrock cost row or a Calculator URL that covers Bedrock usage.",
+            ))
+
     business_groups = executive.get("groups", []) if isinstance(executive.get("groups"), list) else []
     if not business_groups:
         issues["medium"].append(_make_issue(
@@ -2223,6 +2269,228 @@ def _read_lambda_payload(payload: Any) -> dict:
     return json.loads(raw)
 
 
+DEFAULT_GENERATE_DIAGRAM_FUNCTION_NAME = "doc-agent-generate-diagram"
+DEFAULT_CREATE_CALCULATOR_LINK_FUNCTION_NAME = "doc-agent-create-calculator-link"
+DEFAULT_EXPLAIN_AWS_SERVICES_FUNCTION_NAME = "doc-agent-explain-aws-services"
+
+
+def _invoke_gateway_tool(function_name: str, payload: dict) -> tuple[dict | None, str | None]:
+    """Invoke a gateway-tool style Lambda (inputPayload / outputPayload JSON)."""
+    try:
+        client = boto3.client("lambda", region_name=REGION)
+        resp = client.invoke(
+            FunctionName=function_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps({"inputPayload": _json(payload)}).encode("utf-8"),
+        )
+    except Exception as exc:
+        return None, f"invoke_error: {type(exc).__name__}: {exc}"
+
+    body = _read_lambda_payload(resp.get("Payload"))
+    if resp.get("FunctionError"):
+        return None, f"lambda_error: {body}"
+
+    output_raw = body.get("outputPayload", body) if isinstance(body, dict) else {}
+    if isinstance(output_raw, str):
+        try:
+            parsed = json.loads(output_raw)
+        except Exception as exc:
+            return None, f"parse_error: {exc}"
+    elif isinstance(output_raw, dict):
+        parsed = output_raw
+    else:
+        return None, f"unexpected_payload_type: {type(output_raw).__name__}"
+    return parsed, None
+
+
+def _services_from_document(item: dict) -> list[dict]:
+    """Extract AWS services from the architecture section for MCP calls."""
+    sections = item.get("sections", {}) if isinstance(item.get("sections"), dict) else {}
+    arch = sections.get("architecture", {}) if isinstance(sections.get("architecture"), dict) else {}
+    out: list[dict] = []
+    for svc in arch.get("services", []) or []:
+        if not isinstance(svc, dict):
+            if isinstance(svc, str) and svc.strip():
+                out.append({"service_name": svc.strip()})
+            continue
+        name = _resolve_field_value(svc.get("service_name")) or svc.get("service_id", "")
+        if not name:
+            continue
+        out.append({
+            "service_name": str(name),
+            "service_id": svc.get("service_id", ""),
+            "service_code": svc.get("service_code", ""),
+            "config": svc.get("config") if isinstance(svc.get("config"), dict) else {},
+        })
+    return out
+
+
+def _handle_generate_architecture_diagram(doc_id: str, body: dict, event: dict) -> dict:
+    _user_id, permission, item, err = _load_document_for_action(doc_id, event, "read")
+    if err:
+        return err
+
+    # Prefer caller-supplied services; otherwise read from DocumentState.
+    services = body.get("services")
+    if not isinstance(services, list) or not services:
+        services = _services_from_document(item)
+
+    payload = {
+        "doc_id": doc_id,
+        "services": services,
+        "architecture_description": str(body.get("architecture_description", "")),
+        "use_case": str(body.get("use_case", "")),
+        "existing_drawio": body.get("existing_drawio"),
+        "skip_drawio": bool(body.get("skip_drawio", False)),
+    }
+    function_name = os.environ.get(
+        "GENERATE_DIAGRAM_FUNCTION_NAME",
+        DEFAULT_GENERATE_DIAGRAM_FUNCTION_NAME,
+    )
+    result, error = _invoke_gateway_tool(function_name, payload)
+    if result is None:
+        # Build an in-process engineer-friendly draft so the caller always has
+        # something renderable even if the downstream Lambda is unavailable.
+        names = []
+        for svc in services:
+            if isinstance(svc, dict):
+                n = svc.get("service_name") or svc.get("name") or ""
+            else:
+                n = str(svc)
+            n = str(n).strip()
+            if n:
+                names.append(n)
+        fallback_draft = {
+            "use_case": str(body.get("use_case", "")),
+            "layers": [{"name": "All", "services": names}] if names else [],
+            "flows": [],
+            "notes": ["downstream Lambda unavailable — in-process fallback"],
+            "warning": "generate_architecture_diagram invoke failed",
+        }
+        return _response(200, {
+            "document_id": doc_id,
+            "permission": permission,
+            "mode": "engineer_draft",
+            "drawio_s3_key": "",
+            "preview_s3_key": "",
+            "services_extracted": names,
+            "engineer_draft": fallback_draft,
+            "warnings": [error or "unknown error"],
+        })
+
+    result["document_id"] = doc_id
+    result["permission"] = permission
+    return _response(200, result)
+
+
+def _handle_create_calculator_link(doc_id: str, body: dict, event: dict) -> dict:
+    _user_id, permission, item, err = _load_document_for_action(doc_id, event, "read")
+    if err:
+        return err
+
+    services = body.get("services")
+    if not isinstance(services, list) or not services:
+        services = _services_from_document(item)
+
+    payload = {
+        "doc_id": doc_id,
+        "services": services,
+        "region": str(body.get("region", REGION)),
+        "existing_link": str(body.get("existing_link", "")),
+    }
+    function_name = os.environ.get(
+        "CREATE_CALCULATOR_LINK_FUNCTION_NAME",
+        DEFAULT_CREATE_CALCULATOR_LINK_FUNCTION_NAME,
+    )
+    result, error = _invoke_gateway_tool(function_name, payload)
+    if result is None:
+        # In-process fallback that preserves document_local_summary even
+        # when the downstream Lambda is unreachable.
+        fallback_rows = []
+        total = 0.0
+        for svc in services:
+            name = svc.get("service_name", "") if isinstance(svc, dict) else str(svc)
+            hint = svc.get("monthly_cost_hint") if isinstance(svc, dict) else None
+            try:
+                hint_num = float(hint) if hint is not None else None
+            except (TypeError, ValueError):
+                hint_num = None
+            if hint_num is not None:
+                total += hint_num
+            fallback_rows.append({
+                "service_name": name,
+                "service_code": svc.get("service_code", "") if isinstance(svc, dict) else "",
+                "monthly_cost": hint_num,
+            })
+        return _response(200, {
+            "document_id": doc_id,
+            "permission": permission,
+            "mode": "fallback",
+            "calculator_share_url": None,
+            "service_breakdown": [],
+            "manual_estimate_items": [],
+            "document_local_summary": {
+                "monthly_cost_total": round(total, 2),
+                "currency": "USD",
+                "region": payload["region"],
+                "generated_at": _now_iso(),
+                "rows": fallback_rows,
+            },
+            "fallback_card": {
+                "type": "fallback",
+                "message": "Calculator Link Lambda unavailable",
+                "items": fallback_rows,
+            },
+            "warnings": [error or "unknown error"],
+        })
+
+    result["document_id"] = doc_id
+    result["permission"] = permission
+    return _response(200, result)
+
+
+def _handle_explain_aws_services(doc_id: str, body: dict, event: dict) -> dict:
+    _user_id, permission, item, err = _load_document_for_action(doc_id, event, "read")
+    if err:
+        return err
+
+    services = body.get("services")
+    if not isinstance(services, list) or not services:
+        services = [
+            s.get("service_name") if isinstance(s, dict) else str(s)
+            for s in _services_from_document(item)
+        ]
+        services = [s for s in services if s]
+
+    payload = {
+        "services": services,
+        "use_case": str(body.get("use_case", "")),
+        "language": str(body.get("language", "en")),
+    }
+    function_name = os.environ.get(
+        "EXPLAIN_AWS_SERVICES_FUNCTION_NAME",
+        DEFAULT_EXPLAIN_AWS_SERVICES_FUNCTION_NAME,
+    )
+    result, error = _invoke_gateway_tool(function_name, payload)
+    if result is None:
+        # In-process minimal fallback: return empty explanations but do not
+        # fail the request — the frontend can keep existing text.
+        return _response(200, {
+            "document_id": doc_id,
+            "permission": permission,
+            "mode": "static",
+            "explanations": [],
+            "warnings": [
+                "explain_aws_services Lambda unavailable",
+                error or "unknown error",
+            ],
+        })
+
+    result["document_id"] = doc_id
+    result["permission"] = permission
+    return _response(200, result)
+
+
 def _handle_export(doc_id: str, event: dict) -> dict:
     user_id, err = _require_user(event)
     if err:
@@ -2793,6 +3061,18 @@ def handler(event: dict, context: Any) -> dict:
             if err:
                 return err
             return _response(200, {"status": "review_requested", "doc_id": doc_id})
+
+        elif method == "POST" and action == "generate_architecture_diagram":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_generate_architecture_diagram(doc_id, body, event)
+
+        elif method == "POST" and action == "create_calculator_link":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_create_calculator_link(doc_id, body, event)
+
+        elif method == "POST" and action == "explain_aws_services":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_explain_aws_services(doc_id, body, event)
 
         elif method == "POST" and action == "export":
             return _handle_export(doc_id, event)

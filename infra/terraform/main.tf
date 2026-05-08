@@ -113,6 +113,9 @@ resource "aws_iam_role_policy" "lambda_invoke_export_docx" {
       Resource = [
         aws_lambda_function.export_docx.arn,
         aws_lambda_function.document_api.arn,
+        aws_lambda_function.generate_diagram.arn,
+        aws_lambda_function.create_calculator_link.arn,
+        aws_lambda_function.explain_aws_services.arn,
       ]
     }]
   })
@@ -382,7 +385,8 @@ resource "aws_lambda_function" "generate_diagram" {
 
   environment {
     variables = {
-      S3_BUCKET = aws_s3_bucket.artifacts.id
+      S3_BUCKET         = aws_s3_bucket.artifacts.id
+      ARTIFACTS_BUCKET  = aws_s3_bucket.artifacts.id
     }
   }
 }
@@ -530,6 +534,84 @@ resource "aws_lambda_permission" "build_milestones_agentcore" {
 }
 
 # ============================================================
+# Gateway tool: create_calculator_link
+# Proxies to an (optional) Node.js Calculator Link Lambda via env var
+# CALCULATOR_LINK_LAMBDA_NAME. Falls back to fallback_card otherwise.
+# ============================================================
+
+data "archive_file" "create_calculator_link_zip" {
+  type        = "zip"
+  source_file = "${path.module}/../../agent/lambdas/gateway_tools/create_calculator_link.py"
+  output_path = "${path.module}/create_calculator_link.zip"
+}
+
+resource "aws_lambda_function" "create_calculator_link" {
+  function_name    = "${local.project}-create-calculator-link"
+  role             = aws_iam_role.gateway_lambda_exec.arn
+  handler          = "create_calculator_link.handler"
+  runtime          = "python3.12"
+  filename         = data.archive_file.create_calculator_link_zip.output_path
+  source_code_hash = data.archive_file.create_calculator_link_zip.output_base64sha256
+  timeout          = 30
+  memory_size      = 256
+  tags             = local.tags
+
+  environment {
+    variables = {
+      # Populate with the Node.js Calculator Link Lambda name when deployed.
+      CALCULATOR_LINK_LAMBDA_NAME = ""
+      CALCULATOR_MCP_ENDPOINT     = ""
+    }
+  }
+}
+
+resource "aws_lambda_permission" "create_calculator_link_agentcore" {
+  statement_id  = "AllowAgentCoreGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.create_calculator_link.function_name
+  principal     = "bedrock.amazonaws.com"
+}
+
+# ============================================================
+# Gateway tool: explain_aws_services
+# Returns short service explanations. Uses a curated static catalogue
+# with optional Bedrock LLM fallback for unknown services.
+# ============================================================
+
+data "archive_file" "explain_aws_services_zip" {
+  type        = "zip"
+  source_file = "${path.module}/../../agent/lambdas/gateway_tools/explain_aws_services.py"
+  output_path = "${path.module}/explain_aws_services.zip"
+}
+
+resource "aws_lambda_function" "explain_aws_services" {
+  function_name    = "${local.project}-explain-aws-services"
+  role             = aws_iam_role.gateway_lambda_exec.arn
+  handler          = "explain_aws_services.handler"
+  runtime          = "python3.12"
+  filename         = data.archive_file.explain_aws_services_zip.output_path
+  source_code_hash = data.archive_file.explain_aws_services_zip.output_base64sha256
+  timeout          = 30
+  memory_size      = 256
+  tags             = local.tags
+
+  environment {
+    variables = {
+      AWS_DOCS_MCP_ENDPOINT    = ""
+      BEDROCK_EXPLAIN_FALLBACK = "on"
+      EXPLAIN_MODEL_ID         = "apac.anthropic.claude-3-5-sonnet-20241022-v2:0"
+    }
+  }
+}
+
+resource "aws_lambda_permission" "explain_aws_services_agentcore" {
+  statement_id  = "AllowAgentCoreGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.explain_aws_services.function_name
+  principal     = "bedrock.amazonaws.com"
+}
+
+# ============================================================
 # Lambda: Document API (Bedrock-powered)
 # ============================================================
 
@@ -557,6 +639,9 @@ resource "aws_lambda_function" "document_api" {
       APPSYNC_HTTP_URL           = "https://${aws_cloudformation_stack.appsync_events.outputs["HttpDns"]}"
       AGENTCORE_MEMORY_ID        = "doc_agent_memory-o6QiOB8zCT"
       AGENTCORE_RUNTIME_NAME     = "doc_agent_runtime_demo"
+      GENERATE_DIAGRAM_FUNCTION_NAME       = aws_lambda_function.generate_diagram.function_name
+      CREATE_CALCULATOR_LINK_FUNCTION_NAME = aws_lambda_function.create_calculator_link.function_name
+      EXPLAIN_AWS_SERVICES_FUNCTION_NAME   = aws_lambda_function.explain_aws_services.function_name
     }
   }
 }
