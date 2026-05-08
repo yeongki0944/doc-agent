@@ -616,3 +616,142 @@ def test_export_docx_error_payload_returns_500(monkeypatch):
     body = _body(response)
     assert body["error"] == "template missing"
     assert body["stage"] == "download_template"
+
+
+def test_suggest_user_apply_patch_creates_change_request(monkeypatch):
+    item = _doc_item(version=2)
+    item["title"] = "Original Title"
+    item["document_permissions"] = {"user-2": "suggest"}
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    saver = FakeConditionalSaver()
+    monkeypatch.setattr(document_api, "_conditional_save_document", saver.save)
+    publish = MagicMock()
+    monkeypatch.setattr(document_api, "_publish_event", publish)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/apply_document_patch",
+            {
+                "summary": "Rename document",
+                "json_patch": [{"op": "replace", "path": "/title", "value": "Suggested Title"}],
+            },
+            user_id="user-2",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 202
+    body = _body(response)
+    assert body["status"] == "change_request_created"
+    assert body["change_request"]["status"] == "pending"
+    saved = saver.calls[0][0]
+    assert saved["title"] != "Suggested Title"
+    assert saved["change_requests"][0]["summary"] == "Rename document"
+    publish.assert_not_called()
+
+
+def test_master_can_approve_change_request_and_apply_patch(monkeypatch):
+    item = _doc_item(version=5)
+    item["title"] = "Old"
+    item["change_requests"] = [{
+        "change_request_id": "cr-1",
+        "document_id": "doc-1",
+        "requester": "user-2",
+        "status": "pending",
+        "summary": "Rename",
+        "changes": [],
+        "json_patch": [{"op": "replace", "path": "/title", "value": "New"}],
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }]
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    saver = FakeConditionalSaver()
+    monkeypatch.setattr(document_api, "_conditional_save_document", saver.save)
+    published = []
+    monkeypatch.setattr(document_api, "_publish_event", lambda channel, data: published.append((channel, data)))
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/approve_change_request",
+            {"change_request_id": "cr-1"},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    saved = saver.calls[0][0]
+    assert saved["title"] == "New"
+    assert saved["change_requests"][0]["status"] == "approved"
+    assert saved["change_requests"][0]["reviewed_by"] == "user-1"
+    assert published[0][0] == "docs/doc-1/patch"
+
+
+def test_read_user_cannot_mutate_document(monkeypatch):
+    item = _doc_item(version=2)
+    item["document_permissions"] = {"reader": "read"}
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    saver = MagicMock()
+    monkeypatch.setattr(document_api, "_conditional_save_document", saver)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/create_change_request",
+            {"json_patch": [{"op": "replace", "path": "/title", "value": "Nope"}]},
+            user_id="reader",
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 403
+    assert _body(response)["required"] == "suggest"
+    saver.assert_not_called()
+
+
+def test_run_submission_lint_returns_frontend_contract(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = document_api._default_sections()
+    item["sections"]["architecture"]["services"] = []
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    monkeypatch.delenv("APPROVED_SAMPLES_KB_ID", raising=False)
+
+    response = document_api.handler(
+        _post_event("/documents/doc-1/run_submission_lint", {}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert "readiness_score" in body
+    assert set(body["issues"].keys()) == {"critical", "high", "medium", "low"}
+    assert body["kb_retrieval"]["mode"] == "fallback"
+    assert "AWS will reject" not in json.dumps(body)
+
+
+def test_calculate_resource_plan_returns_wide_matrix(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {"Item": _doc_item(version=2)}
+    monkeypatch.setattr(document_api, "table", table)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/calculate_resource_plan",
+            {"target_funding_amount": 50000, "mrr": 20000, "sow_cost": 90000},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["required_arr"] == 200000
+    assert body["formula"] == "Eligible Funding Amount = min(Year 1 ARR * 25%, SOW Cost, 125000)"
+    assert body["draft_resource_matrix"]["matrix_orientation"] == "wide"
+    assert "role_hours" in body["draft_resource_matrix"]["phase_hours_table"][0]
+    assert body["warnings"][0].startswith("This is a Resource Planning draft.")

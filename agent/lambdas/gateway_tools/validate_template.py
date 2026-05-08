@@ -2,12 +2,12 @@
 
 Validates that a Document_State conforms to the APN PoC Project Plan
 template — required sections present, correct order, and no obvious
-numeric inconsistencies between staffing_plan totals and cost_breakdown.
+numeric inconsistencies between resources_cost_estimates totals and
+cost_breakdown.
 
 Input (via event["inputPayload"] JSON):
     {
         "sections": { ... },          # Document_State.sections dict
-        "staffing_plan": { ... },      # top-level staffing_plan dict
         "completion_score": 0.65       # optional, for cross-check
     }
 
@@ -73,26 +73,38 @@ def _check_section_order(sections: dict) -> list[dict]:
     return warnings
 
 
+def _to_number(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value).replace("$", "").replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
 def _check_numeric_consistency(
-    staffing_plan: dict, sections: dict
+    sections: dict
 ) -> list[dict]:
-    """Cross-check staffing_plan totals vs cost_breakdown if present."""
+    """Cross-check v2 resource totals vs cost_breakdown if both are present."""
     warnings: list[dict] = []
     cost = sections.get("cost_breakdown", {})
-    staffing_cost = cost.get("staffing_cost", {})
-    grand_total_from_cost = staffing_cost.get("grand_total", {})
+    resources = sections.get("resources_cost_estimates", {})
+    funding = cost.get("funding_calculation", {}) if isinstance(cost, dict) else {}
+    total_cost = resources.get("total_cost", {}) if isinstance(resources, dict) else {}
 
-    sp_grand = staffing_plan.get("grand_total_cost", {})
-    sp_value = sp_grand.get("calculated")
-    cb_value = grand_total_from_cost.get("calculated")
+    resource_value = total_cost.get("total") if isinstance(total_cost, dict) else total_cost
+    sow_value = funding.get("sow_cost") if isinstance(funding, dict) else None
 
-    if sp_value is not None and cb_value is not None:
-        if abs(float(sp_value) - float(cb_value)) > 0.01:
+    resource_number = _to_number(resource_value)
+    sow_number = _to_number(sow_value)
+
+    if resource_number is not None and sow_number is not None:
+        if abs(resource_number - sow_number) > 0.01:
             warnings.append({
                 "code": "COST_MISMATCH",
                 "message": (
-                    f"staffing_plan grand_total_cost ({sp_value}) "
-                    f"differs from cost_breakdown staffing grand_total ({cb_value})"
+                    f"resources_cost_estimates total_cost ({resource_value}) "
+                    f"differs from cost_breakdown funding sow_cost ({sow_value})"
                 ),
                 "section": "cost_breakdown",
             })
@@ -100,7 +112,7 @@ def _check_numeric_consistency(
     return warnings
 
 
-def _calculate_completion_score(sections: dict, staffing_plan: dict) -> float:
+def _calculate_completion_score(sections: dict) -> float:
     """Simple completion score: fraction of required sections with content."""
     if not APN_REQUIRED_SECTIONS:
         return 0.0
@@ -112,13 +124,7 @@ def _calculate_completion_score(sections: dict, staffing_plan: dict) -> float:
         if section and any(v for v in section.values() if v):
             filled += 1
 
-    # Bonus for staffing_plan having roles
-    roles = staffing_plan.get("roles", {})
-    if roles:
-        filled += 1
-
-    total = len(APN_REQUIRED_SECTIONS) + 1  # +1 for staffing_plan
-    return round(filled / total, 2)
+    return round(filled / len(APN_REQUIRED_SECTIONS), 2)
 
 
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
@@ -130,14 +136,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         params = json.loads(raw)
 
         sections = params.get("sections", {})
-        staffing_plan = params.get("staffing_plan", {})
 
         blocking, _ = _check_required_sections(sections)
         order_warnings = _check_section_order(sections)
-        numeric_warnings = _check_numeric_consistency(staffing_plan, sections)
+        numeric_warnings = _check_numeric_consistency(sections)
         all_warnings = order_warnings + numeric_warnings
 
-        score = _calculate_completion_score(sections, staffing_plan)
+        score = _calculate_completion_score(sections)
 
         result = {
             "valid": len(blocking) == 0,

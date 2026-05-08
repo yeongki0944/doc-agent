@@ -342,6 +342,127 @@ def _patch_operation(op: str, path: str, value: Any = None, source: str | None =
     return item
 
 
+def _resolve_field_value(value: Any) -> Any:
+    if isinstance(value, dict) and any(k in value for k in ("user_input", "ai_recommended", "calculated")):
+        for key in ("user_input", "ai_recommended", "calculated"):
+            candidate = value.get(key)
+            if candidate not in (None, ""):
+                return candidate
+        return ""
+    return value
+
+
+def _has_resolved_value(value: Any) -> bool:
+    resolved = _resolve_field_value(value)
+    return resolved not in (None, "", [], {})
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    resolved = _resolve_field_value(value)
+    if resolved in (None, ""):
+        return default
+    try:
+        return float(str(resolved).replace("$", "").replace(",", ""))
+    except (TypeError, ValueError):
+        return default
+
+
+def _json_pointer_parts(path: str) -> list[str]:
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise ValueError("json patch path must start with '/'")
+    parts = path.strip("/").split("/") if path.strip("/") else []
+    return [p.replace("~1", "/").replace("~0", "~") for p in parts]
+
+
+def _ensure_patch_path_allowed(parts: list[str]) -> None:
+    if not parts:
+        raise ValueError("json patch path must not target document root")
+    root = parts[0]
+    if root in PROTECTED_PATCH_ROOTS or root not in MUTABLE_PATCH_ROOTS:
+        raise ValueError(f"patch path root is not mutable: {root}")
+
+
+def _json_patch_parent(doc: Any, parts: list[str]) -> tuple[Any, str]:
+    if not parts:
+        raise ValueError("json patch path is empty")
+    _ensure_patch_path_allowed(parts)
+    cur = doc
+    for part in parts[:-1]:
+        if isinstance(cur, dict):
+            if part not in cur:
+                cur[part] = {}
+            cur = cur[part]
+        elif isinstance(cur, list):
+            index = _list_index(part, "/" + "/".join(parts))
+            if index >= len(cur):
+                raise ValueError(f"list index out of range: {part}")
+            cur = cur[index]
+        else:
+            raise ValueError(f"cannot traverse scalar patch segment: {part}")
+    return cur, parts[-1]
+
+
+def _apply_json_patch_operation(doc: dict, operation: dict) -> None:
+    op = operation.get("op")
+    path = operation.get("path")
+    if op not in {"add", "replace", "remove"}:
+        raise ValueError(f"unsupported json patch op: {op}")
+    parts = _json_pointer_parts(path)
+    parent, key = _json_patch_parent(doc, parts)
+
+    if isinstance(parent, dict):
+        if op == "remove":
+            if key not in parent:
+                raise ValueError(f"patch path does not exist: {path}")
+            del parent[key]
+            return
+        if op == "replace" and key not in parent:
+            raise ValueError(f"patch path does not exist: {path}")
+        parent[key] = operation.get("value")
+        return
+
+    if isinstance(parent, list):
+        if key == "-" and op == "add":
+            parent.append(operation.get("value"))
+            return
+        index = _list_index(key, path)
+        if op == "add":
+            if index > len(parent):
+                raise ValueError(f"list index out of range: {path}")
+            parent.insert(index, operation.get("value"))
+            return
+        if index >= len(parent):
+            raise ValueError(f"list index out of range: {path}")
+        if op == "remove":
+            del parent[index]
+            return
+        parent[index] = operation.get("value")
+        return
+
+    raise ValueError(f"cannot patch scalar parent: {path}")
+
+
+def _apply_json_patch_copy(item: dict, operations: list[dict]) -> dict:
+    if not isinstance(operations, list) or not operations:
+        raise ValueError("json_patch must be a non-empty list")
+    patched = deepcopy(item)
+    for operation in operations:
+        if not isinstance(operation, dict):
+            raise ValueError("json_patch operations must be objects")
+        _apply_json_patch_operation(patched, operation)
+    return patched
+
+
+def _patch_section(path: str) -> str:
+    try:
+        parts = _json_pointer_parts(path)
+    except ValueError:
+        return ""
+    if len(parts) >= 2 and parts[0] == "sections":
+        return parts[1]
+    return parts[0] if parts else ""
+
+
 def _set_user_input_field(doc: dict, path: str, value: Any) -> tuple[str, dict]:
     parts = _path_parts(path)
     if parts[0] not in {"meta", "sections", "staffing_plan"}:
@@ -568,6 +689,98 @@ def _check_ownership(item: dict, user_id: str) -> Optional[dict]:
     return None
 
 
+PERMISSION_ORDER = {
+    "read": 0,
+    "suggest": 1,
+    "edit": 2,
+    "master": 3,
+}
+
+CHANGE_REQUEST_STATUSES = {"pending", "approved", "rejected"}
+PROTECTED_PATCH_ROOTS = {
+    "document_id",
+    "user_id",
+    "version",
+    "created_at",
+    "updated_at",
+    "change_requests",
+}
+MUTABLE_PATCH_ROOTS = {
+    "title",
+    "mode",
+    "template",
+    "meta",
+    "sections",
+    "completion_score",
+    "blocking_issues",
+    "warnings",
+    "agent_status",
+    "agent_active",
+    "agent_message",
+    "settings",
+}
+
+
+def _permission_value(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("role") or value.get("permission") or value.get("level")
+    role = str(value or "").strip().lower()
+    return role if role in PERMISSION_ORDER else ""
+
+
+def _document_permission(item: dict, user_id: str) -> str:
+    """Resolve current user's placeholder permission.
+
+    Owner is treated as master. Non-owner permissions are read from either
+    ``document_permissions`` or ``permissions`` so Cognito/group wiring can be
+    added later without changing the API contract.
+    """
+    if item.get("user_id") == user_id or item.get("owner_id") == user_id:
+        return "master"
+
+    for key in ("document_permissions", "permissions"):
+        permissions = item.get(key)
+        if not isinstance(permissions, dict):
+            continue
+        role = _permission_value(permissions.get(user_id))
+        if role:
+            return role
+
+    if user_id in (item.get("masters") or []):
+        return "master"
+    if user_id in (item.get("editors") or []):
+        return "edit"
+    if user_id in (item.get("suggesters") or []):
+        return "suggest"
+    if user_id in (item.get("readers") or []):
+        return "read"
+    return ""
+
+
+def _authorize_document(item: dict, user_id: str, required: str) -> tuple[str, Optional[dict]]:
+    role = _document_permission(item, user_id)
+    if not role:
+        return "", _response(403, {"error": "forbidden"})
+    if PERMISSION_ORDER[role] < PERMISSION_ORDER[required]:
+        return role, _response(403, {
+            "error": "insufficient_permission",
+            "required": required,
+            "permission": role,
+        })
+    return role, None
+
+
+def _document_requires_review(item: dict) -> bool:
+    settings = item.get("settings") if isinstance(item.get("settings"), dict) else {}
+    permission_settings = item.get("permission_settings") if isinstance(item.get("permission_settings"), dict) else {}
+    return bool(
+        settings.get("require_review")
+        or settings.get("requires_review")
+        or item.get("review_required")
+        or permission_settings.get("require_review")
+    )
+
+
 def _update_agent_status(doc_id: str, status: str, active: str = "", message: str = "") -> None:
     """Update agent_status fields in DynamoDB for a document."""
     try:
@@ -660,6 +873,363 @@ def _document_shell(doc_id: str, user_id: str) -> dict:
         "completion_score": 0,
         "blocking_issues": [],
         "warnings": [],
+    }
+
+
+def _load_document_for_action(doc_id: str, event: dict, required: str) -> tuple[str, str, dict | None, Optional[dict]]:
+    user_id, err = _require_user(event)
+    if err:
+        return "", "", None, err
+    resp = table.get_item(Key={"document_id": doc_id})
+    item = resp.get("Item")
+    if not item:
+        return user_id, "", None, _response(404, {"error": "not found"})
+    permission, auth_err = _authorize_document(item, user_id, required)
+    if auth_err:
+        return user_id, permission, None, auth_err
+    return user_id, permission, item, None
+
+
+def _publish_document_patch(doc_id: str, operations: list[dict], saved: dict, expected_version: int, agent: str) -> None:
+    _publish_event(f"docs/{doc_id}/patch", {
+        "type": "patch",
+        "patch_id": f"patch-{uuid.uuid4().hex[:12]}",
+        "doc_id": doc_id,
+        "agent": agent,
+        "operations": operations,
+        "version": saved["version"],
+        "version_before": expected_version,
+        "version_after": saved["version"],
+    })
+
+
+def _change_request_from_patch(
+    doc_id: str,
+    requester: str,
+    operations: list[dict],
+    *,
+    summary: str = "",
+    changes: list[dict] | None = None,
+) -> dict:
+    now = _now_iso()
+    normalized_changes = changes if isinstance(changes, list) else []
+    if not normalized_changes:
+        normalized_changes = [
+            {
+                "section": _patch_section(op.get("path", "")),
+                "as_is": None,
+                "to_be": op.get("value"),
+                "reason": op.get("reason", ""),
+                "json_patch": [op],
+            }
+            for op in operations
+        ]
+    return {
+        "change_request_id": f"cr-{uuid.uuid4().hex[:12]}",
+        "document_id": doc_id,
+        "requester": requester,
+        "status": "pending",
+        "summary": summary or f"{len(operations)} proposed document change(s)",
+        "changes": normalized_changes,
+        "json_patch": operations,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _save_change_request(item: dict, expected_version: int, change_request: dict) -> dict:
+    updated = deepcopy(item)
+    requests = updated.get("change_requests")
+    if not isinstance(requests, list):
+        requests = []
+    requests.append(change_request)
+    updated["change_requests"] = requests
+    return _conditional_save_document(updated, expected_version)
+
+
+def _find_change_request(item: dict, change_request_id: str) -> tuple[int, dict] | tuple[None, None]:
+    requests = item.get("change_requests")
+    if not isinstance(requests, list):
+        return None, None
+    for index, request in enumerate(requests):
+        if request.get("change_request_id") == change_request_id:
+            return index, request
+    return None, None
+
+
+def _approved_samples_fallback() -> dict:
+    kb_id = os.environ.get("APPROVED_SAMPLES_KB_ID", "")
+    data_source = os.environ.get("APPROVED_SAMPLES_DATA_SOURCE_ID", "")
+    if kb_id:
+        return {
+            "mode": "configured",
+            "message": "Approved samples knowledge base is configured.",
+            "kb_id_present": True,
+            "data_source_present": bool(data_source),
+        }
+    return {
+        "mode": "fallback",
+        "message": (
+            "Approved samples Knowledge Base is not configured. "
+            "Proceeding with deterministic APN/GenAI IC/SOW readiness checks only."
+        ),
+        "kb_id_present": False,
+        "data_source_present": False,
+    }
+
+
+def _make_issue(severity: str, code: str, message: str, section: str, question: str = "") -> dict:
+    return {
+        "severity": severity,
+        "code": code,
+        "message": message,
+        "section": section,
+        "question": question,
+    }
+
+
+def _document_lint_result(item: dict) -> dict:
+    sections = item.get("sections", {}) if isinstance(item.get("sections"), dict) else {}
+    meta = item.get("meta", {}) if isinstance(item.get("meta"), dict) else {}
+    cost = sections.get("cost_breakdown", {}) if isinstance(sections.get("cost_breakdown"), dict) else {}
+    architecture = sections.get("architecture", {}) if isinstance(sections.get("architecture"), dict) else {}
+    resources = sections.get("resources_cost_estimates", {}) if isinstance(sections.get("resources_cost_estimates"), dict) else {}
+    executive = sections.get("executive_summary", {}) if isinstance(sections.get("executive_summary"), dict) else {}
+
+    issues = {"critical": [], "high": [], "medium": [], "low": []}
+    missing_questions: list[str] = []
+    suggested_patches: list[dict] = []
+
+    required_sections = [
+        "cover", "executive_summary", "stakeholders", "success_criteria",
+        "assumptions", "scope_of_work", "architecture", "milestones",
+        "cost_breakdown", "acceptance", "resources_cost_estimates",
+    ]
+    for section in required_sections:
+        value = sections.get(section)
+        if value in (None, {}, []):
+            issue = _make_issue(
+                "high",
+                f"{section.upper()}_INCOMPLETE",
+                f"{section} is a submission readiness issue and is recommended before submission.",
+                section,
+                f"What content should be added to {section}?",
+            )
+            issues["high"].append(issue)
+            missing_questions.append(issue["question"])
+
+    services = architecture.get("services", []) if isinstance(architecture.get("services"), list) else []
+    has_bedrock = any(
+        "bedrock" in str(_resolve_field_value((svc or {}).get("service_name", ""))).lower()
+        or "bedrock" in str((svc or {}).get("service_id", "")).lower()
+        for svc in services
+        if isinstance(svc, dict)
+    )
+    if not has_bedrock:
+        issues["critical"].append(_make_issue(
+            "critical",
+            "BEDROCK_EVIDENCE_MISSING",
+            "Amazon Bedrock inclusion needs more evidence before submission.",
+            "architecture",
+            "Which Amazon Bedrock models, guardrails, or usage assumptions are in scope?",
+        ))
+        missing_questions.append("Which Amazon Bedrock models, guardrails, or usage assumptions are in scope?")
+
+    calculator_url = cost.get("calculator_url", {})
+    mrr = _to_float(cost.get("mrr", 0))
+    arr = _to_float(cost.get("arr", 0))
+    funding = cost.get("funding_calculation", {}) if isinstance(cost.get("funding_calculation"), dict) else {}
+    sow_cost = _to_float(funding.get("sow_cost"))
+    if sow_cost <= 0:
+        total_cost = resources.get("total_cost", {}) if isinstance(resources.get("total_cost"), dict) else {}
+        sow_cost = _to_float(total_cost.get("total"))
+    if not _has_resolved_value(calculator_url):
+        issues["high"].append(_make_issue(
+            "high",
+            "CALCULATOR_URL_MISSING",
+            "AWS Calculator evidence is recommended before submission.",
+            "cost_breakdown",
+            "What AWS Calculator URL or cost basis should be referenced?",
+        ))
+    if arr <= 0 and mrr > 0:
+        suggested_patches.append({
+            "op": "replace",
+            "path": "/sections/cost_breakdown/arr",
+            "value": _confirmed_field_value(round(mrr * 12, 2)),
+            "reason": "ARR can be calculated from MRR when MRR is provided.",
+        })
+    if arr <= 0:
+        issues["high"].append(_make_issue(
+            "high",
+            "ARR_MISSING",
+            "ARR / funding basis is a submission readiness issue.",
+            "cost_breakdown",
+            "What is the Year 1 ARR basis for this PoC?",
+        ))
+    if sow_cost <= 0:
+        issues["high"].append(_make_issue(
+            "high",
+            "SOW_COST_MISSING",
+            "SOW cost basis is recommended before submission.",
+            "resources_cost_estimates",
+            "What SOW cost should be used for funding eligibility?",
+        ))
+
+    overview = architecture.get("overview", {})
+    if services and not _has_resolved_value(overview):
+        issues["medium"].append(_make_issue(
+            "medium",
+            "ARCHITECTURE_OVERVIEW_MISSING",
+            "Architecture and service sizing needs more evidence before submission.",
+            "architecture",
+            "How do the listed AWS services support the target workload and sizing?",
+        ))
+
+    business_groups = executive.get("groups", []) if isinstance(executive.get("groups"), list) else []
+    if not business_groups:
+        issues["medium"].append(_make_issue(
+            "medium",
+            "BUSINESS_CASE_MISSING",
+            "Business Case & Commitment is recommended before submission.",
+            "executive_summary",
+            "What business problem, ROI basis, sponsor, and production commitment should be documented?",
+        ))
+
+    assumptions = sections.get("assumptions", {}) if isinstance(sections.get("assumptions"), dict) else {}
+    if assumptions in ({}, {"groups": [], "items": []}):
+        issues["medium"].append(_make_issue(
+            "medium",
+            "RISK_GOVERNANCE_MISSING",
+            "Risk assessment and governance assumptions are recommended before submission.",
+            "assumptions",
+            "What risks, governance controls, and customer assumptions should be included?",
+        ))
+
+    customer = meta.get("customer", {})
+    if not _has_resolved_value(customer):
+        issues["low"].append(_make_issue(
+            "low",
+            "CUSTOMER_MISSING",
+            "Customer name should be confirmed before submission.",
+            "meta",
+            "What is the customer name?",
+        ))
+
+    penalty = (
+        len(issues["critical"]) * 22
+        + len(issues["high"]) * 12
+        + len(issues["medium"]) * 7
+        + len(issues["low"]) * 3
+    )
+    readiness_score = max(0, min(100, 100 - penalty))
+    if arr > 0 and sow_cost > 0:
+        eligible = min(arr * 0.25, sow_cost, 125000)
+        suggested_patches.append({
+            "op": "replace",
+            "path": "/sections/cost_breakdown/funding_calculation",
+            "value": {
+                **funding,
+                "yr1_arr": arr,
+                "sow_cost": sow_cost,
+                "eligible_amount": round(eligible, 2),
+                "formula": "min(Year 1 ARR * 25%, SOW Cost, 125000)",
+            },
+            "reason": "Update deterministic funding calculation basis.",
+        })
+
+    return {
+        "readiness_score": readiness_score,
+        "issues": issues,
+        "missing_questions": missing_questions,
+        "suggested_patches": suggested_patches,
+        "kb_retrieval": _approved_samples_fallback(),
+    }
+
+
+def _resource_plan(body: dict) -> dict:
+    target = _to_float(body.get("target_funding_amount"))
+    mrr = _to_float(body.get("mrr"))
+    arr = _to_float(body.get("arr"))
+    sow_cost = _to_float(body.get("sow_cost"))
+    assumptions = body.get("assumptions") or []
+
+    required_arr = round(target / 0.25, 2) if target > 0 else 0.0
+    effective_arr = arr if arr > 0 else (mrr * 12 if mrr > 0 else required_arr)
+    required_sow_cost = target
+    cap_limited = target > 125000
+    eligible_amount = round(min(effective_arr * 0.25, sow_cost if sow_cost > 0 else required_sow_cost, 125000), 2)
+
+    role_rates = [
+        {"role": "Solution Architect", "rate": _confirmed_field_value(180)},
+        {"role": "Engineer", "rate": _confirmed_field_value(150)},
+        {"role": "Project Manager", "rate": _confirmed_field_value(130)},
+    ]
+    phase_hours_table = [
+        {
+            "phase": _confirmed_field_value("Discovery & Design"),
+            "role_hours": [
+                {"role": "Solution Architect", "hours": 24},
+                {"role": "Engineer", "hours": 16},
+                {"role": "Project Manager", "hours": 8},
+            ],
+            "total": 48,
+        },
+        {
+            "phase": _confirmed_field_value("Build & Integration"),
+            "role_hours": [
+                {"role": "Solution Architect", "hours": 32},
+                {"role": "Engineer", "hours": 80},
+                {"role": "Project Manager", "hours": 16},
+            ],
+            "total": 128,
+        },
+        {
+            "phase": _confirmed_field_value("Validation & Handover"),
+            "role_hours": [
+                {"role": "Solution Architect", "hours": 16},
+                {"role": "Engineer", "hours": 32},
+                {"role": "Project Manager", "hours": 12},
+            ],
+            "total": 60,
+        },
+    ]
+    total_cost = 0.0
+    rate_by_role = {row["role"]: _to_float(row["rate"]) for row in role_rates}
+    for phase in phase_hours_table:
+        for row in phase["role_hours"]:
+            total_cost += _to_float(row.get("hours")) * rate_by_role.get(row.get("role"), 0.0)
+
+    contribution = {
+        "customer": {"amount": _confirmed_field_value(max(round(total_cost - target, 2), 0)), "pct": _confirmed_field_value("")},
+        "partner": {"amount": _confirmed_field_value(0), "pct": _confirmed_field_value("")},
+        "aws": {"amount": _confirmed_field_value(min(target, 125000)), "pct": _confirmed_field_value("")},
+    }
+
+    warnings = [
+        "This is a Resource Planning draft. Final values must be reviewed with AWS Calculator, Bedrock usage assumption, SOW cost, customer scope, and sales owner."
+    ]
+    if cap_limited:
+        warnings.append("$125K cap applies; requested target funding exceeds the maximum formula cap.")
+    if sow_cost and sow_cost < target:
+        warnings.append("SOW cost is below the target funding amount, so SOW cost limits eligibility.")
+    if effective_arr * 0.25 < target:
+        warnings.append("ARR is below the amount required to support the target funding amount under the 25% rule.")
+
+    return {
+        "target_funding_amount": target,
+        "required_arr": required_arr,
+        "sow_cost_requirement": required_sow_cost,
+        "cap_check": {"cap": 125000, "cap_limited": cap_limited},
+        "eligible_funding_amount": eligible_amount,
+        "formula": "Eligible Funding Amount = min(Year 1 ARR * 25%, SOW Cost, 125000)",
+        "draft_resource_matrix": {
+            "role_rates": role_rates,
+            "phase_hours_table": phase_hours_table,
+            "matrix_orientation": "wide",
+        },
+        "contribution_distribution": contribution,
+        "assumptions": assumptions,
+        "warnings": warnings,
     }
 
 
@@ -1249,6 +1819,204 @@ def _handle_export(doc_id: str, event: dict) -> dict:
     return _response(200, output)
 
 
+def _handle_get_document_state(doc_id: str, event: dict) -> dict:
+    user_id, permission, item, err = _load_document_for_action(doc_id, event, "read")
+    if err:
+        return err
+    return _response(200, {
+        "document": item,
+        "permission": permission,
+        "user_id": user_id,
+    })
+
+
+def _handle_propose_document_patch(doc_id: str, body: dict, event: dict) -> dict:
+    _user_id, permission, item, err = _load_document_for_action(doc_id, event, "suggest")
+    if err:
+        return err
+    operations = body.get("json_patch") or body.get("patch") or body.get("operations") or []
+    try:
+        _apply_json_patch_copy(json.loads(_json(item)), operations)
+    except Exception as exc:
+        return _response(400, {"error": str(exc), "status": "invalid_patch"})
+
+    requires_review = _document_requires_review(item)
+    direct_apply_allowed = PERMISSION_ORDER[permission] >= PERMISSION_ORDER["edit"] and not requires_review
+    return _response(200, {
+        "status": "ok",
+        "document_id": doc_id,
+        "permission": permission,
+        "direct_apply_allowed": direct_apply_allowed,
+        "change_request_required": not direct_apply_allowed,
+        "summary": body.get("summary", f"{len(operations)} proposed document change(s)"),
+        "json_patch": operations,
+    })
+
+
+def _handle_apply_document_patch(doc_id: str, body: dict, event: dict) -> dict:
+    user_id, permission, item, err = _load_document_for_action(doc_id, event, "suggest")
+    if err:
+        return err
+
+    operations = body.get("json_patch") or body.get("patch") or body.get("operations") or []
+    if permission == "suggest" or (permission == "edit" and _document_requires_review(item)):
+        try:
+            _apply_json_patch_copy(json.loads(_json(item)), operations)
+        except Exception as exc:
+            return _response(400, {"error": str(exc), "status": "invalid_patch"})
+        change_request = _change_request_from_patch(
+            doc_id,
+            user_id,
+            operations,
+            summary=body.get("summary", ""),
+            changes=body.get("changes"),
+        )
+        try:
+            saved = _save_change_request(item, int(item.get("version", 0)), change_request)
+        except Exception as exc:
+            if "VersionConflict" in type(exc).__name__:
+                return _response(409, {"error": str(exc), "status": "version_conflict"})
+            raise
+        return _response(202, {
+            "status": "change_request_created",
+            "change_request": change_request,
+            "version": saved["version"],
+        })
+
+    if PERMISSION_ORDER[permission] < PERMISSION_ORDER["edit"]:
+        return _response(403, {"error": "insufficient_permission", "required": "edit", "permission": permission})
+
+    expected_version = int(body.get("expected_version", item.get("version", 0)))
+    if expected_version != int(item.get("version", 0)):
+        return _response(409, {"error": "version mismatch", "status": "version_conflict"})
+    try:
+        patched = _apply_json_patch_copy(json.loads(_json(item)), operations)
+        saved = _conditional_save_document(patched, expected_version)
+    except Exception as exc:
+        if "VersionConflict" in type(exc).__name__:
+            return _response(409, {"error": str(exc), "status": "version_conflict"})
+        return _response(400, {"error": str(exc), "status": "invalid_patch"})
+
+    _publish_document_patch(doc_id, operations, saved, expected_version, "document_api")
+    return _response(200, {"status": "applied", "version": saved["version"], "operations": operations})
+
+
+def _handle_create_change_request(doc_id: str, body: dict, event: dict) -> dict:
+    user_id, permission, item, err = _load_document_for_action(doc_id, event, "suggest")
+    if err:
+        return err
+    operations = body.get("json_patch") or body.get("patch") or body.get("operations") or []
+    try:
+        _apply_json_patch_copy(json.loads(_json(item)), operations)
+    except Exception as exc:
+        return _response(400, {"error": str(exc), "status": "invalid_patch"})
+    change_request = _change_request_from_patch(
+        doc_id,
+        user_id,
+        operations,
+        summary=body.get("summary", ""),
+        changes=body.get("changes"),
+    )
+    try:
+        saved = _save_change_request(item, int(item.get("version", 0)), change_request)
+    except Exception as exc:
+        if "VersionConflict" in type(exc).__name__:
+            return _response(409, {"error": str(exc), "status": "version_conflict"})
+        raise
+    return _response(201, {
+        "status": "pending",
+        "permission": permission,
+        "change_request": change_request,
+        "version": saved["version"],
+    })
+
+
+def _handle_approve_change_request(doc_id: str, body: dict, event: dict) -> dict:
+    user_id, _permission, item, err = _load_document_for_action(doc_id, event, "master")
+    if err:
+        return err
+    change_request_id = body.get("change_request_id", "")
+    index, change_request = _find_change_request(item, change_request_id)
+    if change_request is None:
+        return _response(404, {"error": "change request not found"})
+    if change_request.get("status") != "pending":
+        return _response(409, {"error": "change request is not pending", "status": change_request.get("status")})
+
+    operations = change_request.get("json_patch") or []
+    expected_version = int(item.get("version", 0))
+    try:
+        patched = _apply_json_patch_copy(json.loads(_json(item)), operations)
+        patched["change_requests"][index]["status"] = "approved"
+        patched["change_requests"][index]["reviewed_by"] = user_id
+        patched["change_requests"][index]["reviewed_at"] = _now_iso()
+        patched["change_requests"][index]["updated_at"] = patched["change_requests"][index]["reviewed_at"]
+        saved = _conditional_save_document(patched, expected_version)
+    except Exception as exc:
+        if "VersionConflict" in type(exc).__name__:
+            return _response(409, {"error": str(exc), "status": "version_conflict"})
+        return _response(400, {"error": str(exc), "status": "invalid_patch"})
+
+    _publish_document_patch(doc_id, operations, saved, expected_version, "change_request")
+    return _response(200, {
+        "status": "approved",
+        "change_request_id": change_request_id,
+        "version": saved["version"],
+    })
+
+
+def _handle_reject_change_request(doc_id: str, body: dict, event: dict) -> dict:
+    user_id, _permission, item, err = _load_document_for_action(doc_id, event, "master")
+    if err:
+        return err
+    change_request_id = body.get("change_request_id", "")
+    index, change_request = _find_change_request(item, change_request_id)
+    if change_request is None:
+        return _response(404, {"error": "change request not found"})
+    if change_request.get("status") != "pending":
+        return _response(409, {"error": "change request is not pending", "status": change_request.get("status")})
+
+    expected_version = int(item.get("version", 0))
+    updated = deepcopy(item)
+    now = _now_iso()
+    updated["change_requests"][index]["status"] = "rejected"
+    updated["change_requests"][index]["reviewed_by"] = user_id
+    updated["change_requests"][index]["reviewed_at"] = now
+    updated["change_requests"][index]["updated_at"] = now
+    if body.get("reason"):
+        updated["change_requests"][index]["rejection_reason"] = body["reason"]
+    try:
+        saved = _conditional_save_document(updated, expected_version)
+    except Exception as exc:
+        if "VersionConflict" in type(exc).__name__:
+            return _response(409, {"error": str(exc), "status": "version_conflict"})
+        raise
+    return _response(200, {
+        "status": "rejected",
+        "change_request_id": change_request_id,
+        "version": saved["version"],
+    })
+
+
+def _handle_run_submission_lint(doc_id: str, event: dict) -> dict:
+    _user_id, permission, item, err = _load_document_for_action(doc_id, event, "read")
+    if err:
+        return err
+    result = _document_lint_result(json.loads(_json(item)))
+    result["document_id"] = doc_id
+    result["permission"] = permission
+    return _response(200, result)
+
+
+def _handle_calculate_resource_plan(doc_id: str, body: dict, event: dict) -> dict:
+    _user_id, permission, _item, err = _load_document_for_action(doc_id, event, "read")
+    if err:
+        return err
+    result = _resource_plan(body)
+    result["document_id"] = doc_id
+    result["permission"] = permission
+    return _response(200, result)
+
+
 def _handle_user_input(doc_id: str, body: dict, event: dict) -> dict:
     user_id, err = _require_user(event)
     if err:
@@ -1446,6 +2214,36 @@ def handler(event: dict, context: Any) -> dict:
         elif method == "POST" and action == "user-input":
             body = json.loads(event.get("body", "{}"))
             return _handle_user_input(doc_id, body, event)
+
+        elif action == "get_document_state" and method in {"GET", "POST"}:
+            return _handle_get_document_state(doc_id, event)
+
+        elif method == "POST" and action == "propose_document_patch":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_propose_document_patch(doc_id, body, event)
+
+        elif method == "POST" and action == "apply_document_patch":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_apply_document_patch(doc_id, body, event)
+
+        elif method == "POST" and action == "create_change_request":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_create_change_request(doc_id, body, event)
+
+        elif method == "POST" and action == "approve_change_request":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_approve_change_request(doc_id, body, event)
+
+        elif method == "POST" and action == "reject_change_request":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_reject_change_request(doc_id, body, event)
+
+        elif method == "POST" and action == "run_submission_lint":
+            return _handle_run_submission_lint(doc_id, event)
+
+        elif method == "POST" and action == "calculate_resource_plan":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_calculate_resource_plan(doc_id, body, event)
 
         elif method == "POST" and action == "review":
             user_id, err = _require_user(event)

@@ -61,16 +61,13 @@ SAMPLE_STAFFING_PLAN = {
 class TestValidateTemplate:
     def test_all_sections_present(self):
         sections = {k: {"some_field": "value"} for k in APN_REQUIRED_SECTIONS}
-        result = _invoke(validate_handler, {
-            "sections": sections,
-            "staffing_plan": {"roles": {"pm": {}}},
-        })
+        result = _invoke(validate_handler, {"sections": sections})
         assert result["valid"] is True
         assert result["blocking_issues"] == []
 
     def test_missing_section_is_blocking(self):
         sections = {k: {} for k in APN_REQUIRED_SECTIONS if k != "cover"}
-        result = _invoke(validate_handler, {"sections": sections, "staffing_plan": {}})
+        result = _invoke(validate_handler, {"sections": sections})
         assert result["valid"] is False
         codes = [i["code"] for i in result["blocking_issues"]]
         assert "MISSING_SECTION" in codes
@@ -78,22 +75,24 @@ class TestValidateTemplate:
     def test_section_order_warning(self):
         # Reverse order
         sections = {k: {"v": 1} for k in reversed(APN_REQUIRED_SECTIONS)}
-        result = _invoke(validate_handler, {"sections": sections, "staffing_plan": {}})
+        result = _invoke(validate_handler, {"sections": sections})
         warning_codes = [w["code"] for w in result["warnings"]]
         assert "SECTION_ORDER" in warning_codes
 
     def test_cost_mismatch_warning(self):
         sections = {k: {} for k in APN_REQUIRED_SECTIONS}
         sections["cost_breakdown"] = {
-            "staffing_cost": {"grand_total": {"calculated": 100.0}},
+            "funding_calculation": {"sow_cost": 100.0},
         }
-        sp = {"grand_total_cost": {"calculated": 200.0}, "roles": {}}
-        result = _invoke(validate_handler, {"sections": sections, "staffing_plan": sp})
+        sections["resources_cost_estimates"] = {
+            "total_cost": {"total": "200.0"},
+        }
+        result = _invoke(validate_handler, {"sections": sections})
         warning_codes = [w["code"] for w in result["warnings"]]
         assert "COST_MISMATCH" in warning_codes
 
     def test_completion_score_range(self):
-        result = _invoke(validate_handler, {"sections": {}, "staffing_plan": {}})
+        result = _invoke(validate_handler, {"sections": {}})
         assert 0.0 <= result["completion_score"] <= 1.0
 
     def test_error_on_invalid_input(self):
