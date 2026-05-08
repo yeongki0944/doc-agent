@@ -120,6 +120,66 @@ export interface ChangeRequest {
   reviewed_at?: string
 }
 
+export interface CreateChangeRequestInput {
+  json_patch: Array<{ op: string; path: string; value?: any; from?: string }>
+  summary?: string
+  changes?: ChangeRequestChange[]
+}
+
+/**
+ * Create a pending change request from a JSON Patch. The backend will
+ * validate the patch, wrap it as a pending CR, and persist it on the
+ * document.
+ */
+export async function createChangeRequest(
+  docId: string,
+  body: CreateChangeRequestInput,
+): Promise<{ change_request: ChangeRequest; status: string; version?: number }> {
+  const res = await apiFetch(`/documents/${docId}/create_change_request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    let detail = ''
+    try { detail = JSON.stringify(await res.json()) } catch { /* ignore */ }
+    throw new Error(`create change request failed: ${res.status} ${detail}`)
+  }
+  return res.json()
+}
+
+/**
+ * Attempt to fetch backend-provided section preset recommendations for a
+ * given section. The backend does not always expose this endpoint yet; if
+ * it returns a non-2xx or network error, this function returns null so the
+ * UI can fall back to static presets silently.
+ */
+export async function fetchSectionRecommendations(
+  docId: string,
+  sectionKey: string,
+): Promise<SectionRecommendation[] | null> {
+  try {
+    const res = await apiFetch(
+      `/documents/${docId}/section_recommendations?section=${encodeURIComponent(sectionKey)}`,
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    const list = Array.isArray(data?.recommendations) ? data.recommendations : null
+    return list
+  } catch {
+    return null
+  }
+}
+
+export interface SectionRecommendation {
+  id: string
+  label: string
+  description?: string
+  prompt_hint?: string
+  aws_services?: string[]
+  sample_objectives?: string[]
+}
+
 export async function approveChangeRequest(docId: string, changeRequestId: string): Promise<any> {
   const res = await apiFetch(`/documents/${docId}/approve_change_request`, {
     method: 'POST',

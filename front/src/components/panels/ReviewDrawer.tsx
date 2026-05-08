@@ -94,7 +94,7 @@ export function ReviewDrawer({
         {tab === 'change_requests' && <ChangeRequestPanel docId={docId} />}
         {tab === 'resources' && <ResourcePlanningPanel docId={docId} />}
         {tab === 'suggestions' && (
-          <SectionSuggestionsPanel activeTab={activeTab} onSendPrompt={onSendPrompt} />
+          <SectionSuggestionsPanel docId={docId} activeTab={activeTab} onSendPrompt={onSendPrompt} />
         )}
       </div>
     </div>

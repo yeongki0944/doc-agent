@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import { color, radius, space } from '../../styles/tokens'
-import { requestReview, type ReviewResult, type ReviewIssue } from '../../utils/api'
+import {
+  requestReview,
+  createChangeRequest,
+  type ReviewResult,
+  type ReviewIssue,
+} from '../../utils/api'
 import { useDocumentStore } from '../../store/documentStore'
 
 type Severity = 'critical' | 'high' | 'medium' | 'low'
@@ -12,6 +17,9 @@ const SEVERITY_META: Record<Severity, { label: string; color: string; bg: string
   low: { label: 'Low', color: '#1E3A8A', bg: '#DBEAFE', border: '#BFDBFE' },
 }
 
+type SuggestedPatch = NonNullable<ReviewResult['suggested_patches']>[number]
+type PatchState = 'idle' | 'submitting' | 'created' | 'failed'
+
 /**
  * Submission Review Panel — runs run_submission_lint and displays
  * readiness_score, grouped issues, missing_questions, and suggested_patches.
@@ -20,22 +28,58 @@ export function ReviewPanel({ docId }: { docId: string }) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ReviewResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [fallback, setFallback] = useState(false)
+  const [patchStates, setPatchStates] = useState<Record<number, { state: PatchState; message?: string; crId?: string }>>({})
   const completionScore = useDocumentStore(s => s.completion_score ?? 0)
   const blockingIssues = useDocumentStore(s => s.blocking_issues ?? [])
 
   const handleRun = async () => {
     setLoading(true)
     setError(null)
+    setFallback(false)
+    setPatchStates({})
     try {
       const data = await requestReview(docId)
       setResult(data)
     } catch (e: any) {
       setError(e?.message || 'Review 요청에 실패했습니다.')
-      // Fallback: minimal local computation so the UI stays useful
-      const localFallback = buildLocalFallback(completionScore, blockingIssues)
-      setResult(localFallback)
+      setResult(buildLocalFallback(completionScore, blockingIssues))
+      setFallback(true)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleCreateCr = async (index: number, patch: SuggestedPatch) => {
+    if (!patch || !patch.op || !patch.path) return
+    setPatchStates(prev => ({ ...prev, [index]: { state: 'submitting' } }))
+    try {
+      const body = {
+        summary: patch.reason || `Suggested ${patch.op} ${patch.path}`,
+        json_patch: [{ op: patch.op, path: patch.path, value: patch.value }],
+        changes: [
+          {
+            section: deriveSection(patch.path),
+            as_is: null,
+            to_be: patch.value,
+            reason: patch.reason || 'Suggested by submission review',
+            json_patch: [{ op: patch.op, path: patch.path, value: patch.value }],
+          },
+        ],
+      }
+      const resp = await createChangeRequest(docId, body)
+      setPatchStates(prev => ({
+        ...prev,
+        [index]: {
+          state: 'created',
+          crId: resp?.change_request?.change_request_id,
+        },
+      }))
+    } catch (e: any) {
+      setPatchStates(prev => ({
+        ...prev,
+        [index]: { state: 'failed', message: e?.message || 'Change request 생성 실패' },
+      }))
     }
   }
 
@@ -73,12 +117,26 @@ export function ReviewPanel({ docId }: { docId: string }) {
         </div>
       )}
 
-      {result && <ReviewResultView result={result} />}
+      {result && (
+        <ReviewResultView
+          result={result}
+          fallback={fallback}
+          patchStates={patchStates}
+          onCreateCr={handleCreateCr}
+        />
+      )}
     </div>
   )
 }
 
-function ReviewResultView({ result }: { result: ReviewResult }) {
+function ReviewResultView({
+  result, fallback, patchStates, onCreateCr,
+}: {
+  result: ReviewResult
+  fallback: boolean
+  patchStates: Record<number, { state: PatchState; message?: string; crId?: string }>
+  onCreateCr: (index: number, patch: SuggestedPatch) => void
+}) {
   const score = typeof result.readiness_score === 'number' ? result.readiness_score : 0
   const issues = result.issues || {}
   const missing = result.missing_questions || []
@@ -108,25 +166,21 @@ function ReviewResultView({ result }: { result: ReviewResult }) {
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>제안된 패치 ({suggested.length})</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {suggested.map((p, i) => (
-              <div
+              <SuggestedPatchCard
                 key={i}
-                style={{
-                  fontSize: 11,
-                  padding: 8,
-                  border: `1px solid ${color.border}`,
-                  borderRadius: radius.sm,
-                  background: color.bgSurface,
-                }}
-              >
-                <div style={{ fontFamily: 'monospace', color: color.info, marginBottom: 2 }}>
-                  {p.op} {p.path}
-                </div>
-                {p.reason && (
-                  <div style={{ color: color.textSecondary }}>{p.reason}</div>
-                )}
-              </div>
+                index={i}
+                patch={p}
+                state={patchStates[i]}
+                disabledCreate={fallback}
+                onCreate={() => onCreateCr(i, p)}
+              />
             ))}
           </div>
+          {fallback && (
+            <div style={{ fontSize: 11, color: color.textMuted, marginTop: 4 }}>
+              로컬 fallback 결과에서는 change request 생성을 사용할 수 없습니다.
+            </div>
+          )}
         </div>
       )}
 
@@ -135,6 +189,69 @@ function ReviewResultView({ result }: { result: ReviewResult }) {
           ✓ 이슈가 발견되지 않았습니다.
         </div>
       )}
+    </div>
+  )
+}
+
+function SuggestedPatchCard({
+  index, patch, state, disabledCreate, onCreate,
+}: {
+  index: number
+  patch: SuggestedPatch
+  state?: { state: PatchState; message?: string; crId?: string }
+  disabledCreate: boolean
+  onCreate: () => void
+}) {
+  const s = state?.state || 'idle'
+  return (
+    <div
+      style={{
+        fontSize: 11,
+        padding: 8,
+        border: `1px solid ${color.border}`,
+        borderRadius: radius.sm,
+        background: color.bgSurface,
+      }}
+    >
+      <div style={{ fontFamily: 'monospace', color: color.info, marginBottom: 2 }}>
+        #{index + 1} {patch.op} {patch.path}
+      </div>
+      {patch.reason && (
+        <div style={{ color: color.textSecondary, marginBottom: 6 }}>{patch.reason}</div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <button
+          onClick={onCreate}
+          disabled={s === 'submitting' || s === 'created' || disabledCreate}
+          style={{
+            padding: '3px 10px',
+            borderRadius: radius.sm,
+            border: 'none',
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: (s === 'submitting' || s === 'created' || disabledCreate) ? 'not-allowed' : 'pointer',
+            background:
+              s === 'created' ? color.success :
+              disabledCreate ? color.border :
+              color.mzRed,
+            color: color.bgSurface,
+          }}
+          title={disabledCreate ? 'Fallback 모드에서는 사용 불가' : '이 패치로 change request를 만듭니다'}
+        >
+          {s === 'submitting' ? '생성 중...' :
+           s === 'created' ? '✓ Change Request 생성됨' :
+           'Change Request로 만들기'}
+        </button>
+        {s === 'created' && state?.crId && (
+          <code style={{ fontSize: 10, color: color.textMuted }}>{state.crId}</code>
+        )}
+        {s === 'failed' && (
+          <span style={{ fontSize: 10, color: color.error }}>
+            ✗ {state?.message || '실패'}
+          </span>
+        )}
+      </div>
     </div>
   )
 }
@@ -221,4 +338,10 @@ function buildLocalFallback(completionScore: number, blockingIssues: any[]): Rev
     missing_questions: [],
     suggested_patches: [],
   }
+}
+
+function deriveSection(pointerPath: string): string {
+  const parts = pointerPath.replace(/^\//, '').split('/').filter(Boolean)
+  if (parts[0] === 'sections' && parts[1]) return parts[1]
+  return parts[0] || ''
 }

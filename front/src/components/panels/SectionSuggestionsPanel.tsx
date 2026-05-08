@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { color, radius, space } from '../../styles/tokens'
+import { fetchSectionRecommendations, type SectionRecommendation } from '../../utils/api'
 
 interface PocPreset {
   id: string
@@ -86,22 +87,54 @@ const POC_PRESETS: PocPreset[] = [
 ]
 
 /**
- * Section Preset / Dropdown Recommendation Panel — shows static PoC type
- * presets. Users can copy an AI prompt hint to chat or see suggested AWS
- * services. Applying to document directly is deferred to the chat flow to
- * avoid unexpected mutations while the backend recommendation API matures.
+ * Section Preset / Dropdown Recommendation Panel — shows backend-provided
+ * section recommendations when available, or falls back to static PoC type
+ * presets silently. Users can copy an AI prompt hint to chat or see
+ * suggested AWS services. Applying to document directly is deferred to the
+ * chat flow to avoid unexpected mutations.
  */
 export function SectionSuggestionsPanel({
+  docId,
   activeTab,
   onSendPrompt,
 }: {
+  docId?: string
   activeTab: string
   onSendPrompt?: (prompt: string) => void
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
+  const [dynamic, setDynamic] = useState<SectionRecommendation[] | null>(null)
+  const [dynamicLoading, setDynamicLoading] = useState(false)
 
-  const selected = POC_PRESETS.find(p => p.id === selectedId) || null
+  const sectionKey = useMemo(() => deriveSectionKey(activeTab), [activeTab])
+
+  useEffect(() => {
+    if (!docId || !sectionKey) return
+    let cancelled = false
+    setDynamicLoading(true)
+    fetchSectionRecommendations(docId, sectionKey).then(res => {
+      if (cancelled) return
+      if (Array.isArray(res) && res.length > 0) setDynamic(res)
+      else setDynamic(null)
+    }).finally(() => {
+      if (!cancelled) setDynamicLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [docId, sectionKey])
+
+  const items: DisplayPreset[] = dynamic && dynamic.length > 0
+    ? dynamic.map(d => ({
+        id: d.id,
+        label: d.label,
+        description: d.description || '',
+        sample_objectives: d.sample_objectives || [],
+        aws_services: d.aws_services || [],
+        prompt_hint: d.prompt_hint || `${d.label} 초안을 작성해줘`,
+      }))
+    : POC_PRESETS
+
+  const selected = items.find(p => p.id === selectedId) || null
 
   const handleCopy = async (text: string, id: string) => {
     try {
@@ -119,15 +152,20 @@ export function SectionSuggestionsPanel({
         <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Section Suggestions</h3>
         <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2 }}>
           현재 섹션: <span style={{ fontWeight: 500 }}>{activeTab}</span>
+          {dynamicLoading && <span style={{ marginLeft: 6 }}>· loading…</span>}
+          {dynamic && dynamic.length > 0 && <span style={{ marginLeft: 6, color: color.success }}>· backend</span>}
+          {!dynamic && !dynamicLoading && docId && (
+            <span style={{ marginLeft: 6, color: color.textMuted }}>· static fallback</span>
+          )}
         </div>
       </div>
 
       <div style={{ fontSize: 11, color: color.textMuted, padding: space.sm, background: color.bgSubtle, borderRadius: radius.sm, lineHeight: 1.5 }}>
-        PoC 유형을 선택하면 권장 AWS 서비스, 샘플 목표, AI 프롬프트 힌트를 볼 수 있습니다. 프롬프트를 복사해 왼쪽 채팅에 붙여넣으세요.
+        PoC 유형을 선택하면 권장 AWS 서비스, 샘플 목표, AI 프롬프트 힌트를 볼 수 있습니다. 프롬프트를 복사해 왼쪽 채팅에 붙여넣거나 바로 보낼 수 있습니다.
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-        {POC_PRESETS.map(preset => (
+        {items.map(preset => (
           <button
             key={preset.id}
             onClick={() => setSelectedId(preset.id === selectedId ? null : preset.id)}
@@ -159,7 +197,7 @@ function PresetDetail({
   onCopy,
   onSendPrompt,
 }: {
-  preset: PocPreset
+  preset: DisplayPreset
   copied: string | null
   onCopy: (text: string, id: string) => void
   onSendPrompt?: (prompt: string) => void
@@ -236,3 +274,30 @@ function PresetDetail({
 }
 
 export { POC_PRESETS }
+
+type DisplayPreset = {
+  id: string
+  label: string
+  description: string
+  sample_objectives: string[]
+  aws_services: string[]
+  prompt_hint: string
+}
+
+const TAB_TO_SECTION_KEY: Record<string, string> = {
+  '1. Cover': 'cover',
+  '2.1 Executive Summary': 'executive_summary',
+  '2.2 Stakeholders': 'stakeholders',
+  '2.3 Project Success Criteria': 'success_criteria',
+  '2.4 Assumptions & Risks': 'assumptions',
+  '3. Scope of Work': 'scope_of_work',
+  '4. Architecture': 'architecture',
+  '5. Milestones': 'milestones',
+  '5.1 Expected AWS Cost Breakdown': 'cost_breakdown',
+  '6. Acceptance': 'acceptance',
+  '7. Resources & Cost Estimates': 'resources_cost_estimates',
+}
+
+function deriveSectionKey(activeTab: string): string {
+  return TAB_TO_SECTION_KEY[activeTab] || activeTab.toLowerCase().replace(/\s+/g, '_')
+}

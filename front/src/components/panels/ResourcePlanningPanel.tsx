@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { color, radius, space } from '../../styles/tokens'
 import {
   calculateResourcePlan,
+  createChangeRequest,
   type ResourcePlanInput,
   type ResourcePlanResult,
 } from '../../utils/api'
@@ -23,10 +24,18 @@ export function ResourcePlanningPanel({ docId }: { docId: string }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<ResourcePlanResult | null>(null)
+  const [fallback, setFallback] = useState(false)
+  const [crState, setCrState] = useState<{
+    state: 'idle' | 'submitting' | 'created' | 'failed'
+    crId?: string
+    message?: string
+  }>({ state: 'idle' })
 
   const handleCalculate = async () => {
     setLoading(true)
     setError(null)
+    setFallback(false)
+    setCrState({ state: 'idle' })
     try {
       const body: ResourcePlanInput = {
         target_funding_amount: toNumber(target),
@@ -38,15 +47,55 @@ export function ResourcePlanningPanel({ docId }: { docId: string }) {
       setResult(data)
     } catch (e: any) {
       setError(e?.message || 'Resource plan 계산 실패')
-      // Fallback: local calculation using the same formula
       setResult(localResourcePlanFallback({
         target_funding_amount: toNumber(target),
         mrr: toNumber(mrr),
         arr: toNumber(arr),
         sow_cost: toNumber(sowCost),
       }))
+      setFallback(true)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleCreateChangeRequest = async () => {
+    if (!result) return
+    setCrState({ state: 'submitting' })
+    try {
+      const fundingPayload = {
+        yr1_arr: result.required_arr,
+        sow_cost: result.sow_cost_requirement,
+        eligible_amount: result.eligible_funding_amount,
+        cap: result.cap_check?.cap ?? 125000,
+        cap_limited: !!result.cap_check?.cap_limited,
+        formula: result.formula,
+        source: 'resource_planning_assistant',
+      }
+      const patch = {
+        op: 'replace',
+        path: '/sections/cost_breakdown/funding_calculation',
+        value: fundingPayload,
+      }
+      const resp = await createChangeRequest(docId, {
+        summary: 'Resource Planning — update funding_calculation',
+        json_patch: [patch],
+        changes: [
+          {
+            section: 'cost_breakdown',
+            as_is: null,
+            to_be: fundingPayload,
+            reason: 'Apply Resource Planning Assistant draft funding numbers',
+            json_patch: [patch],
+          },
+        ],
+      })
+      setCrState({
+        state: 'created',
+        crId: resp?.change_request?.change_request_id,
+      })
+    } catch (e: any) {
+      setCrState({ state: 'failed', message: e?.message || 'Change request 생성 실패' })
     }
   }
 
@@ -104,7 +153,14 @@ export function ResourcePlanningPanel({ docId }: { docId: string }) {
         </div>
       )}
 
-      {result && <ResultView result={result} />}
+      {result && (
+        <ResultView
+          result={result}
+          fallback={fallback}
+          crState={crState}
+          onCreateCr={handleCreateChangeRequest}
+        />
+      )}
     </div>
   )
 }
@@ -138,7 +194,14 @@ function NumberInput({
   )
 }
 
-function ResultView({ result }: { result: ResourcePlanResult }) {
+function ResultView({
+  result, fallback, crState, onCreateCr,
+}: {
+  result: ResourcePlanResult
+  fallback: boolean
+  crState: { state: 'idle' | 'submitting' | 'created' | 'failed'; crId?: string; message?: string }
+  onCreateCr: () => void
+}) {
   const cap = result.cap_check?.cap ?? 125000
   const capLimited = result.cap_check?.cap_limited
   const matrix = result.draft_resource_matrix
@@ -176,6 +239,51 @@ function ResultView({ result }: { result: ResourcePlanResult }) {
           </ul>
         </div>
       )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          onClick={onCreateCr}
+          disabled={fallback || crState.state === 'submitting' || crState.state === 'created'}
+          style={{
+            padding: '6px 12px',
+            fontSize: 12,
+            fontWeight: 600,
+            borderRadius: radius.sm,
+            border: 'none',
+            cursor:
+              (fallback || crState.state === 'submitting' || crState.state === 'created')
+                ? 'not-allowed'
+                : 'pointer',
+            background:
+              crState.state === 'created' ? color.success :
+              fallback ? color.border :
+              color.mzRed,
+            color: color.bgSurface,
+          }}
+          title={
+            fallback
+              ? 'Fallback 모드에서는 사용 불가'
+              : 'funding_calculation 변경을 change request로 만듭니다'
+          }
+        >
+          {crState.state === 'submitting' ? '생성 중...' :
+           crState.state === 'created' ? '✓ Change Request 생성됨' :
+           'Change Request로 만들기'}
+        </button>
+        {crState.state === 'created' && crState.crId && (
+          <code style={{ fontSize: 10, color: color.textMuted }}>{crState.crId}</code>
+        )}
+        {crState.state === 'failed' && (
+          <span style={{ fontSize: 10, color: color.error }}>
+            ✗ {crState.message || '실패'}
+          </span>
+        )}
+        {fallback && (
+          <span style={{ fontSize: 10, color: color.textMuted }}>
+            (fallback: 문서를 변경할 수 없습니다)
+          </span>
+        )}
+      </div>
     </div>
   )
 }
