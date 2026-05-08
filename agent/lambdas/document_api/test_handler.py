@@ -755,3 +755,103 @@ def test_calculate_resource_plan_returns_wide_matrix(monkeypatch):
     assert body["draft_resource_matrix"]["matrix_orientation"] == "wide"
     assert "role_hours" in body["draft_resource_matrix"]["phase_hours_table"][0]
     assert body["warnings"][0].startswith("This is a Resource Planning draft.")
+
+
+def test_query_approved_samples_fallback_returns_metadata_only(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {"Item": _doc_item(version=2)}
+    monkeypatch.setattr(document_api, "table", table)
+    monkeypatch.delenv("APPROVED_SAMPLES_KB_ID", raising=False)
+    monkeypatch.delenv("APPROVED_SAMPLES_DATA_SOURCE_ID", raising=False)
+
+    response = document_api.handler(
+        _post_event(
+            "/documents/doc-1/query_approved_samples",
+            {"section": "success_criteria", "top_k": 2},
+        ),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["mode"] == "fallback"
+    assert body["kb_id_present"] is False
+    assert isinstance(body["examples"], list)
+    assert len(body["examples"]) >= 1
+    first = body["examples"][0]
+    assert "sample_id" in first
+    assert "metadata" in first
+    assert "excerpt" in first
+    # Excerpts must be short summaries, never a full document body.
+    assert len(first["excerpt"]) <= 400
+    # No full document payload must leak through.
+    assert "sections" not in first
+    assert "document_state" not in first
+
+
+def test_section_recommendations_success_criteria(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {"Item": _doc_item(version=2)}
+    monkeypatch.setattr(document_api, "table", table)
+
+    event = {
+        "requestContext": {
+            "http": {"method": "GET", "path": "/documents/doc-1/section_recommendations"}
+        },
+        "headers": {"X-User-Id": "user-1"},
+        "queryStringParameters": {"section": "success_criteria"},
+    }
+    response = document_api.handler(event, None)
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["section"] == "success_criteria"
+    assert isinstance(body["recommendations"], list)
+    assert len(body["recommendations"]) >= 1
+    first = body["recommendations"][0]
+    assert "id" in first
+    assert "label" in first
+    assert "sample_objectives" in first
+    # Recommendations must not embed full document bodies.
+    assert "sections" not in first
+
+
+def test_section_recommendations_unknown_section_returns_empty(monkeypatch):
+    table = MagicMock()
+    table.get_item.return_value = {"Item": _doc_item(version=2)}
+    monkeypatch.setattr(document_api, "table", table)
+
+    event = {
+        "requestContext": {
+            "http": {"method": "GET", "path": "/documents/doc-1/section_recommendations"}
+        },
+        "headers": {"X-User-Id": "user-1"},
+        "queryStringParameters": {"section": "nonexistent_section"},
+    }
+    response = document_api.handler(event, None)
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["recommendations"] == []
+
+
+def test_run_submission_lint_attaches_sample_excerpts_in_fallback(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = document_api._default_sections()
+    item["sections"]["architecture"]["services"] = []
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    monkeypatch.delenv("APPROVED_SAMPLES_KB_ID", raising=False)
+
+    response = document_api.handler(
+        _post_event("/documents/doc-1/run_submission_lint", {}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    kb = body["kb_retrieval"]
+    assert kb["mode"] == "fallback"
+    assert "examples" in kb
+    assert isinstance(kb["examples"], list)

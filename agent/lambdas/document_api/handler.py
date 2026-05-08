@@ -957,7 +957,269 @@ def _find_change_request(item: dict, change_request_id: str) -> tuple[int, dict]
     return None, None
 
 
+# ---------------------------------------------------------------------------
+# Approved sample retrieval + section recommendations
+# ---------------------------------------------------------------------------
+#
+# Metadata model (per approved-sample excerpt):
+#   sample_id (str)         - stable identifier
+#   customer (str)          - short generic label ("Retail Customer"), never a real name
+#   industry (str)          - e.g. "Retail / Commerce"
+#   use_case_type (str)     - e.g. "rag_search", "agentic_workflow"
+#   section (str)           - DocumentState section key
+#   services (list[str])    - AWS services referenced
+#   tags (list[str])        - free-form tags
+#   s3_key (str)            - where the full approved doc lives (or "" if not in S3)
+#   language (str)          - "en" / "ko"
+#   excerpt (str)           - short excerpt / summary, SAFE to return over API
+#
+# When APPROVED_SAMPLES_KB_ID is missing, `_query_approved_samples` returns a
+# filtered subset of the static fallback list. It never returns full document
+# content — only metadata and excerpts.
+
+_FALLBACK_APPROVED_SAMPLES: list[dict] = [
+    {
+        "sample_id": "apn-rag-retail-exec-summary",
+        "customer": "Retail Customer",
+        "industry": "Retail / Commerce",
+        "use_case_type": "rag_search",
+        "section": "executive_summary",
+        "services": ["Amazon Bedrock", "Amazon OpenSearch Service", "Amazon S3"],
+        "tags": ["apn", "genai_ic", "rag"],
+        "s3_key": "",
+        "language": "en",
+        "excerpt": (
+            "Approved pattern: Bedrock-based RAG search reduces manual lookup time "
+            "and clarifies production readiness criteria."
+        ),
+    },
+    {
+        "sample_id": "apn-agent-fin-success-criteria",
+        "customer": "Finance Customer",
+        "industry": "Finance / Insurance",
+        "use_case_type": "agentic_workflow",
+        "section": "success_criteria",
+        "services": ["Amazon Bedrock", "AWS Lambda", "Amazon DynamoDB"],
+        "tags": ["apn", "genai_ic", "agentic"],
+        "s3_key": "",
+        "language": "en",
+        "excerpt": (
+            "Approved success criteria pattern: response accuracy >=90%, "
+            "average latency <3s, validated RAG pipeline on customer data."
+        ),
+    },
+    {
+        "sample_id": "sow-mfg-assumptions",
+        "customer": "Manufacturing Customer",
+        "industry": "Manufacturing",
+        "use_case_type": "assistant",
+        "section": "assumptions",
+        "services": ["Amazon Bedrock", "Amazon S3"],
+        "tags": ["sow", "risk"],
+        "s3_key": "",
+        "language": "en",
+        "excerpt": (
+            "Approved assumptions pattern: production deployment out of scope in PoC, "
+            "customer provides data access, change requests follow agreed process."
+        ),
+    },
+    {
+        "sample_id": "apn-architecture-bedrock-rag",
+        "customer": "Generic Customer",
+        "industry": "Cross-industry",
+        "use_case_type": "rag_search",
+        "section": "architecture",
+        "services": [
+            "Amazon Bedrock",
+            "Amazon OpenSearch Service",
+            "AWS Lambda",
+            "Amazon S3",
+            "Amazon API Gateway",
+        ],
+        "tags": ["apn", "architecture"],
+        "s3_key": "",
+        "language": "en",
+        "excerpt": (
+            "Approved architecture pattern: API Gateway -> Lambda -> Bedrock with "
+            "OpenSearch vector store and S3 source documents."
+        ),
+    },
+    {
+        "sample_id": "apn-cost-breakdown-poc",
+        "customer": "Generic Customer",
+        "industry": "Cross-industry",
+        "use_case_type": "poc",
+        "section": "cost_breakdown",
+        "services": ["Amazon Bedrock", "AWS Lambda", "Amazon S3"],
+        "tags": ["apn", "genai_ic", "funding"],
+        "s3_key": "",
+        "language": "en",
+        "excerpt": (
+            "Approved cost pattern: AWS Calculator URL referenced, Year 1 ARR and "
+            "SOW cost provided; eligible funding = min(ARR*25%, SOW cost, 125K)."
+        ),
+    },
+]
+
+
+def _matches_filter(sample: dict, key: str, value: Any) -> bool:
+    if value in (None, "", []):
+        return True
+    sv = sample.get(key)
+    if isinstance(value, list):
+        wanted = {str(v).strip().lower() for v in value if v}
+        if not wanted:
+            return True
+        if isinstance(sv, list):
+            have = {str(s).strip().lower() for s in sv}
+            return bool(wanted & have)
+        return str(sv).strip().lower() in wanted
+    return str(sv).strip().lower() == str(value).strip().lower()
+
+
+def _query_fallback_samples(
+    section: str = "",
+    industry: str = "",
+    use_case_type: str = "",
+    services: Optional[list] = None,
+    query: str = "",
+    top_k: int = 3,
+) -> list[dict]:
+    """Filter the static fallback list. Returns short metadata+excerpt items."""
+    results = []
+    for sample in _FALLBACK_APPROVED_SAMPLES:
+        if not _matches_filter(sample, "section", section):
+            continue
+        if not _matches_filter(sample, "industry", industry):
+            continue
+        if not _matches_filter(sample, "use_case_type", use_case_type):
+            continue
+        if services:
+            wanted = {str(s).strip().lower() for s in services if s}
+            have = {str(s).strip().lower() for s in (sample.get("services") or [])}
+            if wanted and not (wanted & have):
+                continue
+        if query:
+            qlc = str(query).lower()
+            haystack = " ".join([
+                sample.get("excerpt", ""),
+                " ".join(sample.get("tags") or []),
+                sample.get("use_case_type", ""),
+                sample.get("industry", ""),
+            ]).lower()
+            if qlc not in haystack and not any(tok in haystack for tok in qlc.split() if len(tok) > 2):
+                # Keep at lower priority — do not discard hard
+                pass
+        results.append({
+            "sample_id": sample["sample_id"],
+            "metadata": {
+                "customer": sample.get("customer", ""),
+                "industry": sample.get("industry", ""),
+                "use_case_type": sample.get("use_case_type", ""),
+                "section": sample.get("section", ""),
+                "services": list(sample.get("services") or []),
+                "tags": list(sample.get("tags") or []),
+                "s3_key": sample.get("s3_key", ""),
+                "language": sample.get("language", "en"),
+            },
+            "excerpt": sample.get("excerpt", ""),
+        })
+    return results[: max(1, int(top_k or 3))]
+
+
+def _query_approved_samples(
+    section: str = "",
+    industry: str = "",
+    use_case_type: str = "",
+    services: Optional[list] = None,
+    query: str = "",
+    top_k: int = 3,
+) -> dict:
+    """Retrieve approved-sample excerpts.
+
+    If ``APPROVED_SAMPLES_KB_ID`` is configured and the Bedrock Agent Runtime
+    retrieve API is callable, use it. Otherwise return a filtered subset of
+    the static fallback list. Never returns full document bodies — only
+    short excerpts and metadata.
+    """
+    kb_id = os.environ.get("APPROVED_SAMPLES_KB_ID", "")
+    data_source = os.environ.get("APPROVED_SAMPLES_DATA_SOURCE_ID", "")
+
+    if kb_id:
+        try:
+            client = boto3.client("bedrock-agent-runtime", region_name=REGION)
+            filters = []
+            if section:
+                filters.append(" ".join(["section", section]))
+            if industry:
+                filters.append(" ".join(["industry", industry]))
+            if use_case_type:
+                filters.append(" ".join(["use_case_type", use_case_type]))
+            retrieval_query = query or " ".join(filters) or section or "approved sample"
+            resp = client.retrieve(
+                knowledgeBaseId=kb_id,
+                retrievalQuery={"text": retrieval_query[:500]},
+                retrievalConfiguration={
+                    "vectorSearchConfiguration": {"numberOfResults": max(1, int(top_k or 3))},
+                },
+            )
+            hits = []
+            for r in resp.get("retrievalResults", []) or []:
+                md = r.get("metadata", {}) or {}
+                content = (r.get("content", {}) or {}).get("text", "") or ""
+                # Return short excerpts only (max 400 chars) — never full docs.
+                excerpt = content[:400]
+                hits.append({
+                    "sample_id": str(md.get("sample_id") or md.get("id") or ""),
+                    "metadata": {
+                        "customer": str(md.get("customer", "")),
+                        "industry": str(md.get("industry", "")),
+                        "use_case_type": str(md.get("use_case_type", "")),
+                        "section": str(md.get("section", section or "")),
+                        "services": list(md.get("services") or []),
+                        "tags": list(md.get("tags") or []),
+                        "s3_key": str(md.get("s3_key") or (r.get("location", {}) or {}).get("s3Location", {}).get("uri", "")),
+                        "language": str(md.get("language", "en")),
+                        "score": r.get("score"),
+                    },
+                    "excerpt": excerpt,
+                })
+            return {
+                "mode": "kb",
+                "message": "Approved samples retrieved from Bedrock Knowledge Base.",
+                "kb_id_present": True,
+                "data_source_present": bool(data_source),
+                "examples": hits,
+            }
+        except Exception as exc:
+            print(f"[approved_samples] KB retrieve failed, using fallback: {exc}")
+            return {
+                "mode": "fallback",
+                "message": f"KB retrieve failed; using static fallback. ({type(exc).__name__})",
+                "kb_id_present": True,
+                "data_source_present": bool(data_source),
+                "examples": _query_fallback_samples(section, industry, use_case_type, services, query, top_k),
+            }
+
+    return {
+        "mode": "fallback",
+        "message": (
+            "Approved samples Knowledge Base is not configured. "
+            "Returning static fallback metadata/excerpts only."
+        ),
+        "kb_id_present": False,
+        "data_source_present": False,
+        "examples": _query_fallback_samples(section, industry, use_case_type, services, query, top_k),
+    }
+
+
 def _approved_samples_fallback() -> dict:
+    """Backward-compatible status shim used by ``_document_lint_result``.
+
+    Returns the mode/message/kb_id_present summary without executing a full
+    retrieval. Downstream consumers that want hits should call
+    ``_query_approved_samples`` directly.
+    """
     kb_id = os.environ.get("APPROVED_SAMPLES_KB_ID", "")
     data_source = os.environ.get("APPROVED_SAMPLES_DATA_SOURCE_ID", "")
     if kb_id:
@@ -976,6 +1238,227 @@ def _approved_samples_fallback() -> dict:
         "kb_id_present": False,
         "data_source_present": False,
     }
+
+
+# ---------------------------------------------------------------------------
+# Section recommendations (preset / dropdown options)
+# ---------------------------------------------------------------------------
+
+_SECTION_RECOMMENDATIONS: dict[str, list[dict]] = {
+    "success_criteria": [
+        {
+            "id": "success_criteria.rag_quality",
+            "label": "RAG response quality targets",
+            "description": "Typical APN-approved success criteria around GenAI answer quality.",
+            "prompt_hint": "Define measurable RAG quality targets.",
+            "aws_services": ["Amazon Bedrock", "Amazon OpenSearch Service"],
+            "sample_objectives": [
+                "Achieve response accuracy of 90% or higher",
+                "Maintain average response latency under 3 seconds",
+                "Validate RAG pipeline with customer-provided documents",
+            ],
+        },
+        {
+            "id": "success_criteria.cost_effectiveness",
+            "label": "Cost effectiveness",
+            "description": "Budget-oriented success criteria aligned with GenAI IC funding review.",
+            "prompt_hint": "Tie success criteria to monthly AWS cost budget.",
+            "aws_services": ["Amazon Bedrock", "AWS Lambda", "Amazon S3"],
+            "sample_objectives": [
+                "Operate within estimated monthly AWS cost budget",
+                "Demonstrate cost savings compared to current process",
+                "Provide detailed cost breakdown and optimization recommendations",
+            ],
+        },
+        {
+            "id": "success_criteria.security",
+            "label": "Security and data protection",
+            "description": "Security-oriented success criteria suitable for SOW.",
+            "prompt_hint": "Cover encryption, access control, compliance.",
+            "aws_services": ["AWS IAM", "AWS KMS", "Amazon Bedrock"],
+            "sample_objectives": [
+                "Implement data encryption at rest and in transit",
+                "Validate access control and authentication mechanisms",
+                "Ensure compliance with customer security policies",
+            ],
+        },
+    ],
+    "assumptions": [
+        {
+            "id": "assumptions.business_context",
+            "label": "Business context",
+            "description": "Assumptions about customer participation and scope agreement.",
+            "sample_objectives": [
+                "Customer will provide necessary business requirements and system documentation",
+                "Key stakeholders will participate in regular meetings and reviews",
+                "Project scope and objectives are agreed upon before execution begins",
+            ],
+        },
+        {
+            "id": "assumptions.technical_environment",
+            "label": "Technical environment",
+            "description": "Assumptions about AWS service availability and integration.",
+            "aws_services": ["Amazon Bedrock"],
+            "sample_objectives": [
+                "Amazon Bedrock is available in the target AWS region",
+                "Customer will provide access to required data sources and systems",
+                "Existing infrastructure supports integration with AWS services",
+            ],
+        },
+        {
+            "id": "assumptions.scope_boundaries",
+            "label": "Scope boundaries",
+            "description": "Out-of-scope items typical in APN / GenAI IC PoC SOW.",
+            "sample_objectives": [
+                "Production deployment is out of scope for this PoC phase",
+                "Performance testing is limited to defined test scenarios",
+                "Third-party system integration is limited to agreed interfaces",
+            ],
+        },
+    ],
+    "executive_summary": [
+        {
+            "id": "executive_summary.customer_overview",
+            "label": "Customer overview",
+            "description": "Short customer context and business driver summary.",
+            "sample_objectives": [
+                "Customer description",
+                "Business context",
+            ],
+        },
+        {
+            "id": "executive_summary.proposed_solution",
+            "label": "Proposed solution",
+            "description": "Bedrock + RAG proposal framing for APN.",
+            "aws_services": ["Amazon Bedrock", "Amazon OpenSearch Service", "Amazon S3"],
+            "sample_objectives": [
+                "Amazon Bedrock-based solution",
+                "RAG / OpenSearch / S3 architecture",
+            ],
+        },
+        {
+            "id": "executive_summary.business_value",
+            "label": "Business value",
+            "description": "Efficiency and ROI-oriented framing for GenAI IC reviewers.",
+            "sample_objectives": [
+                "Improve operational efficiency",
+                "Reduce time spent on repetitive work",
+            ],
+        },
+    ],
+    "architecture": [
+        {
+            "id": "architecture.bedrock_rag",
+            "label": "Bedrock + RAG reference",
+            "description": "Commonly approved architecture shape for GenAI PoC.",
+            "aws_services": [
+                "Amazon Bedrock",
+                "Amazon OpenSearch Service",
+                "AWS Lambda",
+                "Amazon S3",
+                "Amazon API Gateway",
+            ],
+            "sample_objectives": [
+                "Customer client calls API Gateway",
+                "Lambda orchestrates Bedrock with OpenSearch retrieval",
+                "S3 stores source documents and exports",
+            ],
+        },
+        {
+            "id": "architecture.agentic_workflow",
+            "label": "Agentic workflow",
+            "description": "Multi-agent pattern using Bedrock AgentCore.",
+            "aws_services": ["Amazon Bedrock", "AWS Lambda", "Amazon DynamoDB"],
+            "sample_objectives": [
+                "Parent orchestrator routes to discovery / architecture / cost subagents",
+                "AgentCore Memory holds customer context",
+                "DynamoDB stores document state and history",
+            ],
+        },
+    ],
+    "cost_breakdown": [
+        {
+            "id": "cost_breakdown.calculator_reference",
+            "label": "AWS Calculator reference",
+            "description": "APN / GenAI IC expects a Calculator URL and Year 1 ARR basis.",
+            "sample_objectives": [
+                "Provide AWS Calculator URL",
+                "Document Year 1 ARR basis",
+                "Document SOW cost basis",
+            ],
+        },
+        {
+            "id": "cost_breakdown.funding_formula",
+            "label": "Funding formula",
+            "description": "Deterministic funding calculation used by the Reviewer lint.",
+            "sample_objectives": [
+                "Eligible Funding Amount = min(Year 1 ARR * 25%, SOW Cost, 125,000)",
+            ],
+        },
+    ],
+    "scope_of_work": [
+        {
+            "id": "scope_of_work.core_tasks",
+            "label": "Core tasks",
+            "description": "Typical PoC task list.",
+            "sample_objectives": [
+                "Discovery and requirements analysis",
+                "Build RAG / Bedrock workflow",
+                "Validation and handover",
+            ],
+        },
+    ],
+    "stakeholders": [
+        {
+            "id": "stakeholders.core_roles",
+            "label": "Core stakeholder roles",
+            "description": "Typical roles aligned with APN submission.",
+            "sample_objectives": [
+                "Executive sponsor",
+                "Project manager",
+                "Solutions architect",
+                "Security reviewer",
+            ],
+        },
+    ],
+    "milestones": [
+        {
+            "id": "milestones.three_phase_poc",
+            "label": "3-phase PoC",
+            "description": "Default phase structure reused by Resource Planning.",
+            "sample_objectives": [
+                "Discovery and Design",
+                "Build and Integration",
+                "Validation and Handover",
+            ],
+        },
+    ],
+    "acceptance": [
+        {
+            "id": "acceptance.criteria",
+            "label": "Acceptance criteria",
+            "description": "Commonly approved acceptance-check steps.",
+            "sample_objectives": [
+                "Functional checks pass against defined PoC scope",
+                "Non-functional targets met within budget and latency bounds",
+                "Documentation and handover complete",
+            ],
+        },
+    ],
+}
+
+
+def _get_section_recommendations(section: str) -> list[dict]:
+    """Return preset / dropdown recommendations for a section.
+
+    This is the static baseline. A future version can enrich this with
+    per-customer DynamoDB metadata or Bedrock KB context without changing
+    the response shape.
+    """
+    key = (section or "").strip()
+    if not key:
+        return []
+    return [dict(item) for item in _SECTION_RECOMMENDATIONS.get(key, [])]
 
 
 def _make_issue(severity: str, code: str, message: str, section: str, question: str = "") -> dict:
@@ -2001,10 +2484,63 @@ def _handle_run_submission_lint(doc_id: str, event: dict) -> dict:
     _user_id, permission, item, err = _load_document_for_action(doc_id, event, "read")
     if err:
         return err
-    result = _document_lint_result(json.loads(_json(item)))
+    doc_dict = json.loads(_json(item))
+    result = _document_lint_result(doc_dict)
+    # Attach short top-hit excerpts for the Reviewer — safe metadata only.
+    try:
+        sections = doc_dict.get("sections", {}) if isinstance(doc_dict.get("sections"), dict) else {}
+        arch = sections.get("architecture", {}) if isinstance(sections.get("architecture"), dict) else {}
+        services = []
+        for svc in arch.get("services", []) or []:
+            if isinstance(svc, dict):
+                name = _resolve_field_value(svc.get("service_name")) or svc.get("service_id", "")
+                if name:
+                    services.append(str(name))
+        sample_hits = _query_approved_samples(services=services, top_k=3)
+        result["kb_retrieval"] = sample_hits
+    except Exception as exc:
+        print(f"[approved_samples] attach to lint failed: {exc}")
     result["document_id"] = doc_id
     result["permission"] = permission
     return _response(200, result)
+
+
+def _handle_query_approved_samples(doc_id: str, body: dict, event: dict) -> dict:
+    _user_id, permission, _item, err = _load_document_for_action(doc_id, event, "read")
+    if err:
+        return err
+    services = body.get("services") or []
+    if isinstance(services, str):
+        services = [services]
+    result = _query_approved_samples(
+        section=str(body.get("section", "")),
+        industry=str(body.get("industry", "")),
+        use_case_type=str(body.get("use_case_type", "")),
+        services=list(services) if isinstance(services, list) else [],
+        query=str(body.get("query", "")),
+        top_k=int(body.get("top_k", 3) or 3),
+    )
+    result["document_id"] = doc_id
+    result["permission"] = permission
+    return _response(200, result)
+
+
+def _handle_get_section_recommendations(doc_id: str, event: dict) -> dict:
+    _user_id, permission, _item, err = _load_document_for_action(doc_id, event, "read")
+    if err:
+        return err
+    query = event.get("queryStringParameters") or {}
+    section = ""
+    if isinstance(query, dict):
+        section = str(query.get("section", "") or "")
+    recommendations = _get_section_recommendations(section)
+    return _response(200, {
+        "document_id": doc_id,
+        "permission": permission,
+        "section": section,
+        "recommendations": recommendations,
+        "source": "static_presets",
+    })
 
 
 def _handle_calculate_resource_plan(doc_id: str, body: dict, event: dict) -> dict:
@@ -2240,6 +2776,13 @@ def handler(event: dict, context: Any) -> dict:
 
         elif method == "POST" and action == "run_submission_lint":
             return _handle_run_submission_lint(doc_id, event)
+
+        elif method == "POST" and action == "query_approved_samples":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_query_approved_samples(doc_id, body, event)
+
+        elif method == "GET" and action == "section_recommendations":
+            return _handle_get_section_recommendations(doc_id, event)
 
         elif method == "POST" and action == "calculate_resource_plan":
             body = json.loads(event.get("body", "{}"))
