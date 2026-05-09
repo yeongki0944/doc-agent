@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { color, radius, space } from '../../styles/tokens'
 import {
   requestReview,
@@ -7,18 +7,19 @@ import {
 } from '../../utils/api'
 import { useDocumentStore } from '../../store/documentStore'
 import { StatusBadge, EnvelopeNotices } from './StatusEnvelope'
+import { useDocLang } from '../LangContext'
 import {
-  CATEGORIES,
-  SECTION_LABELS,
-  type CategoryKey,
+  sectionLabel,
+  type RuleDefinition,
   type RuleSeverity,
   type RuleStatus,
-} from '../../constants/reviewRules'
+} from '../../constants/reviewRulesSeed'
 import {
   buildReviewMatrix,
   type RuleEvaluation,
   type ReviewMatrix,
 } from '../../utils/reviewAdapter'
+import { listReviewRules } from '../../utils/reviewRulesApi'
 
 type PatchState = 'idle' | 'submitting' | 'created' | 'failed'
 
@@ -27,36 +28,55 @@ const SEVERITY_FILTER_VALUES: Array<RuleSeverity | 'ALL'> = ['ALL', 'Critical', 
 
 /**
  * Submission Review Panel — runs `run_submission_lint` and presents a full
- * rule evaluation matrix similar to Dynatrace / AWS Security Hub style
- * posture tools. Shows PASS/WARNING/FAIL/NOT_CHECKED for every rule in the
- * catalog, not just triggered findings.
+ * bilingual rule evaluation matrix. Gracefully falls back to an
+ * issue-adapter view when the backend has not rolled out rule_evaluations.
  */
 export function ReviewPanel({ docId }: { docId: string }) {
+  const lang = useDocLang()
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<ReviewResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [fallback, setFallback] = useState(false)
   const [patchStates, setPatchStates] = useState<Record<string, { state: PatchState; message?: string; crId?: string }>>({})
   const [openRuleId, setOpenRuleId] = useState<string | null>(null)
+  const [catalog, setCatalog] = useState<RuleDefinition[] | undefined>(undefined)
 
   const [statusFilter, setStatusFilter] = useState<RuleStatus | 'ALL'>('ALL')
   const [severityFilter, setSeverityFilter] = useState<RuleSeverity | 'ALL'>('ALL')
-  const [categoryFilter, setCategoryFilter] = useState<CategoryKey | 'ALL'>('ALL')
+  const [categoryFilter, setCategoryFilter] = useState<string | 'ALL'>('ALL')
   const [searchText, setSearchText] = useState('')
 
   const completionScore = useDocumentStore(s => s.completion_score ?? 0)
   const blockingIssues = useDocumentStore(s => s.blocking_issues ?? [])
 
-  const matrix = useMemo<ReviewMatrix>(() => buildReviewMatrix(result), [result])
+  // Load the rule catalog once so the matrix displays every enabled rule,
+  // including locally added custom rules, even before a Run Review call.
+  useEffect(() => {
+    let cancelled = false
+    listReviewRules()
+      .then(data => {
+        if (!cancelled) setCatalog(data.rules)
+      })
+      .catch(() => {
+        /* keep seeded default */
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  const matrix = useMemo<ReviewMatrix>(() => buildReviewMatrix(result, catalog), [result, catalog])
 
   const filtered = useMemo(() => {
     const q = searchText.trim().toLowerCase()
     return matrix.evaluations.filter(e => {
       if (statusFilter !== 'ALL' && e.status !== statusFilter) return false
       if (severityFilter !== 'ALL' && e.severity !== severityFilter) return false
-      if (categoryFilter !== 'ALL' && e.rule.category !== categoryFilter) return false
+      if (categoryFilter !== 'ALL' && e.rule.category_en !== categoryFilter) return false
       if (q) {
-        const hay = `${e.rule.title} ${e.rule.id} ${e.judgment} ${e.rule.definition}`.toLowerCase()
+        const hay = [
+          e.rule.title_kr, e.rule.title_en, e.rule.rule_id,
+          e.rule.category_kr, e.rule.category_en,
+          e.judgment.kr, e.judgment.en,
+        ].join(' ').toLowerCase()
         if (!hay.includes(q)) return false
       }
       return true
@@ -95,7 +115,7 @@ export function ReviewPanel({ docId }: { docId: string }) {
             section: deriveSection(patch.path),
             as_is: null,
             to_be: patch.value,
-            reason: patch.reason || evalItem.recommendation,
+            reason: patch.reason || (lang === 'ko' ? evalItem.recommendation.kr : evalItem.recommendation.en),
             json_patch: [{ op: patch.op, path: patch.path, value: patch.value }],
           },
         ],
@@ -169,9 +189,15 @@ export function ReviewPanel({ docId }: { docId: string }) {
             </div>
           )}
 
-          <CategoryCoverageView matrix={matrix} onPickCategory={setCategoryFilter} />
+          <CategoryCoverageView
+            matrix={matrix}
+            lang={lang}
+            onPickCategory={setCategoryFilter}
+          />
 
           <FilterBar
+            matrix={matrix}
+            lang={lang}
             statusFilter={statusFilter}
             severityFilter={severityFilter}
             categoryFilter={categoryFilter}
@@ -184,6 +210,7 @@ export function ReviewPanel({ docId }: { docId: string }) {
 
           <RuleTable
             evaluations={filtered}
+            lang={lang}
             openRuleId={openRuleId}
             onToggle={id => setOpenRuleId(prev => (prev === id ? null : id))}
             patchStates={patchStates}
@@ -229,7 +256,6 @@ function MetricCard({ label, value, tone }: { label: string; value: number; tone
   const cls =
     tone === 'success' ? 'metric-card is-success' :
     tone === 'warning' ? 'metric-card is-warning' :
-    tone === 'danger' ? 'metric-card' :
     'metric-card'
   const valueColor =
     tone === 'danger' ? color.error :
@@ -247,11 +273,11 @@ function MetricCard({ label, value, tone }: { label: string; value: number; tone
 /* ---------- Category coverage ---------- */
 
 function CategoryCoverageView({
-  matrix,
-  onPickCategory,
+  matrix, lang, onPickCategory,
 }: {
   matrix: ReviewMatrix
-  onPickCategory: (k: CategoryKey | 'ALL') => void
+  lang: 'ko' | 'en'
+  onPickCategory: (k: string | 'ALL') => void
 }) {
   return (
     <div>
@@ -259,23 +285,30 @@ function CategoryCoverageView({
         Category Coverage
       </div>
       <div className="review-coverage-grid">
-        {matrix.categories.map(cat => (
-          <button
-            key={cat.key}
-            className="review-coverage-row"
-            style={{ cursor: 'pointer', border: '1px solid ' + color.border, textAlign: 'left' }}
-            onClick={() => onPickCategory(cat.key)}
-            title={`${cat.label} 필터 적용`}
-          >
-            <span className="label">{cat.label}</span>
-            <span className="counts">
-              <span className="chip pass" title="Pass">{cat.pass}</span>
-              <span className="chip warn" title="Warning">{cat.warning}</span>
-              <span className="chip fail" title="Fail">{cat.fail}</span>
-              <span className="chip unknown" title="Not Checked">{cat.notChecked}</span>
-            </span>
-          </button>
-        ))}
+        {matrix.categories.map(cat => {
+          const label = lang === 'ko' ? cat.label_kr : cat.label_en
+          const subLabel = lang === 'ko' ? cat.label_en : cat.label_kr
+          return (
+            <button
+              key={cat.key}
+              className="review-coverage-row"
+              style={{ cursor: 'pointer', textAlign: 'left' }}
+              onClick={() => onPickCategory(cat.key)}
+              title={`${label} 필터 적용`}
+            >
+              <span className="label" style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <span>{label}</span>
+                <span style={{ fontSize: 10, fontWeight: 400, color: color.textMuted }}>{subLabel}</span>
+              </span>
+              <span className="counts">
+                <span className="chip pass" title="Pass">{cat.pass}</span>
+                <span className="chip warn" title="Warning">{cat.warning}</span>
+                <span className="chip fail" title="Fail">{cat.fail}</span>
+                <span className="chip unknown" title="Not Checked">{cat.notChecked}</span>
+              </span>
+            </button>
+          )
+        })}
       </div>
     </div>
   )
@@ -284,16 +317,19 @@ function CategoryCoverageView({
 /* ---------- Filter bar ---------- */
 
 function FilterBar({
+  matrix, lang,
   statusFilter, severityFilter, categoryFilter, searchText,
   onStatus, onSeverity, onCategory, onSearch,
 }: {
+  matrix: ReviewMatrix
+  lang: 'ko' | 'en'
   statusFilter: RuleStatus | 'ALL'
   severityFilter: RuleSeverity | 'ALL'
-  categoryFilter: CategoryKey | 'ALL'
+  categoryFilter: string | 'ALL'
   searchText: string
   onStatus: (v: RuleStatus | 'ALL') => void
   onSeverity: (v: RuleSeverity | 'ALL') => void
-  onCategory: (v: CategoryKey | 'ALL') => void
+  onCategory: (v: string | 'ALL') => void
   onSearch: (v: string) => void
 }) {
   return (
@@ -325,14 +361,16 @@ function FilterBar({
         aria-label="Category filter"
       >
         <option value="ALL">Category: All</option>
-        {CATEGORIES.map(cat => (
-          <option key={cat.key} value={cat.key}>{cat.label}</option>
+        {matrix.categories.map(cat => (
+          <option key={cat.key} value={cat.key}>
+            {lang === 'ko' ? cat.label_kr : cat.label_en}
+          </option>
         ))}
       </select>
       <input
         className="mzc-input"
         type="text"
-        placeholder="규칙 검색..."
+        placeholder="규칙 검색 / Search rules..."
         value={searchText}
         onChange={e => onSearch(e.target.value)}
         aria-label="Search rules"
@@ -344,14 +382,11 @@ function FilterBar({
 /* ---------- Rule table ---------- */
 
 function RuleTable({
-  evaluations,
-  openRuleId,
-  onToggle,
-  patchStates,
-  onCreateCr,
-  fallbackMode,
+  evaluations, lang,
+  openRuleId, onToggle, patchStates, onCreateCr, fallbackMode,
 }: {
   evaluations: RuleEvaluation[]
+  lang: 'ko' | 'en'
   openRuleId: string | null
   onToggle: (id: string) => void
   patchStates: Record<string, { state: PatchState; message?: string; crId?: string }>
@@ -374,16 +409,19 @@ function RuleTable({
       <table className="review-rule-table">
         <thead>
           <tr>
-            <th style={{ width: 80 }}>Status</th>
+            <th style={{ width: 78 }}>Status</th>
             <th style={{ width: 70 }}>Severity</th>
             <th>Rule</th>
-            <th style={{ width: 120 }}>Category</th>
+            <th style={{ width: 130 }}>Category</th>
           </tr>
         </thead>
         <tbody>
           {evaluations.map(e => {
             const isOpen = openRuleId === e.ruleId
-            const cat = CATEGORIES.find(c => c.key === e.rule.category)
+            const title = lang === 'ko' ? e.rule.title_kr : e.rule.title_en
+            const titleAlt = lang === 'ko' ? e.rule.title_en : e.rule.title_kr
+            const category = lang === 'ko' ? e.rule.category_kr : e.rule.category_en
+            const judgment = lang === 'ko' ? e.judgment.kr : e.judgment.en
             return (
               <Fragment key={e.ruleId}>
                 <tr
@@ -394,16 +432,19 @@ function RuleTable({
                   <td><SeverityPill severity={e.severity} /></td>
                   <td>
                     <div style={{ fontWeight: 600, color: color.textPrimary }}>
-                      {e.rule.title}
+                      {title}
                     </div>
-                    <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2, lineHeight: 1.45 }}>
-                      {e.judgment}
+                    <div style={{ fontSize: 10, color: color.textMuted, marginTop: 1 }}>
+                      {titleAlt}
                     </div>
+                    {judgment && (
+                      <div style={{ fontSize: 11, color: color.textSecondary, marginTop: 3, lineHeight: 1.45 }}>
+                        {judgment}
+                      </div>
+                    )}
                   </td>
                   <td>
-                    <span style={{ fontSize: 11, color: color.textSecondary }}>
-                      {cat?.label || e.rule.category}
-                    </span>
+                    <span style={{ fontSize: 11, color: color.textSecondary }}>{category}</span>
                   </td>
                 </tr>
                 {isOpen && (
@@ -411,6 +452,7 @@ function RuleTable({
                     <td colSpan={4}>
                       <RuleDetail
                         evaluation={e}
+                        lang={lang}
                         patchState={patchStates[e.ruleId]}
                         onCreateCr={() => onCreateCr(e)}
                         fallbackMode={fallbackMode}
@@ -450,12 +492,10 @@ function SeverityPill({ severity }: { severity: RuleSeverity }) {
 /* ---------- Rule detail (expandable row) ---------- */
 
 function RuleDetail({
-  evaluation,
-  patchState,
-  onCreateCr,
-  fallbackMode,
+  evaluation, lang, patchState, onCreateCr, fallbackMode,
 }: {
   evaluation: RuleEvaluation
+  lang: 'ko' | 'en'
   patchState?: { state: PatchState; message?: string; crId?: string }
   onCreateCr: () => void
   fallbackMode: boolean
@@ -480,36 +520,47 @@ function RuleDetail({
     fallbackMode ? 'Fallback 모드에서는 Change Request 생성이 불가합니다.' :
     undefined
 
+  const title = lang === 'ko' ? e.rule.title_kr : e.rule.title_en
+  const titleAlt = lang === 'ko' ? e.rule.title_en : e.rule.title_kr
+  const description = lang === 'ko' ? e.rule.description_kr : e.rule.description_en
+  const judgmentDetail = lang === 'ko' ? e.judgmentDetail.kr : e.judgmentDetail.en
+  const recommendation = lang === 'ko' ? e.recommendation.kr : e.recommendation.en
+  const passCriteria = lang === 'ko' ? e.rule.pass_criteria_kr : e.rule.pass_criteria_en
+  const warnCriteria = lang === 'ko' ? e.rule.warning_criteria_kr : e.rule.warning_criteria_en
+  const failCriteria = lang === 'ko' ? e.rule.fail_criteria_kr : e.rule.fail_criteria_en
+  const missingList = lang === 'ko' ? e.missingEvidence.kr : e.missingEvidence.en
+
   return (
     <div className="review-detail-grid">
       <div>
         <div className="block-label">Rule</div>
         <div className="block-body">
-          <div style={{ fontSize: 13, fontWeight: 600, color: color.textPrimary }}>{e.rule.title}</div>
-          <div style={{ fontSize: 10, color: color.textMuted, fontFamily: 'monospace', marginTop: 2 }}>
-            {e.rule.id}
+          <div style={{ fontSize: 13, fontWeight: 600, color: color.textPrimary }}>{title}</div>
+          <div style={{ fontSize: 11, color: color.textMuted, marginTop: 1 }}>{titleAlt}</div>
+          <div style={{ fontSize: 10, color: color.textMuted, fontFamily: 'monospace', marginTop: 3 }}>
+            {e.rule.rule_id}
           </div>
         </div>
       </div>
 
       <div>
         <div className="block-label">Definition</div>
-        <div className="block-body">{e.rule.definition}</div>
+        <div className="block-body">{description}</div>
       </div>
 
       <div>
         <div className="block-label">Pass / Warning / Fail Criteria</div>
         <div className="criteria-list">
-          <span className="tag pass">PASS</span><span>{e.rule.passCriteria}</span>
-          <span className="tag warn">WARN</span><span>{e.rule.warningCriteria}</span>
-          <span className="tag fail">FAIL</span><span>{e.rule.failCriteria}</span>
+          <span className="tag pass">PASS</span><span>{(passCriteria || []).join(' / ')}</span>
+          <span className="tag warn">WARN</span><span>{(warnCriteria || []).join(' / ')}</span>
+          <span className="tag fail">FAIL</span><span>{(failCriteria || []).join(' / ')}</span>
         </div>
       </div>
 
       <div>
         <div className="block-label">LLM Judgment</div>
         <div className="block-body" style={{ whiteSpace: 'pre-wrap' }}>
-          {e.judgmentDetail || e.judgment}
+          {judgmentDetail || (lang === 'ko' ? e.judgment.kr : e.judgment.en) || '—'}
         </div>
       </div>
 
@@ -517,13 +568,13 @@ function RuleDetail({
         <div className="block-label">Evidence found ({e.evidenceFound.length})</div>
         {e.evidenceFound.length === 0 ? (
           <div className="block-body" style={{ color: color.textMuted, fontSize: 11 }}>
-            문서에서 추출된 근거가 없습니다.
+            {lang === 'ko' ? '문서에서 추출된 근거가 없습니다.' : 'No evidence extracted from the document.'}
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {e.evidenceFound.map((ev, i) => (
               <div key={i} className="evidence-card">
-                {ev.section && <div className="section">{SECTION_LABELS[ev.section] || ev.section}</div>}
+                {ev.section && <div className="section">{sectionLabel(ev.section, lang)}</div>}
                 {ev.snippet && <div className="snippet">{ev.snippet}</div>}
                 {ev.fieldPath && <div className="field-path">{ev.fieldPath}</div>}
               </div>
@@ -533,14 +584,14 @@ function RuleDetail({
       </div>
 
       <div>
-        <div className="block-label">Missing evidence ({e.missingEvidence.length})</div>
-        {e.missingEvidence.length === 0 ? (
+        <div className="block-label">Missing evidence ({missingList.length})</div>
+        {missingList.length === 0 ? (
           <div className="block-body" style={{ color: color.textMuted, fontSize: 11 }}>
-            누락된 근거가 없습니다.
+            {lang === 'ko' ? '누락된 근거가 없습니다.' : 'No missing evidence.'}
           </div>
         ) : (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-            {e.missingEvidence.map((m, i) => (
+            {missingList.map((m, i) => (
               <span key={i} className="missing-chip">▢ {m}</span>
             ))}
           </div>
@@ -551,14 +602,14 @@ function RuleDetail({
         <div className="block-label">Referenced sections</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           {e.referencedSections.map(sec => (
-            <span key={sec} className="mzc-badge">{SECTION_LABELS[sec] || sec}</span>
+            <span key={sec} className="mzc-badge">{sectionLabel(sec, lang)}</span>
           ))}
         </div>
       </div>
 
       <div>
         <div className="block-label">Recommendation</div>
-        <div className="block-body">{e.recommendation}</div>
+        <div className="block-body">{recommendation}</div>
       </div>
 
       {e.suggestedPatch && (

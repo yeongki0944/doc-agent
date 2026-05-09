@@ -1,20 +1,42 @@
 import { useState } from 'react'
-import { color, shadow, radius } from '../styles/tokens'
+import { color, shadow } from '../styles/tokens'
 import { ChatPanel } from './ChatPanel'
 import { DocumentPanel } from './DocumentPanel'
 import { Sidebar } from './Sidebar'
 import { useSessionStore } from '../store/sessionStore'
+import { ReviewRulesAdmin } from './admin/ReviewRulesAdmin'
+
+type ViewMode = 'documents' | 'rules_admin'
 
 export function SplitLayout() {
   const currentDocId = useSessionStore(s => s.currentDocId)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
+  const [view, setView] = useState<ViewMode>('documents')
+
+  if (view === 'rules_admin') {
+    return (
+      <div style={{ display: 'flex', height: '100vh', overflowX: 'hidden' }}>
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(prev => !prev)}
+          activeView={view}
+          onNavigate={setView}
+        />
+        <div style={{ flex: 1, minWidth: 0, display: 'flex' }}>
+          <ReviewRulesAdmin onClose={() => setView('documents')} />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflowX: 'hidden' }}>
       <Sidebar
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed(prev => !prev)}
+        activeView={view}
+        onNavigate={setView}
       />
       {currentDocId ? (
         <div style={{ flex: 1, display: 'flex', minWidth: 0, width: '100%' }}>
@@ -23,10 +45,22 @@ export function SplitLayout() {
           </div>
         </div>
       ) : (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: color.textMuted }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>📄</div>
-            <div style={{ fontSize: 16 }}>문서를 선택하거나 새 문서를 만들어주세요</div>
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: color.textMuted, background: 'var(--mzc-bg)' }}>
+          <div style={{ textAlign: 'center', maxWidth: 420 }}>
+            <div style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 72, height: 72, borderRadius: 20,
+              background: 'var(--mzc-primary-soft)', color: 'var(--mzc-primary)',
+              marginBottom: 20, fontSize: 36,
+            }}>
+              📄
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--mzc-text)', letterSpacing: '-0.01em', marginBottom: 8 }}>
+              MZC PoC Funding Platform
+            </div>
+            <div style={{ fontSize: 14, lineHeight: 1.55 }}>
+              문서를 선택하거나 새 문서를 만들어 제안서 작업을 시작하세요.
+            </div>
           </div>
         </div>
       )}
@@ -44,9 +78,9 @@ export function SplitLayout() {
             height: 52,
             borderRadius: '50%',
             border: 'none',
-            background: color.mzRed,
+            background: color.primary,
             color: color.bgSurface,
-            fontSize: 24,
+            fontSize: 22,
             cursor: 'pointer',
             boxShadow: shadow.elevated,
             display: 'flex',
@@ -54,7 +88,7 @@ export function SplitLayout() {
             justifyContent: 'center',
             lineHeight: 1,
           }}
-          title={chatOpen ? '채팅 닫기' : '채팅 열기'}
+          title={chatOpen ? 'Ask Agent 닫기' : 'Ask Agent'}
         >
           {chatOpen ? '✕' : '💬'}
         </button>
@@ -63,20 +97,19 @@ export function SplitLayout() {
       {/* Floating chat popup */}
       {currentDocId && chatOpen && (
         <div
+          className="mzc-panel"
           style={{
             position: 'fixed',
-            bottom: 80,
+            bottom: 90,
             right: 24,
-            width: 420,
-            maxHeight: '70vh',
+            width: 440,
+            maxHeight: '72vh',
             zIndex: 1001,
-            borderRadius: 12,
-            boxShadow: '0 8px 32px rgba(10,37,64,0.18)',
-            background: color.bgSurface,
+            borderRadius: 16,
+            boxShadow: '0 16px 40px rgba(16, 24, 40, 0.16)',
             overflow: 'hidden',
             display: 'flex',
             flexDirection: 'column',
-            border: `1px solid ${color.border}`,
           }}
         >
           {/* Popup header with close button */}
@@ -84,12 +117,15 @@ export function SplitLayout() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '10px 14px',
+            padding: '12px 16px',
             borderBottom: `1px solid ${color.border}`,
-            background: color.bgPrimary,
+            background: color.bgSurface,
             flexShrink: 0,
           }}>
-            <span style={{ fontWeight: 600, fontSize: 14 }}>💬 Chat</span>
+            <span style={{ fontWeight: 700, fontSize: 14, color: color.textPrimary, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className="mzc-badge mzc-badge-ai" style={{ fontSize: 10 }}>AI</span>
+              Ask Agent
+            </span>
             <button
               onClick={() => setChatOpen(false)}
               style={{

@@ -8,9 +8,11 @@ import { AccountModal } from './AccountModal'
 export interface SidebarProps {
   collapsed?: boolean
   onToggle?: () => void
+  activeView?: 'documents' | 'rules_admin'
+  onNavigate?: (view: 'documents' | 'rules_admin') => void
 }
 
-export function Sidebar({ collapsed = false, onToggle }: SidebarProps) {
+export function Sidebar({ collapsed = false, onToggle, activeView = 'documents', onNavigate }: SidebarProps) {
   const { user, logout } = useAuth()
   const documents = useSessionStore(s => s.documents)
   const currentDocId = useSessionStore(s => s.currentDocId)
@@ -49,7 +51,7 @@ export function Sidebar({ collapsed = false, onToggle }: SidebarProps) {
         background: color.bgPrimary, borderRight: `1px solid ${color.border}`,
         alignItems: 'center', paddingTop: 12,
       }}>
-        <span style={{ fontSize: 18, marginBottom: 8 }} title="Doc Agent">📄</span>
+        <span style={{ fontSize: 18, marginBottom: 8 }} title="MZC PoC Funding Platform">📄</span>
         <button
           onClick={onToggle}
           style={{
@@ -73,7 +75,7 @@ export function Sidebar({ collapsed = false, onToggle }: SidebarProps) {
       {/* Header */}
       <div style={{ padding: '16px 12px 8px', borderBottom: `1px solid ${color.border}` }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <span style={{ fontWeight: 700, fontSize: 15 }}>Doc Agent</span>
+          <span style={{ fontWeight: 800, fontSize: 14, letterSpacing: '-0.01em', color: color.textPrimary }}>MZC PoC Funding Platform</span>
           {onToggle && (
             <button
               onClick={onToggle}
@@ -90,10 +92,8 @@ export function Sidebar({ collapsed = false, onToggle }: SidebarProps) {
         </div>
         <button
           onClick={handleCreate}
-          style={{
-            width: '100%', padding: '8px 12px', background: color.mzRed, color: color.bgSurface,
-            border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: 'pointer',
-          }}
+          className="mzc-btn mzc-btn-primary"
+          style={{ width: '100%', fontSize: 13 }}
         >
           + 새 문서
         </button>
@@ -153,6 +153,36 @@ export function Sidebar({ collapsed = false, onToggle }: SidebarProps) {
         padding: '12px', borderTop: `1px solid ${color.border}`,
         display: 'flex', flexDirection: 'column', gap: 8,
       }}>
+        {onNavigate && (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={() => onNavigate('documents')}
+              style={{
+                flex: 1, background: activeView === 'documents' ? color.bgSubtle : 'transparent',
+                border: `1px solid ${activeView === 'documents' ? color.borderStrong : color.border}`,
+                borderRadius: 4, padding: '5px 8px', fontSize: 12,
+                color: activeView === 'documents' ? color.textPrimary : color.textSecondary,
+                cursor: 'pointer', fontWeight: activeView === 'documents' ? 600 : 400,
+              }}
+              title="문서 목록"
+            >
+              📄 Documents
+            </button>
+            <button
+              onClick={() => onNavigate('rules_admin')}
+              style={{
+                flex: 1, background: activeView === 'rules_admin' ? color.bgSubtle : 'transparent',
+                border: `1px solid ${activeView === 'rules_admin' ? color.borderStrong : color.border}`,
+                borderRadius: 4, padding: '5px 8px', fontSize: 12,
+                color: activeView === 'rules_admin' ? color.textPrimary : color.textSecondary,
+                cursor: 'pointer', fontWeight: activeView === 'rules_admin' ? 600 : 400,
+              }}
+              title="리뷰 규칙 관리"
+            >
+              ⚙ Rules
+            </button>
+          </div>
+        )}
         <div style={{ fontSize: 12, color: color.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={user?.email || '사용자'}>
           {user?.email || '사용자'}
         </div>

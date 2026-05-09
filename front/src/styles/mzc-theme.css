@@ -591,3 +591,22 @@ a { color: var(--mzc-primary); }
   border-radius: 6px;
   line-height: 1.5;
 }
+
+/* ------------------------------------------------------------
+ * Review Rules Admin table
+ * ------------------------------------------------------------ */
+
+.review-admin-table {
+  width: 100%;
+}
+.review-admin-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.review-admin-table tbody tr.is-selected {
+  background: var(--mzc-primary-soft);
+}
+.review-admin-table tbody tr.is-selected td {
+  border-bottom-color: var(--mzc-border-strong);
+}
