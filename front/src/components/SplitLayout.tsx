@@ -4,39 +4,19 @@ import { ChatPanel } from './ChatPanel'
 import { DocumentPanel } from './DocumentPanel'
 import { Sidebar } from './Sidebar'
 import { useSessionStore } from '../store/sessionStore'
-import { ReviewRulesAdmin } from './admin/ReviewRulesAdmin'
-
-type ViewMode = 'documents' | 'rules_admin'
+import { navigate } from '../utils/hashRoute'
 
 export function SplitLayout() {
   const currentDocId = useSessionStore(s => s.currentDocId)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
-  const [view, setView] = useState<ViewMode>('documents')
-
-  if (view === 'rules_admin') {
-    return (
-      <div style={{ display: 'flex', height: '100vh', overflowX: 'hidden' }}>
-        <Sidebar
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed(prev => !prev)}
-          activeView={view}
-          onNavigate={setView}
-        />
-        <div style={{ flex: 1, minWidth: 0, display: 'flex' }}>
-          <ReviewRulesAdmin onClose={() => setView('documents')} />
-        </div>
-      </div>
-    )
-  }
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflowX: 'hidden' }}>
       <Sidebar
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed(prev => !prev)}
-        activeView={view}
-        onNavigate={setView}
+        onOpenRulesAdmin={() => navigate('#/admin/rules')}
       />
       {currentDocId ? (
         <div style={{ flex: 1, display: 'flex', minWidth: 0, width: '100%' }}>
@@ -112,7 +92,6 @@ export function SplitLayout() {
             flexDirection: 'column',
           }}
         >
-          {/* Popup header with close button */}
           <div style={{
             display: 'flex',
             alignItems: 'center',

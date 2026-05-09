@@ -610,3 +610,76 @@ a { color: var(--mzc-primary); }
 .review-admin-table tbody tr.is-selected td {
   border-bottom-color: var(--mzc-border-strong);
 }
+
+/* ------------------------------------------------------------
+ * Review drawer — resize handle
+ * ------------------------------------------------------------ */
+
+.review-drawer {
+  position: relative;
+}
+.review-drawer-drag-handle {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.review-drawer-drag-handle:hover,
+.review-drawer-drag-handle:active {
+  background: var(--mzc-primary-soft);
+}
+.review-drawer-drag-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 1px;
+  width: 3px;
+  height: 36px;
+  border-radius: 2px;
+  transform: translateY(-50%);
+  background: var(--mzc-border-strong);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.review-drawer-drag-handle:hover::after {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------
+ * Wide-mode Review Panel layout — applies when the drawer is resized
+ * to >= 640px. Summary & category become side-by-side, rule rows get
+ * more breathing room.
+ * ------------------------------------------------------------ */
+
+.review-panel.is-wide .review-summary-grid {
+  grid-template-columns: repeat(5, 1fr);
+}
+.review-panel.is-wide .review-top-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(280px, 1.3fr);
+  gap: 12px;
+  align-items: start;
+}
+.review-panel.is-wide .review-coverage-grid {
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.review-panel.is-wide .review-detail-grid {
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.review-panel.is-wide .review-detail-grid .full-span {
+  grid-column: 1 / span 2;
+}
+.review-panel.is-wide .review-rule-table {
+  font-size: 13px;
+}
+.review-panel.is-wide .review-rule-table th,
+.review-panel.is-wide .review-rule-table td {
+  padding: 8px 10px;
+}

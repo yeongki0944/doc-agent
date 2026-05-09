@@ -78,13 +78,18 @@ interface BackendRuleEvaluation {
   rule_id: string
   status?: string
   severity?: string
+  // Accept multiple naming conventions from the backend.
   judgment?: string
   judgment_kr?: string
   judgment_en?: string
+  llm_judgment?: string
+  llm_judgment_kr?: string
+  llm_judgment_en?: string
   judgment_detail?: string
   judgment_detail_kr?: string
   judgment_detail_en?: string
   evidence?: Array<{ section?: string; snippet?: string; field_path?: string } | string>
+  evidence_found?: Array<{ section?: string; snippet?: string; field_path?: string } | string>
   missing_evidence?: string[]
   missing_evidence_kr?: string[]
   missing_evidence_en?: string[]
@@ -92,10 +97,12 @@ interface BackendRuleEvaluation {
   recommendation_kr?: string
   recommendation_en?: string
   suggested_patch?: SuggestedPatchRef
+  referenced_sections?: string[]
 }
 
 interface BackendCategory {
   key?: string
+  category?: string
   category_kr?: string
   category_en?: string
   label_kr?: string
@@ -111,6 +118,7 @@ interface ReviewResultWithEvaluations extends ReviewResult {
   rule_evaluations?: BackendRuleEvaluation[]
   categories?: BackendCategory[]
   rules?: RuleDefinition[]
+  rule_catalog?: RuleDefinition[]
 }
 
 const SEVERITY_MAP: Record<string, RuleSeverity> = {
@@ -186,11 +194,15 @@ export function buildReviewMatrix(
   result: ReviewResult | null | undefined,
   catalog?: RuleDefinition[],
 ): ReviewMatrix {
-  const rules = (catalog && catalog.length > 0 ? catalog : REVIEW_RULES_SEED.rules).filter(
-    r => r.enabled !== false,
-  )
-  const byId = buildRulesById(rules)
   const res = (result || {}) as ReviewResultWithEvaluations
+  // Prefer the backend-attached catalog — it reflects the live enabled/disabled
+  // and custom-rule state. Fall back to caller-provided catalog, then seed.
+  const sourceCatalog =
+    (Array.isArray(res.rule_catalog) && res.rule_catalog.length > 0 ? res.rule_catalog
+      : (Array.isArray(res.rules) && res.rules.length > 0 ? res.rules
+        : (catalog && catalog.length > 0 ? catalog : REVIEW_RULES_SEED.rules)))
+  const rules = sourceCatalog.filter(r => r.enabled !== false)
+  const byId = buildRulesById(rules)
   const suggested = res.suggested_patches || []
   const backendEvals = Array.isArray(res.rule_evaluations) ? res.rule_evaluations : null
 
@@ -206,25 +218,27 @@ export function buildReviewMatrix(
       seen.add(rule.rule_id)
       const status = normalizeStatus(be.status) || 'NOT_CHECKED'
       const severity = normalizeSeverity(be.severity, rule.severity)
+      const judgmentKr = be.judgment_kr || be.llm_judgment_kr || be.judgment || be.llm_judgment || ''
+      const judgmentEn = be.judgment_en || be.llm_judgment_en || be.judgment || be.llm_judgment || ''
+      const evidenceRaw = be.evidence_found ?? be.evidence
       evaluations.push({
         ruleId: rule.rule_id,
         rule,
         status,
         severity,
-        judgment: {
-          kr: be.judgment_kr || be.judgment || '',
-          en: be.judgment_en || be.judgment || '',
-        },
+        judgment: { kr: judgmentKr, en: judgmentEn },
         judgmentDetail: {
-          kr: be.judgment_detail_kr || be.judgment_detail || be.judgment_kr || be.judgment || '',
-          en: be.judgment_detail_en || be.judgment_detail || be.judgment_en || be.judgment || '',
+          kr: be.judgment_detail_kr || be.judgment_detail || judgmentKr,
+          en: be.judgment_detail_en || be.judgment_detail || judgmentEn,
         },
-        evidenceFound: normalizeEvidence(be.evidence),
+        evidenceFound: normalizeEvidence(evidenceRaw),
         missingEvidence: {
           kr: be.missing_evidence_kr || be.missing_evidence || [],
           en: be.missing_evidence_en || be.missing_evidence || [],
         },
-        referencedSections: rule.related_sections,
+        referencedSections: Array.isArray(be.referenced_sections) && be.referenced_sections.length > 0
+          ? be.referenced_sections
+          : rule.related_sections,
         recommendation: {
           kr: be.recommendation_kr || be.recommendation || rule.recommendation_template_kr,
           en: be.recommendation_en || be.recommendation || rule.recommendation_template_en,
@@ -322,9 +336,9 @@ export function buildReviewMatrix(
   let categories: CategoryCoverage[]
   if (Array.isArray(res.categories) && res.categories.length > 0) {
     categories = res.categories.map(c => ({
-      key: c.key || c.category_en || c.label_en || '',
-      label_kr: c.label_kr || c.category_kr || c.key || '',
-      label_en: c.label_en || c.category_en || c.key || '',
+      key: c.key || c.category_en || c.category || c.label_en || '',
+      label_kr: c.label_kr || c.category_kr || c.category || c.key || '',
+      label_en: c.label_en || c.category_en || c.category || c.key || '',
       total: c.total ?? 0,
       pass: c.pass ?? 0,
       warning: c.warning ?? 0,

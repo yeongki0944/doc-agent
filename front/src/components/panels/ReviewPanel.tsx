@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { color, radius, space } from '../../styles/tokens'
 import {
   requestReview,
@@ -48,6 +48,22 @@ export function ReviewPanel({ docId }: { docId: string }) {
 
   const completionScore = useDocumentStore(s => s.completion_score ?? 0)
   const blockingIssues = useDocumentStore(s => s.blocking_issues ?? [])
+
+  // Track panel width so we can switch to a side-by-side layout in wide drawers.
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [panelWidth, setPanelWidth] = useState<number>(0)
+  useEffect(() => {
+    if (!containerRef.current) return
+    const el = containerRef.current
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        setPanelWidth(entry.contentRect.width)
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const isWide = panelWidth >= 640
 
   // Load the rule catalog once so the matrix displays every enabled rule,
   // including locally added custom rules, even before a Run Review call.
@@ -134,10 +150,23 @@ export function ReviewPanel({ docId }: { docId: string }) {
   }
 
   return (
-    <div style={{ padding: space.md, display: 'flex', flexDirection: 'column', gap: space.md }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Submission Readiness</h3>
+    <div
+      ref={containerRef}
+      className={`review-panel${isWide ? ' is-wide' : ''}`}
+      style={{ padding: space.md, display: 'flex', flexDirection: 'column', gap: space.md }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+            Submission Readiness
+            <span
+              className="mzc-badge"
+              title="이 검토는 규칙 기반(deterministic) 엔진으로 수행되며 LLM 추론을 사용하지 않습니다."
+              style={{ fontSize: 9, padding: '1px 6px', fontWeight: 600 }}
+            >
+              Rule-based
+            </span>
+          </h3>
           <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2 }}>
             APN / GenAI IC / SOW 기준 전체 규칙 매트릭스로 검토합니다.
           </div>
@@ -146,7 +175,7 @@ export function ReviewPanel({ docId }: { docId: string }) {
           onClick={handleRun}
           disabled={loading}
           className="mzc-btn mzc-btn-primary"
-          style={{ fontSize: 12 }}
+          style={{ fontSize: 12, flexShrink: 0 }}
         >
           {loading ? '리뷰 중...' : 'Run Review'}
         </button>
@@ -175,7 +204,14 @@ export function ReviewPanel({ docId }: { docId: string }) {
 
       {result && (
         <>
-          <TopSummary matrix={matrix} result={result} />
+          <div className="review-top-row">
+            <TopSummary matrix={matrix} result={result} />
+            <CategoryCoverageView
+              matrix={matrix}
+              lang={lang}
+              onPickCategory={setCategoryFilter}
+            />
+          </div>
 
           <EnvelopeNotices
             warnings={result.warnings}
@@ -188,12 +224,6 @@ export function ReviewPanel({ docId }: { docId: string }) {
               Full rule evaluation is not available yet. Showing issue-based review result adapted to the rule catalog.
             </div>
           )}
-
-          <CategoryCoverageView
-            matrix={matrix}
-            lang={lang}
-            onPickCategory={setCategoryFilter}
-          />
 
           <FilterBar
             matrix={matrix}
@@ -216,6 +246,7 @@ export function ReviewPanel({ docId }: { docId: string }) {
             patchStates={patchStates}
             onCreateCr={handleCreateCr}
             fallbackMode={fallback}
+            isWide={isWide}
           />
         </>
       )}
@@ -383,7 +414,7 @@ function FilterBar({
 
 function RuleTable({
   evaluations, lang,
-  openRuleId, onToggle, patchStates, onCreateCr, fallbackMode,
+  openRuleId, onToggle, patchStates, onCreateCr, fallbackMode, isWide,
 }: {
   evaluations: RuleEvaluation[]
   lang: 'ko' | 'en'
@@ -392,6 +423,7 @@ function RuleTable({
   patchStates: Record<string, { state: PatchState; message?: string; crId?: string }>
   onCreateCr: (e: RuleEvaluation) => void
   fallbackMode: boolean
+  isWide: boolean
 }) {
   if (evaluations.length === 0) {
     return (
@@ -409,10 +441,10 @@ function RuleTable({
       <table className="review-rule-table">
         <thead>
           <tr>
-            <th style={{ width: 78 }}>Status</th>
-            <th style={{ width: 70 }}>Severity</th>
+            <th style={{ width: 86 }}>Status</th>
+            <th style={{ width: 76 }}>Severity</th>
             <th>Rule</th>
-            <th style={{ width: 130 }}>Category</th>
+            <th style={{ width: isWide ? 200 : 130 }}>Category</th>
           </tr>
         </thead>
         <tbody>
@@ -532,7 +564,7 @@ function RuleDetail({
 
   return (
     <div className="review-detail-grid">
-      <div>
+      <div className="full-span">
         <div className="block-label">Rule</div>
         <div className="block-body">
           <div style={{ fontSize: 13, fontWeight: 600, color: color.textPrimary }}>{title}</div>
@@ -543,12 +575,12 @@ function RuleDetail({
         </div>
       </div>
 
-      <div>
+      <div className="full-span">
         <div className="block-label">Definition</div>
         <div className="block-body">{description}</div>
       </div>
 
-      <div>
+      <div className="full-span">
         <div className="block-label">Pass / Warning / Fail Criteria</div>
         <div className="criteria-list">
           <span className="tag pass">PASS</span><span>{(passCriteria || []).join(' / ')}</span>
@@ -557,8 +589,8 @@ function RuleDetail({
         </div>
       </div>
 
-      <div>
-        <div className="block-label">LLM Judgment</div>
+      <div className="full-span">
+        <div className="block-label">Verdict · 판정 (rule-based)</div>
         <div className="block-body" style={{ whiteSpace: 'pre-wrap' }}>
           {judgmentDetail || (lang === 'ko' ? e.judgment.kr : e.judgment.en) || '—'}
         </div>
@@ -630,7 +662,7 @@ function RuleDetail({
         </div>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <div className="full-span" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
         <button
           onClick={onCreateCr}
           disabled={actionDisabled}

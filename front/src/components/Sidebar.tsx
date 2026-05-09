@@ -8,11 +8,10 @@ import { AccountModal } from './AccountModal'
 export interface SidebarProps {
   collapsed?: boolean
   onToggle?: () => void
-  activeView?: 'documents' | 'rules_admin'
-  onNavigate?: (view: 'documents' | 'rules_admin') => void
+  onOpenRulesAdmin?: () => void
 }
 
-export function Sidebar({ collapsed = false, onToggle, activeView = 'documents', onNavigate }: SidebarProps) {
+export function Sidebar({ collapsed = false, onToggle, onOpenRulesAdmin }: SidebarProps) {
   const { user, logout } = useAuth()
   const documents = useSessionStore(s => s.documents)
   const currentDocId = useSessionStore(s => s.currentDocId)
@@ -153,35 +152,20 @@ export function Sidebar({ collapsed = false, onToggle, activeView = 'documents',
         padding: '12px', borderTop: `1px solid ${color.border}`,
         display: 'flex', flexDirection: 'column', gap: 8,
       }}>
-        {onNavigate && (
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button
-              onClick={() => onNavigate('documents')}
-              style={{
-                flex: 1, background: activeView === 'documents' ? color.bgSubtle : 'transparent',
-                border: `1px solid ${activeView === 'documents' ? color.borderStrong : color.border}`,
-                borderRadius: 4, padding: '5px 8px', fontSize: 12,
-                color: activeView === 'documents' ? color.textPrimary : color.textSecondary,
-                cursor: 'pointer', fontWeight: activeView === 'documents' ? 600 : 400,
-              }}
-              title="문서 목록"
-            >
-              📄 Documents
-            </button>
-            <button
-              onClick={() => onNavigate('rules_admin')}
-              style={{
-                flex: 1, background: activeView === 'rules_admin' ? color.bgSubtle : 'transparent',
-                border: `1px solid ${activeView === 'rules_admin' ? color.borderStrong : color.border}`,
-                borderRadius: 4, padding: '5px 8px', fontSize: 12,
-                color: activeView === 'rules_admin' ? color.textPrimary : color.textSecondary,
-                cursor: 'pointer', fontWeight: activeView === 'rules_admin' ? 600 : 400,
-              }}
-              title="리뷰 규칙 관리"
-            >
-              ⚙ Rules
-            </button>
-          </div>
+        {onOpenRulesAdmin && (
+          <button
+            onClick={onOpenRulesAdmin}
+            style={{
+              background: 'transparent',
+              border: `1px solid ${color.border}`,
+              borderRadius: 4, padding: '6px 8px', fontSize: 12,
+              color: color.textSecondary, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}
+            title="리뷰 규칙 관리 페이지 열기"
+          >
+            ⚙ Review Rules
+          </button>
         )}
         <div style={{ fontSize: 12, color: color.textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={user?.email || '사용자'}>
           {user?.email || '사용자'}
