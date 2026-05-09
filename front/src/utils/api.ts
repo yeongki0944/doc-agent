@@ -32,6 +32,12 @@ export async function requestReview(docId: string): Promise<ReviewResult> {
   return res.json()
 }
 
+export async function getReviewResult(docId: string, reviewJobId: string): Promise<ReviewResult> {
+  const res = await apiFetch(`/documents/${docId}/review_results/${encodeURIComponent(reviewJobId)}`)
+  if (!res.ok) throw new Error(`Review result fetch failed: ${res.status}`)
+  return res.json()
+}
+
 export async function requestExport(docId: string): Promise<any> {
   const res = await apiFetch(`/documents/${docId}/export`, { method: 'POST' })
   return res.json()
@@ -63,6 +69,20 @@ export interface ReviewResult {
   warnings?: string[]
   missing_inputs?: string[]
   error_reason?: string
+  review_job_id?: string
+  review_job_status?: 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'unknown' | string
+  agent_review_status?: 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'not_required' | 'unknown' | string
+  agent_review_message?: string
+  summary?: {
+    pass?: number
+    warning?: number
+    fail?: number
+    not_checked?: number
+    total?: number
+  }
+  categories?: any[]
+  rule_evaluations?: any[]
+  rule_catalog?: any[]
 }
 
 export interface ResourcePlanInput {

@@ -14,6 +14,12 @@ import boto3
 from boto3.dynamodb.conditions import Attr
 TABLE_NAME = os.environ.get("DOCUMENTS_TABLE", "doc-agent-documents")
 HISTORY_TABLE_NAME = os.environ.get("CONVERSATION_HISTORY_TABLE", "doc-agent-conversation-history")
+SHARES_TABLE_NAME = os.environ.get("DOCUMENT_SHARES_TABLE", "doc-agent-document-shares")
+PENDING_SHARES_TABLE_NAME = os.environ.get("PENDING_SHARES_TABLE", "doc-agent-pending-shares")
+COGNITO_USER_POOL_ID = os.environ.get("COGNITO_USER_POOL_ID", "")
+ALLOWED_SHARE_DOMAINS = {"mz.co.kr", "megazone.com"}
+SES_FROM_EMAIL = os.environ.get("SES_FROM_EMAIL", "")
+SHARE_APP_URL = os.environ.get("SHARE_APP_URL", "")
 APPSYNC_HTTP_URL = os.environ.get("APPSYNC_HTTP_URL", "")
 REGION = "ap-northeast-2"
 DEFAULT_EXPORT_DOCX_FUNCTION_NAME = "doc-agent-export-docx"
@@ -23,6 +29,24 @@ AGENTCORE_RUNTIME_ARN = os.environ.get("AGENTCORE_RUNTIME_ARN", "")
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
 table = dynamodb.Table(TABLE_NAME)
 history_table = dynamodb.Table(HISTORY_TABLE_NAME)
+shares_table = dynamodb.Table(SHARES_TABLE_NAME)
+pending_shares_table = dynamodb.Table(PENDING_SHARES_TABLE_NAME)
+_cognito_idp_client = None
+_ses_client = None
+
+
+def _get_cognito_idp():
+    global _cognito_idp_client
+    if _cognito_idp_client is None:
+        _cognito_idp_client = boto3.client("cognito-idp", region_name=REGION)
+    return _cognito_idp_client
+
+
+def _get_ses_client():
+    global _ses_client
+    if _ses_client is None:
+        _ses_client = boto3.client("ses", region_name=REGION)
+    return _ses_client
 
 
 class VersionConflictError(Exception):
@@ -162,8 +186,8 @@ def _response(status: int, body: Any) -> dict:
         "headers": {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET,POST,DELETE,PUT,OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type,X-User-Id,Authorization",
+            "Access-Control-Allow-Methods": "GET,POST,DELETE,PUT,PATCH,OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type,X-User-Id,X-User-Email,Authorization",
         },
         "body": _json(body),
     }
@@ -836,16 +860,49 @@ def _require_user(event: dict):
 
 
 def _check_ownership(item: dict, user_id: str) -> Optional[dict]:
-    """소유권 검증. 위반 시 403 응답, OK면 None."""
+    """소유권 또는 공유 권한 검증. 위반 시 403 응답, OK면 None.
+
+    - owner(user_id 필드와 일치)는 항상 통과
+    - document_shares 테이블에 해당 user_id 레코드가 있으면 통과
+    """
     owner = item.get("user_id")
-    if owner and owner != user_id:
-        body = {"error": "forbidden"}
-        body.update(_standard_envelope(
-            status="failed",
-            message="Forbidden.",
-            error_reason="ownership_denied",
-        ))
-        return _response(403, body)
+    if not owner or owner == user_id:
+        return None
+
+    # 공유받은 사람인지 확인
+    try:
+        share_resp = shares_table.get_item(
+            Key={
+                "user_id": user_id,
+                "document_id": item.get("document_id", ""),
+            }
+        )
+        if share_resp.get("Item"):
+            return None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[_check_ownership] shares lookup failed: {exc}")
+
+    body = {"error": "forbidden"}
+    body.update(_standard_envelope(
+        status="failed",
+        message="Forbidden.",
+        error_reason="ownership_denied",
+    ))
+    return _response(403, body)
+
+
+def _get_share_role(doc_id: str, user_id: str) -> Optional[str]:
+    """공유 권한 조회. 없으면 None."""
+    try:
+        resp = shares_table.get_item(
+            Key={"user_id": user_id, "document_id": doc_id}
+        )
+        item = resp.get("Item")
+        if item:
+            role = str(item.get("role", "read")).strip().lower()
+            return role if role in PERMISSION_ORDER else "read"
+    except Exception as exc:  # noqa: BLE001
+        print(f"[_get_share_role] lookup failed: {exc}")
     return None
 
 
@@ -893,7 +950,8 @@ def _document_permission(item: dict, user_id: str) -> str:
 
     Owner is treated as master. Non-owner permissions are read from either
     ``document_permissions`` or ``permissions`` so Cognito/group wiring can be
-    added later without changing the API contract.
+    added later without changing the API contract. Shared users (from the
+    document_shares table) are also resolved here.
     """
     if item.get("user_id") == user_id or item.get("owner_id") == user_id:
         return "master"
@@ -905,6 +963,11 @@ def _document_permission(item: dict, user_id: str) -> str:
         role = _permission_value(permissions.get(user_id))
         if role:
             return role
+
+    # 공유 테이블 조회
+    share_role = _get_share_role(item.get("document_id", ""), user_id)
+    if share_role:
+        return share_role
 
     if user_id in (item.get("masters") or []):
         return "master"
@@ -2477,6 +2540,228 @@ def _review_readiness_score(evaluations: list[dict]) -> int:
     return max(0, min(100, 100 - penalty))
 
 
+def _baseline_agentcore_pending(evaluation: dict, rule: dict) -> dict:
+    evaluation_type = str(rule.get("evaluation_type", "llm"))
+    evaluation["evaluation_type"] = evaluation_type
+    if evaluation_type == "static":
+        evaluation["evaluation_source"] = "static"
+        evaluation["agentcore_status"] = "not_required"
+        return evaluation
+    if evaluation_type == "hybrid":
+        evaluation["evaluation_source"] = "hybrid_static_precheck"
+        evaluation["agentcore_status"] = "queued"
+        evaluation["llm_judgment_en"] = (
+            "Static precheck completed. AgentCore Reviewer will judge evidence quality before final submission review."
+        )
+        evaluation["llm_judgment_kr"] = (
+            "정적 사전 점검이 완료되었습니다. 최종 제출 전 AgentCore Reviewer가 근거의 충분성을 판단합니다."
+        )
+        evaluation["llm_judgment"] = evaluation["llm_judgment_en"]
+        return evaluation
+    evaluation["evaluation_source"] = "agentcore_pending"
+    evaluation["agentcore_status"] = "queued"
+    evaluation["status"] = "NOT_CHECKED"
+    evaluation["llm_judgment_en"] = "AgentCore Reviewer judgment is queued for this LLM-only rule."
+    evaluation["llm_judgment_kr"] = "이 LLM 전용 규칙은 AgentCore Reviewer 판단 대기 중입니다."
+    evaluation["llm_judgment"] = evaluation["llm_judgment_en"]
+    evaluation["recommendation_en"] = "Wait for AgentCore Reviewer judgment before treating this rule as final."
+    evaluation["recommendation_kr"] = "이 규칙은 AgentCore Reviewer 판단 완료 후 최종 결과로 보십시오."
+    evaluation["recommendation"] = evaluation["recommendation_en"]
+    return evaluation
+
+
+def _merge_agentcore_review_result(baseline: dict, agent_result: dict) -> dict:
+    merged = deepcopy(baseline or {})
+    incoming = agent_result.get("rule_evaluations") if isinstance(agent_result, dict) else None
+    if not isinstance(incoming, list):
+        return merged
+    by_id = {
+        str(e.get("rule_id")): deepcopy(e)
+        for e in merged.get("rule_evaluations", [])
+        if isinstance(e, dict) and e.get("rule_id")
+    }
+    for evaluation in incoming:
+        if not isinstance(evaluation, dict) or not evaluation.get("rule_id"):
+            continue
+        rule_id = str(evaluation["rule_id"])
+        previous = by_id.get(rule_id, {})
+        previous.update(evaluation)
+        previous["evaluation_source"] = "agentcore"
+        previous["agentcore_status"] = "completed"
+        by_id[rule_id] = previous
+    merged["rule_evaluations"] = list(by_id.values())
+    merged["summary"] = _review_summary(merged["rule_evaluations"])
+    merged["categories"] = _review_categories(merged["rule_evaluations"])
+    merged["issues"] = _issues_from_rule_evaluations(merged["rule_evaluations"])
+    merged["readiness_score"] = _review_readiness_score(merged["rule_evaluations"])
+    merged["agent_review_status"] = "completed"
+    return merged
+
+
+def _review_job_key(review_job_id: str) -> str:
+    return f"review_job#{review_job_id}"
+
+
+def _save_review_job(job: dict) -> None:
+    item = deepcopy(job)
+    item["document_id"] = _review_job_key(str(job["review_job_id"]))
+    item["item_type"] = "review_job"
+    table.put_item(Item=json.loads(_json(item), parse_float=Decimal))
+
+
+def _load_review_job(review_job_id: str) -> dict | None:
+    resp = table.get_item(Key={"document_id": _review_job_key(review_job_id)})
+    item = resp.get("Item") if isinstance(resp, dict) else None
+    return item if isinstance(item, dict) else None
+
+
+def _create_review_job(doc_id: str, user_id: str, baseline_result: dict, doc_dict: dict) -> dict:
+    now = _now_iso()
+    review_job_id = f"review-job-{uuid.uuid4().hex[:12]}"
+    enabled_rules = baseline_result.get("rule_catalog") or []
+    baseline_by_rule = {
+        str(e.get("rule_id")): e
+        for e in baseline_result.get("rule_evaluations", [])
+        if isinstance(e, dict) and e.get("rule_id")
+    }
+    agent_rules = [
+        rule for rule in enabled_rules
+        if str(rule.get("evaluation_type", "llm")) in {"llm", "hybrid"}
+        and (
+            baseline_by_rule.get(str(rule.get("rule_id")), {}).get("status") != "NOT_CHECKED"
+            or bool(baseline_by_rule.get(str(rule.get("rule_id")), {}).get("evidence_found"))
+        )
+    ]
+    agent_rule_ids = {str(rule.get("rule_id")) for rule in agent_rules}
+    for evaluation in baseline_result.get("rule_evaluations", []):
+        if not isinstance(evaluation, dict):
+            continue
+        if (
+            evaluation.get("agentcore_status") == "queued"
+            and str(evaluation.get("rule_id")) not in agent_rule_ids
+        ):
+            evaluation["agentcore_status"] = "not_required"
+            if evaluation.get("status") == "NOT_CHECKED":
+                evaluation["evaluation_source"] = "not_checked_empty_section"
+    baseline_result["agent_review_status"] = "queued" if agent_rules else "not_required"
+    job = {
+        "review_job_id": review_job_id,
+        "source_document_id": doc_id,
+        "user_id": user_id,
+        "status": "queued" if agent_rules else "completed",
+        "agent_review_status": "queued" if agent_rules else "not_required",
+        "baseline_result": baseline_result,
+        "agent_result": None,
+        "rule_evaluations": baseline_result.get("rule_evaluations", []),
+        "created_at": now,
+        "updated_at": now,
+        "completed_at": None,
+        "error_reason": "",
+        "agent_rule_count": len(agent_rules),
+        "document_snapshot": {
+            "meta": doc_dict.get("meta", {}),
+            "sections": doc_dict.get("sections", {}),
+        },
+        "enabled_rules": agent_rules,
+    }
+    _save_review_job(job)
+    return job
+
+
+def _enqueue_agentcore_review(job: dict) -> bool:
+    if not job.get("enabled_rules"):
+        return False
+    function_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "")
+    if not function_name:
+        return False
+    payload = {
+        "_async_agentcore_review": True,
+        "review_job_id": job["review_job_id"],
+    }
+    boto3.client("lambda", region_name=REGION).invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
+    return True
+
+
+def _invoke_agentcore_runtime(payload: dict) -> dict:
+    runtime_arn = _resolve_agentcore_runtime_arn()
+    resp = _get_agentcore_runtime_client().invoke_agent_runtime(
+        agentRuntimeArn=runtime_arn,
+        contentType="application/json",
+        accept="application/json",
+        payload=_json(payload).encode("utf-8"),
+    )
+    raw = resp["response"].read()
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8")
+    if not raw:
+        return {"result": "", "version": 0, "status": "error"}
+    return json.loads(raw)
+
+
+def _handle_async_agentcore_review(event: dict) -> dict:
+    review_job_id = str(event.get("review_job_id", ""))
+    job = _load_review_job(review_job_id)
+    if not job:
+        return {"status": "error", "error": "review job not found"}
+    now = _now_iso()
+    job["status"] = "running"
+    job["agent_review_status"] = "running"
+    job["updated_at"] = now
+    _save_review_job(job)
+    try:
+        runtime_result = _invoke_agentcore_runtime({
+            "action": "review_rule_matrix",
+            "review_job_id": review_job_id,
+            "doc_id": job.get("source_document_id"),
+            "document_snapshot": job.get("document_snapshot", {}),
+            "enabled_rules": job.get("enabled_rules", []),
+            "baseline_result": job.get("baseline_result", {}),
+        })
+        if runtime_result.get("status") != "ok":
+            raise RuntimeError(runtime_result.get("error") or runtime_result.get("result") or "AgentCore review failed")
+        agent_result = runtime_result.get("agent_result") or runtime_result
+        merged = _merge_agentcore_review_result(job.get("baseline_result", {}), agent_result)
+        job["status"] = "completed"
+        job["agent_review_status"] = "completed"
+        job["agent_result"] = agent_result
+        job["rule_evaluations"] = merged.get("rule_evaluations", [])
+        job["merged_result"] = merged
+        job["updated_at"] = _now_iso()
+        job["completed_at"] = job["updated_at"]
+        job["error_reason"] = ""
+        _save_review_job(job)
+        return {"status": "ok", "review_job_id": review_job_id}
+    except Exception as exc:
+        job["status"] = "failed"
+        job["agent_review_status"] = "failed"
+        job["updated_at"] = _now_iso()
+        job["completed_at"] = job["updated_at"]
+        job["error_reason"] = _safe_error_reason(exc)
+        _save_review_job(job)
+        return {"status": "error", "review_job_id": review_job_id, "error": job["error_reason"]}
+
+
+def _handle_get_review_result(doc_id: str, review_job_id: str, event: dict) -> dict:
+    user_id, permission, _item, err = _load_document_for_action(doc_id, event, "read")
+    if err:
+        return err
+    job = _load_review_job(review_job_id)
+    if not job or job.get("source_document_id") != doc_id:
+        return _response(404, {"error": "review job not found", "review_job_id": review_job_id})
+    result = deepcopy(job.get("merged_result") or job.get("baseline_result") or {})
+    result["review_job_id"] = review_job_id
+    result["agent_review_status"] = job.get("agent_review_status", job.get("status", "unknown"))
+    result["review_job_status"] = job.get("status", "unknown")
+    result["error_reason"] = job.get("error_reason", "")
+    result["permission"] = permission
+    result["user_id"] = user_id
+    return _response(200, result)
+
+
 def _review_rule_storage_key(rule_id: str) -> str:
     return f"{_REVIEW_RULE_ITEM_PREFIX}{rule_id}"
 
@@ -2727,7 +3012,10 @@ def _document_lint_result(item: dict) -> dict:
     suggested_patches: list[dict] = []
     enabled_rules = _load_review_rules(include_disabled=False)
     rule_evaluations = [
-        _evaluate_review_rule(rule, item, ctx, suggested_patches)
+        _baseline_agentcore_pending(
+            _evaluate_review_rule(rule, item, ctx, suggested_patches),
+            rule,
+        )
         for rule in enabled_rules
     ]
     issues = _issues_from_rule_evaluations(rule_evaluations)
@@ -2747,6 +3035,9 @@ def _document_lint_result(item: dict) -> dict:
         "missing_questions": missing_questions,
         "suggested_patches": suggested_patches,
         "kb_retrieval": _approved_samples_fallback(),
+        "agent_review_status": "queued" if any(
+            e.get("agentcore_status") == "queued" for e in rule_evaluations
+        ) else "not_required",
     }
 
 
@@ -2970,7 +3261,8 @@ def _handle_list_documents(event: dict) -> dict:
     qs = event.get("queryStringParameters") or {}
     limit = int(qs.get("limit", "50"))
 
-    resp = table.query(
+    # 1) 내가 소유한 문서
+    owned_resp = table.query(
         IndexName="user_id-updated_at-index",
         KeyConditionExpression="user_id = :uid",
         ExpressionAttributeValues={":uid": user_id},
@@ -2978,16 +3270,78 @@ def _handle_list_documents(event: dict) -> dict:
         Limit=limit,
     )
 
-    items = [
-        {
-            "document_id": item.get("document_id"),
+    items: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for item in owned_resp.get("Items", []):
+        doc_id = item.get("document_id")
+        if not doc_id or doc_id in seen_ids:
+            continue
+        seen_ids.add(doc_id)
+        items.append({
+            "document_id": doc_id,
             "title": item.get("title", "제목 없음"),
             "updated_at": item.get("updated_at"),
             "created_at": item.get("created_at"),
             "completion_score": float(item.get("completion_score", 0) or 0),
-        }
-        for item in resp.get("Items", [])
-    ]
+            "shared": False,
+            "role": "master",
+        })
+
+    # 2) 공유받은 문서
+    try:
+        from boto3.dynamodb.conditions import Key
+        share_resp = shares_table.query(
+            KeyConditionExpression=Key("user_id").eq(user_id),
+            Limit=limit,
+        )
+        share_items = share_resp.get("Items", [])
+    except Exception as exc:  # noqa: BLE001
+        print(f"[list_documents] shares query failed: {exc}")
+        share_items = []
+
+    for share in share_items:
+        doc_id = share.get("document_id")
+        if not doc_id or doc_id in seen_ids:
+            continue
+        seen_ids.add(doc_id)
+
+        # 문서 실시간 메타 조회 (제목/업데이트 시각). 없으면 share에 캐시된 값 사용.
+        title = share.get("doc_title", "제목 없음")
+        updated_at = share.get("doc_updated_at") or share.get("shared_at")
+        created_at = None
+        completion = 0.0
+        try:
+            doc_resp = table.get_item(Key={"document_id": doc_id})
+            doc_item = doc_resp.get("Item")
+            if doc_item:
+                title = doc_item.get("title") or title
+                updated_at = doc_item.get("updated_at") or updated_at
+                created_at = doc_item.get("created_at")
+                completion = float(doc_item.get("completion_score", 0) or 0)
+            else:
+                # 원본 문서가 삭제된 경우 — share도 정리해두는 게 깔끔하지만
+                # 해커톤 시연 중 실수 삭제 복구 가능성 고려해 유지.
+                pass
+        except Exception as exc:  # noqa: BLE001
+            print(f"[list_documents] doc lookup failed doc={doc_id}: {exc}")
+
+        role = str(share.get("role", "read")).strip().lower()
+        items.append({
+            "document_id": doc_id,
+            "title": title,
+            "updated_at": updated_at,
+            "created_at": created_at,
+            "completion_score": completion,
+            "shared": True,
+            "role": role if role in PERMISSION_ORDER else "read",
+            "shared_by_email": share.get("shared_by_email", ""),
+        })
+
+    # updated_at 내림차순 정렬
+    def _sort_key(d: dict) -> str:
+        return str(d.get("updated_at") or "")
+    items.sort(key=_sort_key, reverse=True)
 
     return _response(200, {"documents": items, "count": len(items)})
 
@@ -3952,7 +4306,7 @@ def _handle_reject_change_request(doc_id: str, body: dict, event: dict) -> dict:
 
 
 def _handle_run_submission_lint(doc_id: str, event: dict) -> dict:
-    _user_id, permission, item, err = _load_document_for_action(doc_id, event, "read")
+    user_id, permission, item, err = _load_document_for_action(doc_id, event, "read")
     if err:
         return err
     doc_dict = json.loads(_json(item))
@@ -3980,6 +4334,31 @@ def _handle_run_submission_lint(doc_id: str, event: dict) -> dict:
         kb_warnings.append("Failed to attach KB excerpts")
     result["document_id"] = doc_id
     result["permission"] = permission
+    review_job = _create_review_job(doc_id, user_id, result, doc_dict)
+    result["review_job_id"] = review_job["review_job_id"]
+    result["review_job_status"] = review_job["status"]
+    result["agent_review_status"] = review_job["agent_review_status"]
+    try:
+        if _enqueue_agentcore_review(review_job):
+            result["agent_review_message"] = "AgentCore Reviewer evaluation queued."
+        elif review_job.get("enabled_rules"):
+            result["agent_review_status"] = "blocked"
+            result["review_job_status"] = "blocked"
+            result["agent_review_message"] = "AgentCore Reviewer queue unavailable in this environment."
+            review_job["status"] = "blocked"
+            review_job["agent_review_status"] = "blocked"
+            review_job["error_reason"] = result["agent_review_message"]
+            review_job["updated_at"] = _now_iso()
+            _save_review_job(review_job)
+    except Exception as exc:
+        result["agent_review_status"] = "failed"
+        result["review_job_status"] = "failed"
+        result["agent_review_message"] = _safe_error_reason(exc)
+        review_job["status"] = "failed"
+        review_job["agent_review_status"] = "failed"
+        review_job["error_reason"] = result["agent_review_message"]
+        review_job["updated_at"] = _now_iso()
+        _save_review_job(review_job)
 
     issues = result.get("issues") or {}
     critical = len(issues.get("critical") or [])
@@ -4240,10 +4619,274 @@ def _handle_user_input(doc_id: str, body: dict, event: dict) -> dict:
     return _response(200, {"status": "ok", "version": saved["version"]})
 
 
+# ============================================================
+# Document Sharing (공유 초대)
+# ============================================================
+
+_SHAREABLE_ROLES = {"read", "edit"}
+
+
+def _normalize_email(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_allowed_share_domain(email: str) -> bool:
+    if "@" not in email:
+        return False
+    domain = email.rsplit("@", 1)[-1].lower()
+    return domain in ALLOWED_SHARE_DOMAINS
+
+
+def _cognito_lookup_by_email(email: str) -> tuple[str, str]:
+    """이메일로 Cognito 사용자 조회. (sub, email) 반환. 없으면 ('', '')."""
+    if not COGNITO_USER_POOL_ID:
+        return "", ""
+    client = _get_cognito_idp()
+    try:
+        resp = client.list_users(
+            UserPoolId=COGNITO_USER_POOL_ID,
+            Filter=f'email = "{email}"',
+            Limit=1,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[share] cognito list_users failed: {exc}")
+        return "", ""
+
+    users = resp.get("Users") or []
+    if not users:
+        return "", ""
+
+    user = users[0]
+    sub = ""
+    found_email = ""
+    for attr in user.get("Attributes", []):
+        if attr.get("Name") == "sub":
+            sub = attr.get("Value", "")
+        elif attr.get("Name") == "email":
+            found_email = attr.get("Value", "") or email
+    return sub, found_email or email
+
+
+def _handle_list_shares(doc_id: str, event: dict) -> dict:
+    """GET /documents/{id}/shares — 공유 목록 조회 (소유자만)."""
+    user_id, err = _require_user(event)
+    if err:
+        return err
+
+    resp = table.get_item(Key={"document_id": doc_id})
+    doc_item = resp.get("Item")
+    if not doc_item:
+        return _response(404, {"error": "not found"})
+    if doc_item.get("user_id") != user_id:
+        return _failed(403, error_reason="owner_only",
+                       message="Only owner can view shares.")
+
+    from boto3.dynamodb.conditions import Key
+    # 공유 목록
+    shares_resp = shares_table.query(
+        IndexName="document_id-index",
+        KeyConditionExpression=Key("document_id").eq(doc_id),
+    )
+    shares = [
+        {
+            "user_id": s.get("user_id"),
+            "email": s.get("email") or s.get("shared_email", ""),
+            "role": s.get("role", "read"),
+            "shared_at": s.get("shared_at"),
+            "status": "active",
+        }
+        for s in shares_resp.get("Items", [])
+    ]
+
+    # 미가입자 대기 목록
+    pending_resp = pending_shares_table.scan(
+        FilterExpression=Attr("document_id").eq(doc_id),
+    )
+    pending = [
+        {
+            "email": p.get("email"),
+            "role": p.get("role", "read"),
+            "shared_at": p.get("shared_at"),
+            "status": "pending",
+        }
+        for p in pending_resp.get("Items", [])
+    ]
+
+    return _response(200, {
+        "document_id": doc_id,
+        "shares": shares,
+        "pending": pending,
+    })
+
+
+def _handle_create_share(doc_id: str, body: dict, event: dict) -> dict:
+    """POST /documents/{id}/shares — 이메일로 공유 초대 (소유자만)."""
+    user_id, err = _require_user(event)
+    if err:
+        return err
+
+    resp = table.get_item(Key={"document_id": doc_id})
+    doc_item = resp.get("Item")
+    if not doc_item:
+        return _response(404, {"error": "not found"})
+    if doc_item.get("user_id") != user_id:
+        return _failed(403, error_reason="owner_only",
+                       message="Only owner can share.")
+
+    email = _normalize_email(body.get("email"))
+    role = str(body.get("role") or "read").strip().lower()
+
+    if not email:
+        return _failed(400, error_reason="invalid_email",
+                       message="email required.")
+    if role not in _SHAREABLE_ROLES:
+        return _failed(400, error_reason="invalid_role",
+                       message="role must be 'read' or 'edit'.")
+    if not _is_allowed_share_domain(email):
+        return _failed(400, error_reason="domain_not_allowed",
+                       message="Only @mz.co.kr, @megazone.com emails allowed.")
+
+    # 본인한테 공유 방지
+    headers = event.get("headers") or {}
+    # 이메일 기반 자가공유 방지는 보완적 — owner check는 user_id 기반이라 충분하지만
+    # 같은 이메일 가진 두 계정 케이스까지는 커버하지 않음.
+    now = _now_iso()
+    shared_by_email = _normalize_email(headers.get("x-user-email") or headers.get("X-User-Email"))
+
+    # Cognito에서 이메일 → sub 매칭 시도
+    target_sub, target_email = _cognito_lookup_by_email(email)
+
+    if target_sub:
+        # 본인에게 공유 금지
+        if target_sub == user_id:
+            return _failed(400, error_reason="self_share",
+                           message="Cannot share with yourself.")
+        share_item = {
+            "user_id": target_sub,
+            "document_id": doc_id,
+            "role": role,
+            "email": target_email or email,
+            "shared_by": user_id,
+            "shared_by_email": shared_by_email,
+            "shared_at": now,
+            "doc_title": doc_item.get("title", "제목 없음"),
+            "doc_updated_at": doc_item.get("updated_at", now),
+        }
+        shares_table.put_item(Item=share_item)
+        return _response(200, {
+            "status": "shared",
+            "document_id": doc_id,
+            "email": email,
+            "role": role,
+            "target_status": "active",
+        })
+    else:
+        # 미가입 — pending으로 저장
+        pending_item = {
+            "email": email,
+            "document_id": doc_id,
+            "role": role,
+            "shared_by": user_id,
+            "shared_by_email": shared_by_email,
+            "shared_at": now,
+            "doc_title": doc_item.get("title", "제목 없음"),
+            "doc_updated_at": doc_item.get("updated_at", now),
+        }
+        pending_shares_table.put_item(Item=pending_item)
+        return _response(200, {
+            "status": "pending",
+            "document_id": doc_id,
+            "email": email,
+            "role": role,
+            "target_status": "pending",
+            "message": "상대방이 아직 가입하지 않았습니다. 가입 완료 시 자동으로 공유됩니다.",
+        })
+
+
+def _handle_update_share(doc_id: str, share_key: str, body: dict, event: dict) -> dict:
+    """PATCH /documents/{id}/shares/{share_key} — 권한 변경 (소유자만).
+
+    share_key는 Cognito sub 또는 이메일(URL 인코딩). 이메일이면 pending 대상.
+    """
+    user_id, err = _require_user(event)
+    if err:
+        return err
+
+    resp = table.get_item(Key={"document_id": doc_id})
+    doc_item = resp.get("Item")
+    if not doc_item:
+        return _response(404, {"error": "not found"})
+    if doc_item.get("user_id") != user_id:
+        return _failed(403, error_reason="owner_only",
+                       message="Only owner can modify shares.")
+
+    role = str(body.get("role") or "").strip().lower()
+    if role not in _SHAREABLE_ROLES:
+        return _failed(400, error_reason="invalid_role",
+                       message="role must be 'read' or 'edit'.")
+
+    # 이메일 형태 → pending, 아니면 user_id (sub)
+    if "@" in share_key:
+        email = _normalize_email(share_key)
+        try:
+            pending_shares_table.update_item(
+                Key={"email": email, "document_id": doc_id},
+                UpdateExpression="SET #r = :r",
+                ExpressionAttributeNames={"#r": "role"},
+                ExpressionAttributeValues={":r": role},
+                ConditionExpression=Attr("email").exists(),
+            )
+            return _response(200, {"status": "ok", "target_status": "pending"})
+        except Exception as exc:  # noqa: BLE001
+            return _failed(404, error_reason="share_not_found",
+                           message=str(exc))
+
+    try:
+        shares_table.update_item(
+            Key={"user_id": share_key, "document_id": doc_id},
+            UpdateExpression="SET #r = :r",
+            ExpressionAttributeNames={"#r": "role"},
+            ExpressionAttributeValues={":r": role},
+            ConditionExpression=Attr("user_id").exists(),
+        )
+        return _response(200, {"status": "ok", "target_status": "active"})
+    except Exception as exc:  # noqa: BLE001
+        return _failed(404, error_reason="share_not_found", message=str(exc))
+
+
+def _handle_delete_share(doc_id: str, share_key: str, event: dict) -> dict:
+    """DELETE /documents/{id}/shares/{share_key} — 공유 해제 (소유자만)."""
+    user_id, err = _require_user(event)
+    if err:
+        return err
+
+    resp = table.get_item(Key={"document_id": doc_id})
+    doc_item = resp.get("Item")
+    if not doc_item:
+        return _response(404, {"error": "not found"})
+    if doc_item.get("user_id") != user_id:
+        return _failed(403, error_reason="owner_only",
+                       message="Only owner can remove shares.")
+
+    if "@" in share_key:
+        email = _normalize_email(share_key)
+        pending_shares_table.delete_item(
+            Key={"email": email, "document_id": doc_id}
+        )
+        return _response(200, {"status": "removed", "target_status": "pending"})
+
+    shares_table.delete_item(
+        Key={"user_id": share_key, "document_id": doc_id}
+    )
+    return _response(200, {"status": "removed", "target_status": "active"})
+
+
 def handler(event: dict, context: Any) -> dict:
     # Handle async chat invocation (self-invoked)
     if event.get("_async_chat"):
         return _handle_async_chat(event)
+    if event.get("_async_agentcore_review"):
+        return _handle_async_agentcore_review(event)
 
     rc = event.get("requestContext", {})
     http = rc.get("http", {})
@@ -4364,6 +5007,9 @@ def handler(event: dict, context: Any) -> dict:
         elif method == "POST" and action == "run_submission_lint":
             return _handle_run_submission_lint(doc_id, event)
 
+        elif method == "GET" and action == "review_results" and len(parts) >= 4:
+            return _handle_get_review_result(doc_id, parts[3], event)
+
         elif method == "POST" and action == "query_approved_samples":
             body = json.loads(event.get("body", "{}"))
             return _handle_query_approved_samples(doc_id, body, event)
@@ -4395,6 +5041,31 @@ def handler(event: dict, context: Any) -> dict:
 
         elif method == "POST" and action == "export":
             return _handle_export(doc_id, event)
+
+        elif action == "shares":
+            # /documents/{id}/shares (collection)
+            if len(parts) == 3:
+                if method == "GET":
+                    return _handle_list_shares(doc_id, event)
+                if method == "POST":
+                    body = json.loads(event.get("body", "{}"))
+                    return _handle_create_share(doc_id, body, event)
+                return _response(405, {"error": "method not allowed"})
+            # /documents/{id}/shares/{share_key} (item)
+            if len(parts) >= 4:
+                # URL decode (이메일의 %40 등)
+                try:
+                    from urllib.parse import unquote
+                    share_key = unquote(parts[3])
+                except Exception:  # noqa: BLE001
+                    share_key = parts[3]
+                if method == "PATCH" or method == "PUT":
+                    body = json.loads(event.get("body", "{}"))
+                    return _handle_update_share(doc_id, share_key, body, event)
+                if method == "DELETE":
+                    return _handle_delete_share(doc_id, share_key, event)
+                return _response(405, {"error": "method not allowed"})
+            return _response(400, {"error": "invalid shares path"})
 
         else:
             return _response(400, {"error": f"unknown: {method} {path}"})

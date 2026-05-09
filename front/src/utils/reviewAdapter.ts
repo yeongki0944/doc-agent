@@ -44,6 +44,9 @@ export interface RuleEvaluation {
   recommendation: { kr: string; en: string }
   suggestedPatch?: SuggestedPatchRef
   backendIssue?: ReviewIssue & { severity?: string }
+  evaluationType?: string
+  evaluationSource?: string
+  agentcoreStatus?: string
   /** True if this entry was produced directly from a backend rule_evaluation. */
   fromBackend: boolean
 }
@@ -88,8 +91,8 @@ interface BackendRuleEvaluation {
   judgment_detail?: string
   judgment_detail_kr?: string
   judgment_detail_en?: string
-  evidence?: Array<{ section?: string; snippet?: string; field_path?: string } | string>
-  evidence_found?: Array<{ section?: string; snippet?: string; field_path?: string } | string>
+  evidence?: Array<{ section?: string; snippet?: string; text?: string; field_path?: string } | string>
+  evidence_found?: Array<{ section?: string; snippet?: string; text?: string; field_path?: string } | string>
   missing_evidence?: string[]
   missing_evidence_kr?: string[]
   missing_evidence_en?: string[]
@@ -98,6 +101,9 @@ interface BackendRuleEvaluation {
   recommendation_en?: string
   suggested_patch?: SuggestedPatchRef
   referenced_sections?: string[]
+  evaluation_type?: string
+  evaluation_source?: string
+  agentcore_status?: string
 }
 
 interface BackendCategory {
@@ -244,6 +250,9 @@ export function buildReviewMatrix(
           en: be.recommendation_en || be.recommendation || rule.recommendation_template_en,
         },
         suggestedPatch: be.suggested_patch || matchSuggestedPatch(rule, suggested),
+        evaluationType: be.evaluation_type || rule.evaluation_type,
+        evaluationSource: be.evaluation_source,
+        agentcoreStatus: be.agentcore_status,
         fromBackend: true,
       })
     }
@@ -298,6 +307,8 @@ export function buildReviewMatrix(
           },
           suggestedPatch: matchSuggestedPatch(rule, suggested),
           backendIssue: hit,
+          evaluationType: rule.evaluation_type,
+          evaluationSource: 'legacy_issue_adapter',
           fromBackend: false,
         })
       } else {
@@ -321,6 +332,8 @@ export function buildReviewMatrix(
             kr: rule.recommendation_template_kr,
             en: rule.recommendation_template_en,
           },
+          evaluationType: rule.evaluation_type,
+          evaluationSource: 'legacy_issue_adapter',
           fromBackend: false,
         })
       }
@@ -410,6 +423,8 @@ function notCheckedEvaluation(rule: RuleDefinition): RuleEvaluation {
       kr: rule.recommendation_template_kr,
       en: rule.recommendation_template_en,
     },
+    evaluationType: rule.evaluation_type,
+    evaluationSource: 'not_checked',
     fromBackend: false,
   }
 }
@@ -431,7 +446,7 @@ function normalizeEvidence(
   for (const e of evidence) {
     if (!e) continue
     if (typeof e === 'string') out.push({ section: '', snippet: e })
-    else out.push({ section: e.section || '', snippet: e.snippet || '', fieldPath: e.field_path })
+    else out.push({ section: e.section || '', snippet: e.snippet || e.text || '', fieldPath: e.field_path })
   }
   return out
 }

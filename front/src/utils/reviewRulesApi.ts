@@ -100,7 +100,7 @@ export async function setRuleEnabled(
 ): Promise<{ ok: boolean; fromFallback: boolean; message?: string }> {
   try {
     const res = await apiFetch(`/review_rules/${encodeURIComponent(ruleId)}`, {
-      method: 'PATCH',
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
     })
@@ -134,7 +134,8 @@ export async function createCustomRule(rule: RuleDefinition): Promise<{
     })
     if (res.ok) {
       const data = await res.json().catch(() => null)
-      return { ok: true, fromFallback: false, rule: (data?.rule as RuleDefinition) || payload }
+      const returnedRule = (data?.rule_id ? data : data?.rule) as RuleDefinition | undefined
+      return { ok: true, fromFallback: false, rule: returnedRule || payload }
     }
   } catch {
     /* ignore */
@@ -156,7 +157,7 @@ export async function updateCustomRule(
 ): Promise<{ ok: boolean; fromFallback: boolean; message?: string }> {
   try {
     const res = await apiFetch(`/review_rules/${encodeURIComponent(ruleId)}`, {
-      method: 'PATCH',
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     })

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 from typing import Any
 
 from bedrock_agentcore import BedrockAgentCoreApp
@@ -63,11 +64,202 @@ CHILD_MODEL_FALLBACK: str = os.environ.get(
     "",
 )
 
+REVIEWER_MODEL: str = os.environ.get("REVIEWER_MODEL", CHILD_MODEL)
+REVIEWER_MODEL_FALLBACK: str = os.environ.get(
+    "REVIEWER_MODEL_FALLBACK",
+    "apac.amazon.nova-lite-v1:0",
+)
+
 # ---------------------------------------------------------------------------
 # AgentCore Runtime application
 # ---------------------------------------------------------------------------
 
 app = BedrockAgentCoreApp()
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    try:
+        return json.loads(text)
+    except Exception:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
+
+
+def _invoke_reviewer_model(client: Any, model_id: str, system: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    resp = client.converse(
+        modelId=model_id,
+        system=[{"text": system}],
+        messages=[{
+            "role": "user",
+            "content": [{"text": json.dumps(user_payload, ensure_ascii=False)}],
+        }],
+        inferenceConfig={"maxTokens": 8000, "temperature": 0},
+    )
+    text = ""
+    message = resp.get("output", {}).get("message", {})
+    for block in message.get("content", []):
+        if isinstance(block, dict) and block.get("text"):
+            text += block["text"]
+    return _extract_json_object(text)
+
+
+def _unchecked_reviewer_evaluation(rule: dict[str, Any], reason: str) -> dict[str, Any]:
+    rule_id = str(rule.get("rule_id", ""))
+    return {
+        "rule_id": rule_id,
+        "status": "NOT_CHECKED",
+        "severity": rule.get("severity", "Medium"),
+        "llm_judgment_en": f"AgentCore Reviewer could not complete this rule judgment: {reason}",
+        "llm_judgment_kr": f"AgentCore Reviewer가 이 규칙 판단을 완료하지 못했습니다: {reason}",
+        "evidence_found": [],
+        "missing_evidence_en": ["Reviewer judgment unavailable."],
+        "missing_evidence_kr": ["Reviewer 판단 결과를 사용할 수 없습니다."],
+        "recommendation_en": rule.get("recommendation_template_en", "Review this rule manually before submission."),
+        "recommendation_kr": rule.get("recommendation_template_kr", "제출 전 이 규칙을 수동으로 검토하십시오."),
+        "referenced_sections": rule.get("related_sections", []),
+        "suggested_patch_available": False,
+        "suggested_patch": None,
+    }
+
+
+def _reviewer_payload(
+    review_job_id: str,
+    document_snapshot: dict[str, Any],
+    rules: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "review_job_id": review_job_id,
+        "document_snapshot": document_snapshot,
+        "rules": rules,
+        "output_schema": {
+            "review_job_id": "string",
+            "rule_evaluations": [{
+                "rule_id": "string",
+                "status": "PASS|WARNING|FAIL|NOT_CHECKED",
+                "severity": "Critical|High|Medium|Low|Info",
+                "llm_judgment_en": "concise summary",
+                "llm_judgment_kr": "간결한 요약",
+                "evidence_found": [{"section": "string", "text": "short snippet", "field_path": "string"}],
+                "missing_evidence_en": ["string"],
+                "missing_evidence_kr": ["string"],
+                "recommendation_en": "string",
+                "recommendation_kr": "string",
+                "referenced_sections": ["string"],
+                "suggested_patch_available": False,
+                "suggested_patch": None,
+            }],
+        },
+    }
+
+
+def _invoke_reviewer_rules(
+    client: Any,
+    model_id: str,
+    system: str,
+    review_job_id: str,
+    document_snapshot: dict[str, Any],
+    rules: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not rules:
+        return []
+    try:
+        parsed = _invoke_reviewer_model(
+            client,
+            model_id,
+            system,
+            _reviewer_payload(review_job_id, document_snapshot, rules),
+        )
+        evaluations = parsed.get("rule_evaluations", [])
+        if not isinstance(evaluations, list):
+            raise ValueError("rule_evaluations must be a list")
+        return [item for item in evaluations if isinstance(item, dict)]
+    except Exception as exc:
+        err = getattr(exc, "response", {}).get("Error", {}) if hasattr(exc, "response") else {}
+        if err.get("Code") == "AccessDeniedException":
+            raise
+        if len(rules) == 1:
+            return [_unchecked_reviewer_evaluation(rules[0], str(exc)[:180])]
+        mid = max(1, len(rules) // 2)
+        return (
+            _invoke_reviewer_rules(client, model_id, system, review_job_id, document_snapshot, rules[:mid])
+            + _invoke_reviewer_rules(client, model_id, system, review_job_id, document_snapshot, rules[mid:])
+        )
+
+
+def _invoke_reviewer_agent(payload: dict[str, Any]) -> dict[str, Any]:
+    """AgentCore Reviewer Agent entrypoint for rule matrix judgment.
+
+    This path runs inside AgentCore Runtime, not the document_api Lambda.
+    It asks Bedrock for concise JSON judgments over only llm/hybrid rules.
+    """
+    import boto3
+
+    review_job_id = str(payload.get("review_job_id", ""))
+    document_snapshot = payload.get("document_snapshot") or {}
+    rules = payload.get("enabled_rules") or []
+    baseline = payload.get("baseline_result") or {}
+    baseline_by_rule = {
+        str(item.get("rule_id")): item
+        for item in baseline.get("rule_evaluations", [])
+        if isinstance(item, dict) and item.get("rule_id")
+    }
+    compact_rules = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        compact_rules.append({
+            "rule_id": rule.get("rule_id"),
+            "evaluation_type": rule.get("evaluation_type"),
+            "category_en": rule.get("category_en"),
+            "category_kr": rule.get("category_kr"),
+            "title_en": rule.get("title_en"),
+            "title_kr": rule.get("title_kr"),
+            "severity": rule.get("severity"),
+            "related_sections": rule.get("related_sections", []),
+            "pass_criteria_en": rule.get("pass_criteria_en", []),
+            "warning_criteria_en": rule.get("warning_criteria_en", []),
+            "fail_criteria_en": rule.get("fail_criteria_en", []),
+            "recommendation_template_en": rule.get("recommendation_template_en", ""),
+            "recommendation_template_kr": rule.get("recommendation_template_kr", ""),
+            "baseline_status": baseline_by_rule.get(str(rule.get("rule_id")), {}).get("status"),
+            "baseline_evidence": baseline_by_rule.get(str(rule.get("rule_id")), {}).get("evidence_found", []),
+            "baseline_missing": baseline_by_rule.get(str(rule.get("rule_id")), {}).get("missing_evidence_en", []),
+        })
+
+    system = (
+        "You are the AgentCore Reviewer Agent for APN/GenAI IC/SOW readiness. "
+        "Return JSON only. Do not reveal chain-of-thought. Use concise judgment summaries. "
+        "Only use evidence from the supplied document snapshot. Do not say 'AWS will reject this'; "
+        "use 'recommended before submission' wording. If evidence is absent, use NOT_CHECKED or FAIL. "
+        "Statuses must be PASS, WARNING, FAIL, or NOT_CHECKED."
+    )
+    client = boto3.client("bedrock-runtime", region_name=_runtime_region())
+    model_used = REVIEWER_MODEL
+    try:
+        evaluations = _invoke_reviewer_rules(
+            client, REVIEWER_MODEL, system, review_job_id, document_snapshot, compact_rules
+        )
+    except Exception as primary_exc:
+        if not REVIEWER_MODEL_FALLBACK or REVIEWER_MODEL_FALLBACK == REVIEWER_MODEL:
+            raise
+        logger.warning(
+            "reviewer model '%s' failed, falling back to '%s': %s",
+            REVIEWER_MODEL,
+            REVIEWER_MODEL_FALLBACK,
+            primary_exc,
+        )
+        model_used = REVIEWER_MODEL_FALLBACK
+        evaluations = _invoke_reviewer_rules(
+            client, REVIEWER_MODEL_FALLBACK, system, review_job_id, document_snapshot, compact_rules
+        )
+    return {"status": "ok", "agent_result": {
+        "review_job_id": review_job_id,
+        "model_used": model_used,
+        "rule_evaluations": evaluations,
+    }}
 
 
 def _validate_payload(payload: dict[str, Any]) -> tuple[str, str, list[dict]]:
@@ -125,6 +317,8 @@ def invoke(payload: dict) -> dict:
     try:
         if not isinstance(payload, dict):
             return {"result": "payload must be a JSON object (dict)", "version": 0, "status": "error"}
+        if payload.get("action") == "review_rule_matrix":
+            return _invoke_reviewer_agent(payload)
         doc_id, prompt, history = _validate_payload(payload)
     except ValueError as exc:
         return {"result": str(exc), "version": 0, "status": "error"}

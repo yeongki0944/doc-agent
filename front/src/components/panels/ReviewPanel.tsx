@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { color, radius, space } from '../../styles/tokens'
 import {
   requestReview,
+  getReviewResult,
   createChangeRequest,
   type ReviewResult,
 } from '../../utils/api'
@@ -80,6 +81,35 @@ export function ReviewPanel({ docId }: { docId: string }) {
   }, [])
 
   const matrix = useMemo<ReviewMatrix>(() => buildReviewMatrix(result, catalog), [result, catalog])
+  const agentReviewStatus = result?.agent_review_status || result?.review_job_status
+
+  useEffect(() => {
+    if (!result?.review_job_id) return
+    const status = result.agent_review_status || result.review_job_status
+    if (status !== 'queued' && status !== 'running') return
+
+    let cancelled = false
+    let attempts = 0
+    const timer = window.setInterval(async () => {
+      attempts += 1
+      try {
+        const next = await getReviewResult(docId, result.review_job_id!)
+        if (cancelled) return
+        setResult(prev => ({ ...(prev || {}), ...next }))
+        const nextStatus = next.agent_review_status || next.review_job_status
+        if (nextStatus !== 'queued' && nextStatus !== 'running') {
+          window.clearInterval(timer)
+        }
+      } catch {
+        if (attempts >= 3) window.clearInterval(timer)
+      }
+      if (attempts >= 60) window.clearInterval(timer)
+    }, 2500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [docId, result?.review_job_id, result?.agent_review_status, result?.review_job_status])
 
   const filtered = useMemo(() => {
     const q = searchText.trim().toLowerCase()
@@ -161,10 +191,10 @@ export function ReviewPanel({ docId }: { docId: string }) {
             Submission Readiness
             <span
               className="mzc-badge"
-              title="이 검토는 규칙 기반(deterministic) 엔진으로 수행되며 LLM 추론을 사용하지 않습니다."
+              title="정적 규칙은 즉시 평가하고, LLM/hybrid 규칙은 AgentCore Reviewer가 Bedrock으로 비동기 판단합니다."
               style={{ fontSize: 9, padding: '1px 6px', fontWeight: 600 }}
             >
-              Rule-based
+              {agentReviewStatus ? `AgentCore ${formatAgentStatus(agentReviewStatus)}` : 'Static + AgentCore'}
             </span>
           </h3>
           <div style={{ fontSize: 11, color: color.textMuted, marginTop: 2 }}>
@@ -218,6 +248,8 @@ export function ReviewPanel({ docId }: { docId: string }) {
             missing_inputs={result.missing_inputs}
             error_reason={result.error_reason}
           />
+
+          <AgentReviewNotice result={result} />
 
           {matrix.adapted && (
             <div className="review-fallback-notice">
@@ -283,6 +315,37 @@ function TopSummary({ matrix, result }: { matrix: ReviewMatrix; result: ReviewRe
   )
 }
 
+function AgentReviewNotice({ result }: { result: ReviewResult }) {
+  const status = result.agent_review_status || result.review_job_status
+  if (!status || status === 'not_required') return null
+  const isPending = status === 'queued' || status === 'running'
+  const isFailed = status === 'failed' || status === 'blocked'
+  const message =
+    result.agent_review_message ||
+    (isPending
+      ? 'AgentCore Reviewer is evaluating LLM/hybrid rules with Bedrock. Static rule results are shown now.'
+      : status === 'completed'
+        ? 'AgentCore Reviewer completed LLM/hybrid rule judgment.'
+        : 'AgentCore Reviewer result is not available.')
+  return (
+    <div
+      className="review-fallback-notice"
+      style={{
+        borderStyle: 'solid',
+        borderColor: isFailed ? '#fecaca' : isPending ? '#fed7aa' : '#bbf7d0',
+        background: isFailed ? '#fef2f2' : isPending ? '#fff7ed' : '#f0fdf4',
+        color: isFailed ? color.error : color.textSecondary,
+      }}
+    >
+      <strong>AgentCore Reviewer: {formatAgentStatus(status)}</strong>
+      {result.review_job_id && (
+        <code style={{ marginLeft: 6, fontSize: 10, color: color.textMuted }}>{result.review_job_id}</code>
+      )}
+      <div style={{ marginTop: 4 }}>{message}</div>
+    </div>
+  )
+}
+
 function MetricCard({ label, value, tone }: { label: string; value: number; tone?: 'success' | 'warning' | 'danger' }) {
   const cls =
     tone === 'success' ? 'metric-card is-success' :
@@ -299,6 +362,11 @@ function MetricCard({ label, value, tone }: { label: string; value: number; tone
       <div className="metric-value" style={valueColor ? { color: valueColor } : undefined}>{value}</div>
     </div>
   )
+}
+
+function formatAgentStatus(status?: string): string {
+  if (!status) return 'not started'
+  return status.replace(/_/g, ' ')
 }
 
 /* ---------- Category coverage ---------- */
@@ -590,9 +658,18 @@ function RuleDetail({
       </div>
 
       <div className="full-span">
-        <div className="block-label">Verdict · 판정 (rule-based)</div>
+        <div className="block-label">Verdict · 판정</div>
         <div className="block-body" style={{ whiteSpace: 'pre-wrap' }}>
           {judgmentDetail || (lang === 'ko' ? e.judgment.kr : e.judgment.en) || '—'}
+        </div>
+      </div>
+
+      <div>
+        <div className="block-label">Evaluation source</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          <span className="mzc-badge">{e.evaluationType || e.rule.evaluation_type}</span>
+          {e.evaluationSource && <span className="mzc-badge">{e.evaluationSource}</span>}
+          {e.agentcoreStatus && <span className="mzc-badge">AgentCore {formatAgentStatus(e.agentcoreStatus)}</span>}
         </div>
       </div>
 
