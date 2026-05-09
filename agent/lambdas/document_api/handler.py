@@ -1649,189 +1649,716 @@ def _make_issue(severity: str, code: str, message: str, section: str, question: 
     }
 
 
-def _document_lint_result(item: dict) -> dict:
+_REVIEW_RULE_CATALOG: list[dict] = [
+    {
+        "rule_id": "BUSINESS_CASE_COMMITMENT",
+        "category": "Business Case & Commitment",
+        "title": "Business case and sponsor commitment",
+        "description": "Confirms the customer problem, expected business value, sponsor ownership, and path from PoC to production are documented.",
+        "severity": "High",
+        "pass_criteria": "Business driver, measurable value, sponsor or owner, and production commitment are present.",
+        "warning_criteria": "Some business value or stakeholder evidence exists but commitment or measurable value is incomplete.",
+        "fail_criteria": "Business case exists only as generic language or lacks ownership and value evidence.",
+        "related_sections": ["executive_summary", "stakeholders", "success_criteria"],
+        "evidence_terms": {
+            "business problem or value": ["business", "problem", "value", "roi", "efficiency", "improve", "reduce"],
+            "customer/sponsor commitment": ["sponsor", "owner", "stakeholder", "commitment", "customer"],
+            "production path": ["production", "go-live", "deployment", "operate"],
+        },
+    },
+    {
+        "rule_id": "SUCCESS_CRITERIA_MEASURABLE",
+        "category": "Business Case & Commitment",
+        "title": "Measurable success criteria",
+        "description": "Checks that success criteria are measurable enough to support readiness review and SOW acceptance.",
+        "severity": "High",
+        "pass_criteria": "Quantified KPIs, acceptance thresholds, and validation method are present.",
+        "warning_criteria": "Success criteria exist but are partially qualitative or lack validation details.",
+        "fail_criteria": "Success criteria are missing or do not define measurable outcomes.",
+        "related_sections": ["success_criteria", "acceptance"],
+        "evidence_terms": {
+            "quantified KPI": ["%", "percent", "latency", "accuracy", "seconds", "minutes", "target", "threshold"],
+            "validation method": ["validate", "test", "measure", "acceptance", "criteria"],
+        },
+    },
+    {
+        "rule_id": "PRODUCTION_USAGE_ASSUMPTIONS",
+        "category": "Production Usage & Cost Assumptions",
+        "title": "Production usage assumptions",
+        "description": "Verifies that workload volume, usage pattern, and production-cost assumptions are explicit.",
+        "severity": "High",
+        "pass_criteria": "Usage volume, traffic or user assumptions, and operating period are documented.",
+        "warning_criteria": "Some production or usage assumptions exist but sizing is incomplete.",
+        "fail_criteria": "Production usage assumptions are absent from cost and architecture sections.",
+        "related_sections": ["cost_breakdown", "architecture", "assumptions"],
+        "evidence_terms": {
+            "usage volume": ["user", "request", "token", "document", "volume", "traffic", "monthly"],
+            "production assumption": ["production", "workload", "usage", "operating", "mrr", "arr"],
+        },
+    },
+    {
+        "rule_id": "COST_ASSUMPTION_BASIS",
+        "category": "Production Usage & Cost Assumptions",
+        "title": "Cost assumption basis",
+        "description": "Checks that AWS costs are supported by calculator evidence or a service-level estimate basis.",
+        "severity": "Critical",
+        "pass_criteria": "AWS Calculator URL or service-level cost table and monthly/yearly basis are present.",
+        "warning_criteria": "Cost values exist but the source or service-level basis is partial.",
+        "fail_criteria": "Cost basis is missing or cannot be traced to calculator/service assumptions.",
+        "related_sections": ["cost_breakdown", "resources_cost_estimates"],
+        "evidence_terms": {
+            "calculator or estimate": ["calculator", "estimate", "cost", "monthly", "arr", "mrr"],
+            "service-level basis": ["breakdown", "service", "bedrock", "lambda", "s3", "opensearch"],
+        },
+    },
+    {
+        "rule_id": "BEDROCK_EVIDENCE_MISSING",
+        "category": "Architecture & Service Sizing",
+        "title": "Amazon Bedrock evidence",
+        "description": "Confirms Amazon Bedrock is explicitly included where this is a GenAI IC/APN readiness review.",
+        "severity": "Critical",
+        "pass_criteria": "Amazon Bedrock, model usage, or related GenAI service evidence is present.",
+        "warning_criteria": "GenAI intent exists but Bedrock usage detail is thin.",
+        "fail_criteria": "Bedrock evidence is missing from the architecture.",
+        "related_sections": ["architecture"],
+        "evidence_terms": {
+            "Amazon Bedrock": ["bedrock"],
+            "model or generative AI usage": ["model", "llm", "genai", "generative", "rag", "agent"],
+        },
+    },
+    {
+        "rule_id": "ARCHITECTURE_SERVICE_SIZING",
+        "category": "Architecture & Service Sizing",
+        "title": "Architecture and service sizing",
+        "description": "Checks that listed AWS services are tied to workload, sizing, and implementation purpose.",
+        "severity": "High",
+        "pass_criteria": "Architecture overview, service list, and sizing rationale are present.",
+        "warning_criteria": "Services are listed but sizing or implementation rationale is incomplete.",
+        "fail_criteria": "Architecture does not explain how services support the workload.",
+        "related_sections": ["architecture"],
+        "evidence_terms": {
+            "service list": ["service", "bedrock", "lambda", "s3", "opensearch", "api gateway", "dynamodb"],
+            "sizing rationale": ["sizing", "capacity", "throughput", "latency", "volume", "scale"],
+            "architecture overview": ["overview", "architecture", "flow", "component"],
+        },
+    },
+    {
+        "rule_id": "DEPLOYMENT_SCALING_PLAN",
+        "category": "Deployment & Scaling Plan",
+        "title": "Deployment and scaling plan",
+        "description": "Validates that deployment approach, scaling behavior, and operational ownership are documented.",
+        "severity": "Medium",
+        "pass_criteria": "Deployment steps, scale assumptions, and operations/handover plan are present.",
+        "warning_criteria": "Deployment plan exists but scaling or ownership details are partial.",
+        "fail_criteria": "Deployment/scaling plan is missing.",
+        "related_sections": ["scope_of_work", "milestones", "architecture"],
+        "evidence_terms": {
+            "deployment steps": ["deploy", "deployment", "release", "handover", "environment"],
+            "scaling plan": ["scale", "scaling", "autoscale", "capacity", "concurrency"],
+            "owner or operation": ["operate", "owner", "support", "handover"],
+        },
+    },
+    {
+        "rule_id": "MILESTONES_DELIVERABLES",
+        "category": "Deployment & Scaling Plan",
+        "title": "Milestones and deliverables",
+        "description": "Checks that timeline, phases, and deliverables are specific enough for SOW execution.",
+        "severity": "Medium",
+        "pass_criteria": "Phases, dates or durations, deliverables, and acceptance checkpoints are present.",
+        "warning_criteria": "Milestones exist but deliverables or checkpoints are incomplete.",
+        "fail_criteria": "Milestones and deliverables are missing.",
+        "related_sections": ["milestones", "scope_of_work", "acceptance"],
+        "evidence_terms": {
+            "phase or timeline": ["phase", "week", "date", "duration", "milestone"],
+            "deliverable": ["deliverable", "output", "handover", "document"],
+            "acceptance checkpoint": ["acceptance", "review", "sign-off", "complete"],
+        },
+    },
+    {
+        "rule_id": "RISK_GOVERNANCE_MISSING",
+        "category": "Risk Assessment & Governance",
+        "title": "Risk assessment and governance",
+        "description": "Confirms risk, assumptions, security, data governance, and customer responsibilities are covered.",
+        "severity": "High",
+        "pass_criteria": "Risks, mitigations, governance/security controls, and customer dependencies are present.",
+        "warning_criteria": "Risk or governance content exists but mitigation or ownership is incomplete.",
+        "fail_criteria": "Risk and governance evidence is missing.",
+        "related_sections": ["assumptions", "scope_of_work", "architecture"],
+        "evidence_terms": {
+            "risk or assumption": ["risk", "assumption", "dependency", "constraint"],
+            "mitigation or governance": ["mitigation", "governance", "security", "privacy", "compliance", "control"],
+            "customer responsibility": ["customer", "provide", "access", "data"],
+        },
+    },
+    {
+        "rule_id": "SCOPE_BOUNDARY",
+        "category": "Risk Assessment & Governance",
+        "title": "Scope boundaries and exclusions",
+        "description": "Checks that in-scope and out-of-scope work are clear enough to avoid SOW ambiguity.",
+        "severity": "Medium",
+        "pass_criteria": "In-scope, out-of-scope, dependencies, and change control are documented.",
+        "warning_criteria": "Scope exists but exclusions or change control are partial.",
+        "fail_criteria": "Scope boundary is missing.",
+        "related_sections": ["scope_of_work", "assumptions"],
+        "evidence_terms": {
+            "in scope": ["scope", "in-scope", "task", "activity"],
+            "out of scope": ["out-of-scope", "excluded", "exclusion", "not included"],
+            "change control": ["change", "request", "approval"],
+        },
+    },
+    {
+        "rule_id": "ARR_MISSING",
+        "category": "Funding / ARR / SOW Cost",
+        "title": "Year 1 ARR basis",
+        "description": "Validates that Year 1 ARR or MRR-derived ARR is available for funding formula review.",
+        "severity": "Critical",
+        "pass_criteria": "Year 1 ARR is present or can be calculated from MRR.",
+        "warning_criteria": "MRR exists but ARR should be confirmed before submission.",
+        "fail_criteria": "ARR and MRR are both missing or zero.",
+        "related_sections": ["cost_breakdown"],
+        "evidence_terms": {
+            "ARR or MRR": ["arr", "mrr", "annual recurring", "monthly recurring"],
+        },
+    },
+    {
+        "rule_id": "SOW_COST_MISSING",
+        "category": "Funding / ARR / SOW Cost",
+        "title": "SOW cost basis",
+        "description": "Checks that SOW cost is present for eligibility calculation and customer funding discussion.",
+        "severity": "Critical",
+        "pass_criteria": "SOW cost or total resource estimate is present.",
+        "warning_criteria": "Resource cost exists but SOW cost should be explicitly confirmed.",
+        "fail_criteria": "SOW cost basis is missing.",
+        "related_sections": ["cost_breakdown", "resources_cost_estimates"],
+        "evidence_terms": {
+            "SOW or total cost": ["sow", "total_cost", "total cost", "eligible", "funding"],
+        },
+    },
+    {
+        "rule_id": "FUNDING_FORMULA",
+        "category": "Funding / ARR / SOW Cost",
+        "title": "Funding formula calculation",
+        "description": "Verifies that the eligible funding amount can be calculated from ARR, SOW cost, and cap.",
+        "severity": "High",
+        "pass_criteria": "ARR, SOW cost, eligible amount, and formula are consistent.",
+        "warning_criteria": "Inputs exist but eligible amount or formula needs confirmation.",
+        "fail_criteria": "Funding formula cannot be evaluated from available inputs.",
+        "related_sections": ["cost_breakdown", "resources_cost_estimates"],
+        "evidence_terms": {
+            "formula": ["min", "25%", "125000", "eligible", "funding"],
+            "inputs": ["arr", "sow", "cost"],
+        },
+    },
+    {
+        "rule_id": "APN_TEMPLATE_COMPLETENESS",
+        "category": "APN Template Completeness",
+        "title": "APN template required sections",
+        "description": "Checks that all APN v2 document sections have content for submission readiness.",
+        "severity": "High",
+        "pass_criteria": "All required APN v2 sections contain meaningful content.",
+        "warning_criteria": "Most required sections are populated but one or more sections are thin.",
+        "fail_criteria": "Required APN v2 sections are missing.",
+        "related_sections": [
+            "cover", "executive_summary", "stakeholders", "success_criteria",
+            "assumptions", "scope_of_work", "architecture", "milestones",
+            "cost_breakdown", "acceptance", "resources_cost_estimates",
+        ],
+        "evidence_terms": {
+            "required section content": ["project", "summary", "scope", "architecture", "cost", "acceptance", "resource"],
+        },
+    },
+    {
+        "rule_id": "CUSTOMER_METADATA",
+        "category": "APN Template Completeness",
+        "title": "Customer and project metadata",
+        "description": "Confirms customer/project identity fields are populated for generated APN documents.",
+        "severity": "Low",
+        "pass_criteria": "Customer and project metadata are confirmed.",
+        "warning_criteria": "Some metadata exists but customer or project fields need confirmation.",
+        "fail_criteria": "Customer/project metadata is missing.",
+        "related_sections": ["meta", "cover"],
+        "evidence_terms": {
+            "customer": ["customer", "client"],
+            "project": ["project", "title", "name"],
+        },
+    },
+    {
+        "rule_id": "ARCHITECTURE_COST_ALIGNMENT_MISSING",
+        "category": "Architecture-Cost Alignment",
+        "title": "Architecture-cost alignment",
+        "description": "Ensures services in architecture are reflected in cost evidence.",
+        "severity": "High",
+        "pass_criteria": "Architecture services map to calculator URL or service-level cost rows.",
+        "warning_criteria": "Some cost evidence exists but service mapping is incomplete.",
+        "fail_criteria": "Architecture services have no cost basis.",
+        "related_sections": ["architecture", "cost_breakdown"],
+        "evidence_terms": {
+            "architecture service": ["bedrock", "lambda", "s3", "opensearch", "api gateway", "dynamodb"],
+            "cost mapping": ["calculator", "breakdown", "cost", "estimate"],
+        },
+    },
+    {
+        "rule_id": "BEDROCK_COST_NOT_REFLECTED",
+        "category": "Architecture-Cost Alignment",
+        "title": "Bedrock cost reflected",
+        "description": "Checks that Bedrock usage in architecture is reflected in cost assumptions or calculator evidence.",
+        "severity": "Medium",
+        "pass_criteria": "Bedrock appears in both architecture and cost basis, or calculator URL covers service costs.",
+        "warning_criteria": "Bedrock appears in architecture and general cost evidence exists, but Bedrock-specific basis is thin.",
+        "fail_criteria": "Bedrock appears in architecture but no Bedrock cost row or calculator URL is present.",
+        "related_sections": ["architecture", "cost_breakdown"],
+        "evidence_terms": {
+            "Bedrock architecture": ["bedrock"],
+            "Bedrock cost basis": ["bedrock", "calculator", "token", "model", "cost"],
+        },
+    },
+]
+
+
+_REVIEW_RULE_SEED_VERSION = "2026-05-09.v1"
+_REVIEW_RULE_SOURCE_DOCUMENTS = [
+    "AWS펀드 프로그램.txt",
+    "GenAIIC PLD 펀딩 가이드 2025.txt",
+    "SOW Pre-Submission Checklist for MegazoneCloud (한글본).docx.txt",
+]
+_REVIEW_RULE_ITEM_PREFIX = "review_rule#"
+_REVIEW_RULE_CUSTOM_TYPE = "review_rule_custom"
+_REVIEW_RULE_OVERRIDE_TYPE = "review_rule_override"
+_REVIEW_RULE_SEVERITIES = {"Critical", "High", "Medium", "Low", "Info"}
+_REVIEW_RULE_EVALUATION_TYPES = {"static", "llm", "hybrid"}
+
+
+def _seed_rule(
+    rule_id: str,
+    category_en: str,
+    category_kr: str,
+    title_en: str,
+    title_kr: str,
+    description_en: str,
+    description_kr: str,
+    severity: str,
+    evaluation_type: str,
+    related_sections: list[str],
+    pass_criteria_en: list[str],
+    pass_criteria_kr: list[str],
+    warning_criteria_en: list[str],
+    warning_criteria_kr: list[str],
+    fail_criteria_en: list[str],
+    fail_criteria_kr: list[str],
+    recommendation_template_en: str,
+    recommendation_template_kr: str,
+    source: str,
+    evidence_terms: dict[str, list[str]] | None = None,
+) -> dict:
+    now = "2026-05-09T00:00:00+00:00"
+    return {
+        "rule_id": rule_id,
+        "enabled": True,
+        "custom": False,
+        "category_en": category_en,
+        "category_kr": category_kr,
+        "title_en": title_en,
+        "title_kr": title_kr,
+        "description_en": description_en,
+        "description_kr": description_kr,
+        "severity": severity,
+        "evaluation_type": evaluation_type,
+        "related_sections": related_sections,
+        "pass_criteria_en": pass_criteria_en,
+        "pass_criteria_kr": pass_criteria_kr,
+        "warning_criteria_en": warning_criteria_en,
+        "warning_criteria_kr": warning_criteria_kr,
+        "fail_criteria_en": fail_criteria_en,
+        "fail_criteria_kr": fail_criteria_kr,
+        "recommendation_template_en": recommendation_template_en,
+        "recommendation_template_kr": recommendation_template_kr,
+        "source": source,
+        "created_at": now,
+        "updated_at": now,
+        "created_by": "system",
+        "updated_by": "system",
+        "evidence_terms": evidence_terms or {},
+    }
+
+
+_REVIEW_RULE_CATALOG = [
+    _seed_rule("bedrock_included", "GenAI IC Eligibility", "GenAI IC 자격", "Amazon Bedrock is included as a core service", "Amazon Bedrock이 핵심 서비스로 포함되어 있는가", "The project must clearly include Amazon Bedrock as a core GenAI service.", "프로젝트에는 Amazon Bedrock이 핵심 GenAI 서비스로 명확히 포함되어야 합니다.", "Critical", "hybrid", ["architecture", "scope_of_work", "cost_breakdown"], ["Amazon Bedrock is explicitly listed as a core service.", "Bedrock usage is tied to the use case."], ["Amazon Bedrock이 핵심 서비스로 명시되어 있습니다.", "Bedrock 사용 목적이 Use Case와 연결되어 있습니다."], ["Bedrock is mentioned but its role is unclear."], ["Bedrock은 언급되었지만 역할이 불명확합니다."], ["Amazon Bedrock is not mentioned."], ["Amazon Bedrock이 언급되지 않았습니다."], "Add Amazon Bedrock as a core service and explain how it powers the GenAI use case.", "Amazon Bedrock을 핵심 서비스로 추가하고 GenAI Use Case에서 어떤 역할을 하는지 설명하십시오.", "AWS Fund Program / GenAIIC PLD Funding Guide", {"Amazon Bedrock": ["bedrock"], "use case linkage": ["use case", "workflow", "rag", "agent", "genai", "generative"]}),
+    _seed_rule("funding_amount_rule", "Funding", "펀딩", "Funding amount follows min(25% ARR, SOW Cost, $125K)", "펀딩 금액이 25% ARR, SOW Cost, $125K 중 작은 값 기준을 따르는가", "The requested funding amount should be justified against ARR, SOW Cost, and the $125K cap.", "요청 펀딩 금액은 ARR, SOW Cost, $125K 한도 기준으로 검증되어야 합니다.", "Critical", "static", ["cost_breakdown", "resources_cost_estimates"], ["ARR, SOW Cost, and requested funding amount are present.", "The calculated eligible funding amount is clear."], ["ARR, SOW Cost, 요청 펀딩 금액이 모두 존재합니다.", "지원 가능 금액 계산 결과가 명확합니다."], ["Some funding inputs exist but calculation is incomplete."], ["일부 펀딩 입력값은 있으나 계산이 불완전합니다."], ["Funding amount is requested without ARR or SOW Cost basis."], ["ARR 또는 SOW Cost 근거 없이 펀딩 금액이 요청되었습니다."], "Add ARR, SOW Cost, requested funding amount, and calculate min(ARR x 25%, SOW Cost, $125K).", "ARR, SOW Cost, 요청 펀딩 금액을 추가하고 min(ARR x 25%, SOW Cost, $125K)를 계산하십시오.", "AWS Fund Program", {"funding inputs": ["arr", "sow", "funding", "eligible", "125"]}),
+    _seed_rule("calculator_link_exists", "AWS ARR", "AWS ARR", "AWS Calculator link is provided", "AWS Calculator 링크가 제공되었는가", "The Project Plan/SOW should include an AWS Online Calculator link for possible AWS services.", "Project Plan/SOW에는 가능한 AWS 서비스에 대한 AWS Online Calculator 링크가 포함되어야 합니다.", "Critical", "static", ["cost_breakdown"], ["A valid AWS Calculator URL is present."], ["유효한 AWS Calculator URL이 존재합니다."], ["A calculator reference exists but URL is missing or invalid."], ["Calculator 언급은 있으나 URL이 없거나 유효하지 않습니다."], ["No AWS Calculator link is provided."], ["AWS Calculator 링크가 제공되지 않았습니다."], "Add an AWS Calculator share URL for all supported AWS services.", "지원 가능한 AWS 서비스에 대한 AWS Calculator 공유 URL을 추가하십시오.", "GenAIIC PLD Funding Guide", {"calculator URL": ["calculator", "https://", "calculator.aws"]}),
+    _seed_rule("bedrock_cost_estimate_exists", "AWS ARR", "AWS ARR", "Bedrock cost is estimated separately when not available in Calculator", "Calculator에 없는 Bedrock 비용이 별도 산정되었는가", "If Bedrock is not available in the Calculator estimate, a separate spreadsheet-style estimate should be included.", "Bedrock 비용이 Calculator에 포함되지 않는 경우 별도 산정 근거가 포함되어야 합니다.", "Critical", "hybrid", ["cost_breakdown", "assumptions"], ["Bedrock token usage assumptions are documented.", "Bedrock monthly or annual cost estimate is present."], ["Bedrock Token 사용 가정이 문서화되어 있습니다.", "Bedrock 월간 또는 연간 비용 산정이 존재합니다."], ["Bedrock cost exists but token assumptions are weak."], ["Bedrock 비용은 있으나 Token 가정이 약합니다."], ["No Bedrock cost or token estimate is provided."], ["Bedrock 비용 또는 Token 산정이 제공되지 않았습니다."], "Add Bedrock input/output token assumptions and estimated monthly/annual cost.", "Bedrock input/output token 가정과 월/연 비용 산정을 추가하십시오.", "GenAIIC PLD Funding Guide / SOW Checklist", {"Bedrock cost": ["bedrock", "cost", "mrr", "arr"], "token assumptions": ["token", "input", "output"]}),
+    _seed_rule("total_arr_documented", "AWS ARR", "AWS ARR", "Total AWS ARR is documented", "전체 AWS ARR이 문서화되었는가", "The document should state total AWS ARR, combining Calculator-based and separate estimates if needed.", "문서에는 Calculator 기반 비용과 별도 산정을 합산한 전체 AWS ARR이 명시되어야 합니다.", "Critical", "static", ["cost_breakdown"], ["Total AWS ARR is explicitly stated."], ["전체 AWS ARR이 명확히 기재되어 있습니다."], ["MRR exists but ARR is not clearly calculated."], ["MRR은 있으나 ARR 계산이 명확하지 않습니다."], ["No AWS ARR or MRR basis is provided."], ["AWS ARR 또는 MRR 근거가 제공되지 않았습니다."], "Add total AWS MRR/ARR and show how it was calculated.", "전체 AWS MRR/ARR과 계산 방식을 추가하십시오.", "GenAIIC PLD Funding Guide", {"ARR or MRR": ["arr", "mrr", "annual", "monthly"]}),
+    _seed_rule("genai_arr_percentage", "AWS ARR", "AWS ARR", "Core GenAI service percentage in ARR is documented", "전체 ARR 중 핵심 GenAI 서비스 비중이 문서화되었는가", "The document should mention the percentage of core AWS GenAI services in total AWS ARR.", "문서에는 전체 AWS ARR 중 핵심 GenAI 서비스 비중이 명시되어야 합니다.", "High", "llm", ["cost_breakdown"], ["Core GenAI service percentage is stated."], ["핵심 GenAI 서비스 비중이 명시되어 있습니다."], ["GenAI service costs are present but percentage is not calculated."], ["GenAI 서비스 비용은 있으나 비중 계산이 없습니다."], ["No GenAI ARR percentage or comparable explanation is provided."], ["GenAI ARR 비중 또는 유사 설명이 없습니다."], "Add the percentage of core AWS GenAI services within total AWS ARR.", "전체 AWS ARR 중 핵심 AWS GenAI 서비스 비중을 추가하십시오.", "GenAIIC PLD Funding Guide", {"GenAI percentage": ["%", "percentage", "genai", "bedrock"]}),
+    _seed_rule("sow_cost_breakdown_exists", "SOW Cost", "SOW 비용", "SOW cost breakdown is documented", "SOW Cost Breakdown이 문서화되었는가", "The document should break down SOW cost by activity, role, phase, or partner/customer contribution.", "문서에는 활동, 역할, 단계 또는 Partner/Customer 분담 기준으로 SOW 비용이 분해되어야 합니다.", "Critical", "hybrid", ["resources_cost_estimates"], ["SOW cost breakdown exists.", "Role/rate/hour or contribution basis is clear."], ["SOW 비용 분해가 존재합니다.", "Role/rate/hour 또는 비용 분담 기준이 명확합니다."], ["Total SOW cost exists but detailed breakdown is weak."], ["총 SOW 비용은 있으나 상세 분해가 약합니다."], ["No SOW cost breakdown is provided."], ["SOW 비용 분해가 제공되지 않았습니다."], "Add a SOW cost breakdown by role, rate, hours, phase, and contribution owner.", "역할, 단가, 시간, 단계, 비용 분담 주체 기준으로 SOW 비용 분해를 추가하십시오.", "GenAIIC PLD Funding Guide / SOW Checklist", {"SOW cost breakdown": ["role", "rate", "hour", "phase", "total_cost", "contribution"]}),
+    _seed_rule("partner_customer_cost_split", "SOW Cost", "SOW 비용", "Partner and customer cost split is clear", "Partner / Customer 비용 분담이 명확한가", "The cost split between AWS partner and customer should be clear where applicable.", "해당되는 경우 AWS Partner와 Customer 간 비용 분담이 명확해야 합니다.", "High", "llm", ["resources_cost_estimates", "cost_breakdown"], ["Partner/customer contribution split is documented."], ["Partner/Customer 비용 분담이 문서화되어 있습니다."], ["Contribution is implied but not clearly stated."], ["비용 분담이 암시되어 있으나 명확하지 않습니다."], ["No cost split or contribution ownership is provided."], ["비용 분담 또는 부담 주체가 제공되지 않았습니다."], "Add partner/customer contribution details for SOW cost.", "SOW 비용에 대한 Partner/Customer 분담 내용을 추가하십시오.", "GenAIIC PLD Funding Guide", {"cost split": ["partner", "customer", "contribution", "split"]}),
+    _seed_rule("use_case_defined", "Use Case", "유스케이스", "Customer use case is clearly described", "고객 Use Case가 명확히 설명되었는가", "The document should clearly describe the customer use case and target business workflow.", "문서에는 고객 Use Case와 대상 업무 흐름이 명확히 설명되어야 합니다.", "Critical", "llm", ["executive_summary", "scope_of_work", "architecture"], ["Use case is specific and tied to customer business workflow."], ["Use Case가 구체적이며 고객 업무 흐름과 연결되어 있습니다."], ["Use case is present but generic."], ["Use Case는 있으나 일반적입니다."], ["Use case is missing or unclear."], ["Use Case가 없거나 불명확합니다."], "Add a concise customer-specific GenAI use case description.", "고객별 GenAI Use Case 설명을 구체적으로 추가하십시오.", "GenAIIC PLD Funding Guide / SOW Checklist", {"use case": ["use case", "workflow", "business", "customer", "업무"]}),
+    _seed_rule("business_problem_defined", "Business Case & Commitment", "비즈니스 케이스 및 커밋먼트", "Customer problem and pain point are specific", "고객 문제와 Pain Point가 구체적인가", "The document should describe why the customer is investing and what problem is being solved.", "문서에는 고객이 왜 투자하는지와 어떤 문제를 해결하려는지 설명되어야 합니다.", "High", "llm", ["executive_summary"], ["Specific pain points, current workload, time, cost, or error rate are described."], ["구체적인 Pain Point, 현재 업무량, 시간, 비용, 오류율 등이 설명되어 있습니다."], ["Pain point exists but lacks measurable detail."], ["Pain Point는 있으나 정량적 세부정보가 부족합니다."], ["No specific customer problem is described."], ["구체적인 고객 문제가 설명되지 않았습니다."], "Add specific customer pain points such as manual workload, search time, error rate, or cost.", "수작업량, 검색 시간, 오류율, 비용 등 구체적인 고객 Pain Point를 추가하십시오.", "SOW Pre-Submission Checklist", {"pain point": ["problem", "pain", "manual", "time", "cost", "error"]}),
+    _seed_rule("business_value_quantified", "Business Case & Commitment", "비즈니스 케이스 및 커밋먼트", "Business value is quantified", "비즈니스 가치가 수치화되었는가", "The document should quantify expected business value such as time savings, cost reduction, or productivity improvement.", "문서에는 시간 절감, 비용 절감, 생산성 개선 등 기대 비즈니스 가치가 수치화되어야 합니다.", "High", "llm", ["executive_summary", "success_criteria"], ["Business value is expressed with numbers or measurable outcomes."], ["비즈니스 가치가 수치 또는 측정 가능한 결과로 표현되어 있습니다."], ["Business value is described qualitatively only."], ["비즈니스 가치가 정성적으로만 설명되어 있습니다."], ["No business value is stated."], ["비즈니스 가치가 명시되지 않았습니다."], "Add quantified value such as time saved, cost saved, automation rate, or accuracy improvement.", "절감 시간, 절감 비용, 자동화율, 정확도 개선 등 수치화된 가치를 추가하십시오.", "SOW Pre-Submission Checklist", {"quantified value": ["%", "save", "reduce", "increase", "accuracy", "automation", "cost"]}),
+    _seed_rule("roi_basis_exists", "Business Case & Commitment", "비즈니스 케이스 및 커밋먼트", "ROI basis is documented", "ROI 계산 근거가 있는가", "The document should include ROI logic such as before/after effort, cost savings, or TCO comparison.", "문서에는 전후 업무량, 비용 절감, TCO 비교 등 ROI 계산 논리가 포함되어야 합니다.", "High", "llm", ["executive_summary", "success_criteria", "cost_breakdown"], ["ROI calculation or value formula is present."], ["ROI 계산 또는 가치 산식이 존재합니다."], ["ROI is implied but not calculated."], ["ROI가 암시되어 있으나 계산되지 않았습니다."], ["No ROI basis is provided."], ["ROI 근거가 제공되지 않았습니다."], "Add a simple ROI calculation using time saved, hourly cost, annual volume, or TCO.", "절감 시간, 시간당 비용, 연간 처리량 또는 TCO 기반의 간단한 ROI 계산을 추가하십시오.", "SOW Pre-Submission Checklist", {"ROI basis": ["roi", "tco", "saving", "before", "after", "cost"]}),
+    _seed_rule("executive_sponsor_exists", "Business Case & Commitment", "비즈니스 케이스 및 커밋먼트", "Executive sponsor is identified", "Executive Sponsor가 명시되었는가", "The document should identify the executive sponsor or decision owner where available.", "문서에는 가능하면 Executive Sponsor 또는 의사결정 책임자가 명시되어야 합니다.", "Medium", "llm", ["stakeholders", "executive_summary"], ["Executive sponsor or decision owner is identified."], ["Executive Sponsor 또는 의사결정 책임자가 식별되어 있습니다."], ["Stakeholders exist but sponsor is unclear."], ["이해관계자는 있으나 Sponsor가 불명확합니다."], ["No sponsor or decision owner is identified."], ["Sponsor 또는 의사결정자가 식별되지 않았습니다."], "Add executive sponsor or decision owner information if available.", "가능한 경우 Executive Sponsor 또는 의사결정자 정보를 추가하십시오.", "SOW Pre-Submission Checklist", {"sponsor": ["sponsor", "decision", "owner", "executive", "stakeholder"]}),
+    _seed_rule("production_commitment_exists", "Business Case & Commitment", "비즈니스 케이스 및 커밋먼트", "Production commitment or production path is documented", "Production 전환 계획 또는 커밋먼트가 문서화되었는가", "The document should describe the plan or condition for moving from PoC to production.", "문서에는 PoC 이후 Production 전환 계획 또는 조건이 설명되어야 합니다.", "Critical", "llm", ["executive_summary", "milestones", "acceptance"], ["Production timeline, condition, or commitment is documented."], ["Production 일정, 조건 또는 커밋먼트가 문서화되어 있습니다."], ["Production is mentioned but timeline or condition is weak."], ["Production은 언급되었으나 일정 또는 조건이 약합니다."], ["No production path or commitment is documented."], ["Production 전환 경로 또는 커밋먼트가 문서화되지 않았습니다."], "Add a production transition plan or condition after successful PoC.", "PoC 성공 후 Production 전환 계획 또는 조건을 추가하십시오.", "SOW Pre-Submission Checklist / GenAIIC PLD Funding Guide", {"production path": ["production", "go-live", "rollout", "commitment", "timeline"]}),
+    _seed_rule("success_criteria_measurable", "Success Criteria", "성공 기준", "Success criteria are measurable", "성공 기준이 정량적으로 측정 가능한가", "Success criteria should include measurable KPIs such as accuracy, latency, automation rate, or satisfaction.", "성공 기준에는 정확도, 응답시간, 자동화율, 만족도 등 측정 가능한 KPI가 포함되어야 합니다.", "High", "llm", ["success_criteria"], ["Success criteria include clear numeric targets."], ["성공 기준에 명확한 정량 목표가 포함되어 있습니다."], ["Success criteria exist but are mostly qualitative."], ["성공 기준은 있으나 대부분 정성적입니다."], ["No measurable success criteria are provided."], ["측정 가능한 성공 기준이 제공되지 않았습니다."], "Add measurable targets such as accuracy, response time, automation rate, or user satisfaction.", "정확도, 응답시간, 자동화율, 사용자 만족도 등 측정 가능한 목표를 추가하십시오.", "SOW Pre-Submission Checklist", {"numeric targets": ["%", "accuracy", "latency", "response", "automation", "satisfaction", "kpi"]}),
+    _seed_rule("usage_volume_exists", "Production Usage & Cost Assumptions", "프로덕션 사용량 및 비용 가정", "Production request volume is documented", "프로덕션 요청량이 문서화되었는가", "The document should include expected users, request volume, peak usage, or usage period.", "문서에는 예상 사용자 수, 요청량, 피크 사용량 또는 사용 시간대가 포함되어야 합니다.", "Critical", "llm", ["assumptions", "cost_breakdown"], ["Expected user count and daily/monthly request volume are provided."], ["예상 사용자 수와 일/월 요청량이 제공되어 있습니다."], ["Usage is described qualitatively but lacks concrete numbers."], ["사용량이 정성적으로만 설명되고 구체적인 수치가 부족합니다."], ["No production usage volume is provided."], ["프로덕션 사용량 가정이 제공되지 않았습니다."], "Add expected users, daily requests, peak concurrency, and usage period.", "예상 사용자 수, 일 요청량, 피크 동시성, 사용 시간대를 추가하십시오.", "SOW Pre-Submission Checklist", {"usage volume": ["user", "request", "daily", "monthly", "peak", "concurrency"]}),
+    _seed_rule("token_assumption_exists", "Production Usage & Cost Assumptions", "프로덕션 사용량 및 비용 가정", "Bedrock token assumptions are documented", "Bedrock Token 사용 가정이 문서화되었는가", "The document should include input/output token assumptions for Bedrock usage.", "문서에는 Bedrock 사용에 대한 input/output token 가정이 포함되어야 합니다.", "Critical", "llm", ["assumptions", "cost_breakdown"], ["Input/output token assumptions and monthly token volume are provided."], ["Input/output token 가정과 월간 token 사용량이 제공되어 있습니다."], ["Token usage exists but calculation is incomplete."], ["Token 사용량은 있으나 계산이 불완전합니다."], ["No Bedrock token assumption is provided."], ["Bedrock Token 가정이 제공되지 않았습니다."], "Add average input/output tokens, requests per user, users, and monthly token calculation.", "평균 input/output token, 사용자별 요청 수, 사용자 수, 월간 token 계산을 추가하십시오.", "SOW Pre-Submission Checklist", {"token assumptions": ["token", "input", "output", "monthly", "request"]}),
+    _seed_rule("data_volume_exists", "Production Usage & Cost Assumptions", "프로덕션 사용량 및 비용 가정", "Data volume and retention assumptions are documented", "데이터 규모와 보관 가정이 문서화되었는가", "The document should include data size, document count, storage, vector index, or retention assumptions.", "문서에는 데이터 크기, 문서 수, 스토리지, 벡터 인덱스, 보관 기간 가정이 포함되어야 합니다.", "High", "llm", ["assumptions", "architecture", "cost_breakdown"], ["Data volume and retention assumptions are documented."], ["데이터 규모와 보관 가정이 문서화되어 있습니다."], ["Data source is described but volume or retention is missing."], ["데이터 소스는 설명되었으나 규모 또는 보관 기간이 없습니다."], ["No data volume or retention assumption is provided."], ["데이터 규모 또는 보관 가정이 제공되지 않았습니다."], "Add document count, data size, vector index size, and retention period.", "문서 수, 데이터 크기, 벡터 인덱스 크기, 보관 기간을 추가하십시오.", "SOW Pre-Submission Checklist", {"data volume": ["data", "document", "storage", "vector", "retention", "gb", "tb"]}),
+    _seed_rule("growth_assumption_exists", "Production Usage & Cost Assumptions", "프로덕션 사용량 및 비용 가정", "Growth assumption is documented", "성장률 또는 확장 가정이 문서화되었는가", "The document should describe expected usage growth or rollout-driven growth.", "문서에는 예상 사용량 증가율 또는 Rollout 기반 확장 가정이 포함되어야 합니다.", "Medium", "llm", ["assumptions", "deployment", "cost_breakdown"], ["Growth rate or rollout growth assumption is provided."], ["성장률 또는 Rollout 기반 증가 가정이 제공되어 있습니다."], ["Growth is implied but not quantified."], ["성장은 암시되어 있으나 정량화되지 않았습니다."], ["No growth assumption is provided."], ["성장률 또는 확장 가정이 제공되지 않았습니다."], "Add monthly growth rate or phased rollout growth assumptions.", "월간 성장률 또는 단계별 Rollout 증가 가정을 추가하십시오.", "SOW Pre-Submission Checklist", {"growth": ["growth", "rollout", "increase", "scale", "%"]}),
+    _seed_rule("cost_assumption_detailed", "Production Usage & Cost Assumptions", "프로덕션 사용량 및 비용 가정", "Cost assumptions are detailed by service and usage", "서비스/사용량별 비용 가정이 구체적인가", "Cost estimates should be tied to usage assumptions and service-level details.", "비용 산정은 사용량 가정 및 서비스별 상세 내역과 연결되어야 합니다.", "High", "hybrid", ["cost_breakdown"], ["Cost is documented by service and usage basis."], ["서비스별 및 사용량 기준으로 비용이 문서화되어 있습니다."], ["Cost is listed but assumptions are weak."], ["비용은 나열되어 있으나 가정이 약합니다."], ["No detailed cost assumptions are provided."], ["상세 비용 가정이 제공되지 않았습니다."], "Add service-level cost assumptions including volume, unit, and calculation basis.", "서비스별 사용량, 단위, 계산 기준을 포함한 비용 가정을 추가하십시오.", "SOW Pre-Submission Checklist", {"service cost basis": ["service", "cost", "volume", "unit", "calculation", "breakdown"]}),
+    _seed_rule("architecture_diagram_exists", "Architecture & Service Sizing", "아키텍처 및 서비스 사이징", "Architecture diagram is included", "아키텍처 다이어그램이 포함되어 있는가", "The Project Plan/SOW should include an architecture diagram for the use case.", "Project Plan/SOW에는 Use Case에 대한 아키텍처 다이어그램이 포함되어야 합니다.", "Critical", "static", ["architecture"], ["Architecture diagram or diagram artifact exists."], ["아키텍처 다이어그램 또는 다이어그램 아티팩트가 존재합니다."], ["Architecture is described in text but diagram is missing."], ["아키텍처가 텍스트로 설명되었으나 다이어그램이 없습니다."], ["No architecture diagram or equivalent artifact is provided."], ["아키텍처 다이어그램 또는 동등한 아티팩트가 제공되지 않았습니다."], "Add an architecture diagram showing AWS services, data flow, and integration points.", "AWS 서비스, 데이터 흐름, 연동 지점을 보여주는 아키텍처 다이어그램을 추가하십시오.", "GenAIIC PLD Funding Guide / SOW Checklist", {"diagram": ["diagram", "drawio", "image", "architecture"]}),
+    _seed_rule("architecture_services_defined", "Architecture & Service Sizing", "아키텍처 및 서비스 사이징", "AWS services and their roles are clearly described", "AWS 서비스와 역할이 명확히 설명되었는가", "The document should describe each key AWS service and why it is used.", "문서에는 주요 AWS 서비스와 사용 이유가 설명되어야 합니다.", "High", "llm", ["architecture"], ["Key AWS services and purposes are clearly described."], ["주요 AWS 서비스와 목적이 명확히 설명되어 있습니다."], ["Services are listed but roles are unclear."], ["서비스는 나열되었으나 역할이 불명확합니다."], ["No clear AWS service description is provided."], ["명확한 AWS 서비스 설명이 제공되지 않았습니다."], "Add service-by-service purpose and role descriptions.", "서비스별 목적과 역할 설명을 추가하십시오.", "SOW Pre-Submission Checklist", {"service roles": ["service", "description", "purpose", "role", "used"]}),
+    _seed_rule("architecture_cost_alignment", "Architecture & Service Sizing", "아키텍처 및 서비스 사이징", "Architecture services match cost estimate services", "아키텍처 서비스와 비용 산정 서비스가 일치하는가", "All services in the architecture should be reflected in cost estimates, and cost items should appear in architecture.", "아키텍처에 있는 모든 서비스는 비용 산정에 반영되어야 하며, 비용 항목도 아키텍처에 나타나야 합니다.", "Critical", "hybrid", ["architecture", "cost_breakdown"], ["Architecture services and cost services are aligned."], ["아키텍처 서비스와 비용 산정 서비스가 일치합니다."], ["Minor services are missing from one side."], ["일부 부가 서비스가 한쪽에서 누락되었습니다."], ["Major service mismatch exists between architecture and cost estimate."], ["아키텍처와 비용 산정 사이에 주요 서비스 불일치가 있습니다."], "Align architecture services and cost estimate line items, especially Bedrock, OpenSearch, Redshift, Redis, Kafka/MSK, NAT Gateway, and storage.", "Bedrock, OpenSearch, Redshift, Redis, Kafka/MSK, NAT Gateway, Storage 등 주요 서비스를 기준으로 아키텍처와 비용 항목을 정합화하십시오.", "SOW Pre-Submission Checklist", {"architecture-cost mapping": ["bedrock", "opensearch", "redshift", "redis", "kafka", "msk", "nat", "storage", "cost"]}),
+    _seed_rule("service_sizing_rationale", "Architecture & Service Sizing", "아키텍처 및 서비스 사이징", "Key service sizing rationale is documented", "주요 서비스의 사이징 근거가 문서화되었는가", "The document should justify service sizing decisions using workload, data volume, latency, accuracy, or scale needs.", "문서에는 워크로드, 데이터 규모, 지연시간, 정확도, 확장 요구사항을 기반으로 서비스 사이징 근거가 포함되어야 합니다.", "High", "llm", ["architecture", "cost_breakdown"], ["Sizing rationale is provided for major services."], ["주요 서비스에 대한 사이징 근거가 제공되어 있습니다."], ["Sizing is present but rationale is weak."], ["사이징은 있으나 근거가 약합니다."], ["No sizing rationale is provided."], ["사이징 근거가 제공되지 않았습니다."], "Add sizing rationale for major services using workload, data, latency, accuracy, and scale assumptions.", "워크로드, 데이터, 지연시간, 정확도, 확장 가정을 활용해 주요 서비스 사이징 근거를 추가하십시오.", "SOW Pre-Submission Checklist", {"sizing rationale": ["sizing", "workload", "latency", "accuracy", "scale", "volume"]}),
+    _seed_rule("capacity_mode_explained", "Architecture & Service Sizing", "아키텍처 및 서비스 사이징", "Capacity mode choices are explained", "용량 모드 선택 이유가 설명되었는가", "Capacity mode choices such as on-demand, provisioned, or autoscaling should be explained where relevant.", "온디맨드, 프로비저닝, 오토스케일링 등 용량 모드 선택 이유가 관련 서비스에 대해 설명되어야 합니다.", "Medium", "llm", ["architecture", "cost_breakdown"], ["Capacity mode decisions are explained for relevant services."], ["관련 서비스에 대한 용량 모드 선택 이유가 설명되어 있습니다."], ["Capacity mode is implied but not explained."], ["용량 모드가 암시되어 있으나 설명이 부족합니다."], ["No capacity mode rationale is provided."], ["용량 모드 선택 근거가 제공되지 않았습니다."], "Explain why each major service uses on-demand, provisioned, or autoscaling capacity.", "각 주요 서비스가 온디맨드, 프로비저닝, 오토스케일링 중 어떤 용량 모드를 사용하는지와 이유를 설명하십시오.", "SOW Pre-Submission Checklist", {"capacity mode": ["on-demand", "provisioned", "autoscaling", "capacity"]}),
+    _seed_rule("scope_phase_deliverables", "Scope of Work", "작업 범위", "SOW phases and deliverables are documented", "SOW 단계와 산출물이 문서화되었는가", "The document should include clear phases, tasks, and deliverables.", "문서에는 명확한 단계, 작업, 산출물이 포함되어야 합니다.", "High", "llm", ["scope_of_work", "milestones"], ["Phases, tasks, and deliverables are clearly documented."], ["단계, 작업, 산출물이 명확히 문서화되어 있습니다."], ["Phases exist but deliverables are weak."], ["단계는 있으나 산출물이 약합니다."], ["No clear SOW phases or deliverables are provided."], ["명확한 SOW 단계 또는 산출물이 제공되지 않았습니다."], "Add phase-level tasks and deliverables such as Analysis/Design, Development, Deployment, and Stabilization.", "Analysis/Design, Development, Deployment, Stabilization 등 단계별 작업과 산출물을 추가하십시오.", "SOW Pre-Submission Checklist", {"phases and deliverables": ["phase", "task", "deliverable", "development", "deployment"]}),
+    _seed_rule("deployment_rollout_plan", "Deployment & Scaling Plan", "배포 및 확장 계획", "Phased rollout plan is documented", "단계별 Rollout 계획이 문서화되었는가", "The document should describe pilot-to-production rollout stages.", "문서에는 파일럿에서 프로덕션까지의 단계별 Rollout 계획이 설명되어야 합니다.", "Medium", "llm", ["milestones", "acceptance", "assumptions"], ["Rollout phases and timeline are documented."], ["Rollout 단계와 일정이 문서화되어 있습니다."], ["Deployment is mentioned but rollout is vague."], ["배포는 언급되었으나 Rollout이 모호합니다."], ["No rollout plan is provided."], ["Rollout 계획이 제공되지 않았습니다."], "Add staged rollout from pilot users to production users with dates or months.", "파일럿 사용자에서 프로덕션 사용자로 확대되는 단계별 Rollout 일정 또는 기간을 추가하십시오.", "SOW Pre-Submission Checklist", {"rollout": ["rollout", "pilot", "production", "date", "month"]}),
+    _seed_rule("scaling_strategy_exists", "Deployment & Scaling Plan", "배포 및 확장 계획", "Scaling strategy is documented", "확장 전략이 문서화되었는가", "The document should describe how the system scales with traffic, users, or workload.", "문서에는 트래픽, 사용자, 워크로드 증가에 따른 확장 전략이 설명되어야 합니다.", "Medium", "llm", ["architecture", "assumptions"], ["Autoscaling or capacity expansion strategy is documented."], ["오토스케일링 또는 용량 확장 전략이 문서화되어 있습니다."], ["Scaling is mentioned without clear threshold or method."], ["확장이 언급되었으나 임계치 또는 방법이 명확하지 않습니다."], ["No scaling strategy is provided."], ["확장 전략이 제공되지 않았습니다."], "Add scaling strategy such as autoscaling thresholds, capacity ranges, or growth-driven scaling.", "오토스케일링 임계치, 용량 범위, 성장 기반 확장 전략을 추가하십시오.", "SOW Pre-Submission Checklist", {"scaling": ["scale", "autoscaling", "threshold", "capacity", "traffic"]}),
+    _seed_rule("budget_by_phase_exists", "Deployment & Scaling Plan", "배포 및 확장 계획", "Budget or cost by rollout phase is documented", "단계별 예산 또는 비용 전망이 문서화되었는가", "The document should show how cost changes across rollout phases when applicable.", "해당되는 경우 Rollout 단계별 비용 변화가 문서화되어야 합니다.", "Medium", "llm", ["cost_breakdown", "milestones"], ["Budget or cost by rollout phase is documented."], ["단계별 예산 또는 비용 전망이 문서화되어 있습니다."], ["Total cost exists but phase-level budget is missing."], ["총 비용은 있으나 단계별 예산이 없습니다."], ["No phase-level budget or cost outlook is provided."], ["단계별 예산 또는 비용 전망이 제공되지 않았습니다."], "Add cost outlook by rollout phase if production scale is part of the proposal.", "Production 확장이 포함된 경우 Rollout 단계별 비용 전망을 추가하십시오.", "SOW Pre-Submission Checklist", {"phase budget": ["phase", "budget", "cost", "rollout"]}),
+    _seed_rule("risk_assessment_required", "Risk Assessment & Governance", "리스크 평가 및 거버넌스", "Risk assessment is completed for regulated or high-risk use cases", "규제/고위험 Use Case에 대한 리스크 평가가 완료되었는가", "Regulated or high-risk use cases should include risk and governance assessment.", "규제 산업 또는 고위험 Use Case에는 리스크 및 거버넌스 평가가 포함되어야 합니다.", "High", "llm", ["assumptions", "architecture", "acceptance"], ["Risk assessment is documented or explicitly not applicable."], ["리스크 평가가 문서화되었거나 명확히 해당 없음으로 설명되어 있습니다."], ["Risk is mentioned but controls are weak."], ["리스크는 언급되었으나 통제가 약합니다."], ["High-risk use case has no risk assessment."], ["고위험 Use Case임에도 리스크 평가가 없습니다."], "Add risk assessment for regulated/high-risk AI use cases, or state why it is not applicable.", "규제/고위험 AI Use Case에 대한 리스크 평가를 추가하거나 해당 없음 사유를 명시하십시오.", "SOW Pre-Submission Checklist", {"risk assessment": ["risk", "regulated", "governance", "control", "not applicable"]}),
+    _seed_rule("human_in_loop_defined", "Risk Assessment & Governance", "리스크 평가 및 거버넌스", "Human-in-the-loop control is documented when needed", "필요 시 Human-in-the-loop 통제가 문서화되었는가", "High-impact recommendations or decisions should include human review controls where needed.", "중요한 추천 또는 의사결정에는 필요한 경우 사람의 검토 통제가 포함되어야 합니다.", "High", "llm", ["architecture", "acceptance", "assumptions"], ["Human review process is documented where applicable."], ["해당되는 경우 사람의 검토 프로세스가 문서화되어 있습니다."], ["Human review is implied but not operationalized."], ["사람의 검토가 암시되어 있으나 운영 방식이 없습니다."], ["High-risk AI decision flow has no human review control."], ["고위험 AI 의사결정 흐름에 사람의 검토 통제가 없습니다."], "Add human-in-the-loop review process for high-risk recommendations or decisions.", "고위험 추천 또는 의사결정에 대한 Human-in-the-loop 검토 프로세스를 추가하십시오.", "SOW Pre-Submission Checklist", {"human review": ["human", "review", "approval", "decision"]}),
+    _seed_rule("audit_logging_defined", "Risk Assessment & Governance", "리스크 평가 및 거버넌스", "Audit logging requirement is documented", "감사 로그 요건이 문서화되었는가", "The document should describe audit logging requirements for AI decisions or critical workflows when relevant.", "관련되는 경우 AI 판단 또는 중요 업무 흐름에 대한 감사 로그 요건이 설명되어야 합니다.", "Medium", "llm", ["architecture", "assumptions"], ["Audit logging requirement is documented or explicitly not applicable."], ["감사 로그 요건이 문서화되었거나 명확히 해당 없음으로 설명되어 있습니다."], ["Logging is mentioned but audit retention or scope is unclear."], ["로그는 언급되었으나 감사 보관 또는 범위가 불명확합니다."], ["No audit logging requirement is provided for relevant use cases."], ["관련 Use Case에 대한 감사 로그 요건이 제공되지 않았습니다."], "Add audit logging scope, retention, and review requirement where applicable.", "해당되는 경우 감사 로그 범위, 보관 기간, 검토 요건을 추가하십시오.", "SOW Pre-Submission Checklist", {"audit logging": ["audit", "logging", "retention", "log"]}),
+    _seed_rule("compliance_requirements_defined", "Risk Assessment & Governance", "리스크 평가 및 거버넌스", "Compliance requirements are documented", "컴플라이언스 요건이 문서화되었는가", "The document should describe compliance requirements such as PIPA, GDPR, HIPAA, PCI-DSS where applicable.", "해당되는 경우 PIPA, GDPR, HIPAA, PCI-DSS 등 컴플라이언스 요건이 설명되어야 합니다.", "High", "llm", ["assumptions", "architecture"], ["Relevant compliance requirements are documented or explicitly not applicable."], ["관련 컴플라이언스 요건이 문서화되었거나 명확히 해당 없음으로 설명되어 있습니다."], ["Compliance is mentioned but requirements are incomplete."], ["컴플라이언스가 언급되었으나 요건이 불완전합니다."], ["Regulated use case has no compliance consideration."], ["규제 대상 Use Case임에도 컴플라이언스 고려사항이 없습니다."], "Add applicable compliance requirements and data protection controls.", "적용 가능한 컴플라이언스 요건과 데이터 보호 통제를 추가하십시오.", "SOW Pre-Submission Checklist", {"compliance": ["compliance", "pipa", "gdpr", "hipaa", "pci", "privacy"]}),
+    _seed_rule("model_validation_plan_exists", "Risk Assessment & Governance", "리스크 평가 및 거버넌스", "Model accuracy/testing plan is documented", "모델 정확도/검증 계획이 문서화되었는가", "The document should include testing or validation plan for model accuracy, safety, or fairness where applicable.", "문서에는 해당되는 경우 모델 정확도, 안전성, 공정성 검증 계획이 포함되어야 합니다.", "Medium", "llm", ["success_criteria", "acceptance"], ["Model validation plan and target metrics are documented."], ["모델 검증 계획과 목표 지표가 문서화되어 있습니다."], ["Validation is mentioned but test set, metric, or process is weak."], ["검증은 언급되었으나 테스트셋, 지표, 절차가 약합니다."], ["No model validation or testing plan is provided."], ["모델 검증 또는 테스트 계획이 제공되지 않았습니다."], "Add validation dataset, metric, target threshold, and review process.", "검증 데이터셋, 지표, 목표 임계치, 검토 절차를 추가하십시오.", "SOW Pre-Submission Checklist", {"model validation": ["validation", "accuracy", "test", "metric", "threshold"]}),
+    _seed_rule("cross_document_consistency", "Final Check", "최종 점검", "Cross-document consistency is verified", "문서 간 모순이 없는지 교차 검증되었는가", "The document should not contain contradictions across use case, architecture, cost, scope, and timeline.", "Use Case, 아키텍처, 비용, 범위, 일정 사이에 모순이 없어야 합니다.", "High", "llm", ["executive_summary", "scope_of_work", "architecture", "cost_breakdown", "milestones"], ["No major contradiction is found across sections."], ["섹션 간 주요 모순이 발견되지 않습니다."], ["Minor inconsistency exists but does not block submission."], ["작은 불일치가 있으나 제출을 막을 수준은 아닙니다."], ["Major contradiction exists across sections."], ["섹션 간 주요 모순이 존재합니다."], "Align use case, architecture, cost, scope, resource plan, and timeline.", "Use Case, 아키텍처, 비용, 범위, 리소스 계획, 일정을 정합화하십시오.", "SOW Pre-Submission Checklist", {"consistency": ["use case", "architecture", "cost", "scope", "timeline"]}),
+    _seed_rule("apfp_submission_info_exists", "APFP", "APFP", "APFP submission information is prepared", "APFP 제출 정보가 준비되었는가", "The document should support APFP submission fields such as project name, business description, dates, currency, total cost, and requested funding amount.", "문서는 프로젝트명, 비즈니스 설명, 일정, 통화, 총 비용, 요청 펀딩 금액 등 APFP 제출 정보를 뒷받침해야 합니다.", "Medium", "llm", ["cover", "executive_summary", "milestones", "cost_breakdown"], ["Key APFP submission information is present."], ["주요 APFP 제출 정보가 존재합니다."], ["Some APFP fields are present but incomplete."], ["일부 APFP 필드는 있으나 불완전합니다."], ["APFP submission information is mostly missing."], ["APFP 제출 정보가 대부분 누락되었습니다."], "Add APFP-ready project name, business description, start/end dates, total cost, and requested funding amount.", "APFP 제출용 프로젝트명, 비즈니스 설명, 시작/종료일, 총 비용, 요청 펀딩 금액을 추가하십시오.", "GenAIIC PLD Funding Guide", {"APFP fields": ["project", "business", "date", "currency", "total cost", "funding"]}),
+    _seed_rule("claim_timeline_awareness", "APFP", "APFP", "Claim timeline and completion evidence requirements are understood", "Claim 기한과 완료 증빙 요건이 반영되었는가", "The project should consider claim submission timing and completion sign-off requirements after project completion.", "프로젝트 완료 후 Claim 제출 기한과 완료 증빙/Sign-off 요건을 고려해야 합니다.", "Low", "llm", ["milestones", "acceptance"], ["Claim or completion evidence requirements are mentioned where relevant."], ["관련되는 경우 Claim 또는 완료 증빙 요건이 언급되어 있습니다."], ["Completion is mentioned but claim timing is not considered."], ["완료는 언급되었으나 Claim 기한은 고려되지 않았습니다."], ["No claim or completion evidence awareness is shown."], ["Claim 또는 완료 증빙 요건에 대한 고려가 없습니다."], "Add completion sign-off and claim timing awareness if needed for APFP process.", "APFP 절차상 필요한 경우 완료 Sign-off와 Claim 기한 고려사항을 추가하십시오.", "GenAIIC PLD Funding Guide", {"claim evidence": ["claim", "completion", "sign-off", "evidence"]}),
+]
+
+
+def _review_catalog_public() -> list[dict]:
+    public_keys = {
+        "rule_id", "enabled", "custom", "category_en", "category_kr",
+        "title_en", "title_kr", "description_en", "description_kr",
+        "severity", "evaluation_type", "related_sections",
+        "pass_criteria_en", "pass_criteria_kr", "warning_criteria_en",
+        "warning_criteria_kr", "fail_criteria_en", "fail_criteria_kr",
+        "recommendation_template_en", "recommendation_template_kr", "source",
+        "created_at", "updated_at", "created_by", "updated_by",
+    }
+    return [{k: deepcopy(rule[k]) for k in public_keys if k in rule} for rule in _REVIEW_RULE_CATALOG]
+
+
+def _review_text(value: Any) -> str:
+    value = _resolve_field_value(value)
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, dict):
+        parts = [_review_text(v) for v in value.values()]
+        return " ".join(p for p in parts if p)
+    if isinstance(value, list):
+        parts = [_review_text(v) for v in value]
+        return " ".join(p for p in parts if p)
+    return str(value)
+
+
+def _review_has_content(value: Any) -> bool:
+    return bool(_review_text(value).strip())
+
+
+def _review_snippet(text: str, limit: int = 220) -> str:
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _collect_review_evidence(value: Any, section: str, terms: list[str], field_path: str = "", limit: int = 4) -> list[dict]:
+    matches: list[dict] = []
+    term_lowers = [str(t).lower() for t in terms if str(t).strip()]
+
+    def visit(node: Any, path: str) -> None:
+        if len(matches) >= limit:
+            return
+        resolved = _resolve_field_value(node)
+        if isinstance(resolved, dict):
+            for key, child in resolved.items():
+                visit(child, f"{path}.{key}" if path else str(key))
+            return
+        if isinstance(resolved, list):
+            for index, child in enumerate(resolved):
+                visit(child, f"{path}.{index}" if path else str(index))
+            return
+        text = _review_text(resolved)
+        if not text:
+            return
+        haystack = text.lower()
+        if term_lowers and not any(term in haystack for term in term_lowers):
+            return
+        matches.append({
+            "section": section,
+            "text": _review_snippet(text),
+            "field_path": field_path or (f"sections.{section}.{path}" if section != "meta" else f"meta.{path}") if path else (field_path or section),
+        })
+
+    visit(value, "")
+    return matches
+
+
+def _rule_evidence_context(item: dict) -> dict:
     sections = item.get("sections", {}) if isinstance(item.get("sections"), dict) else {}
     meta = item.get("meta", {}) if isinstance(item.get("meta"), dict) else {}
-    cost = sections.get("cost_breakdown", {}) if isinstance(sections.get("cost_breakdown"), dict) else {}
-    architecture = sections.get("architecture", {}) if isinstance(sections.get("architecture"), dict) else {}
-    resources = sections.get("resources_cost_estimates", {}) if isinstance(sections.get("resources_cost_estimates"), dict) else {}
-    executive = sections.get("executive_summary", {}) if isinstance(sections.get("executive_summary"), dict) else {}
+    return {
+        "sections": sections,
+        "meta": meta,
+        "cost": sections.get("cost_breakdown", {}) if isinstance(sections.get("cost_breakdown"), dict) else {},
+        "architecture": sections.get("architecture", {}) if isinstance(sections.get("architecture"), dict) else {},
+        "resources": sections.get("resources_cost_estimates", {}) if isinstance(sections.get("resources_cost_estimates"), dict) else {},
+    }
 
-    issues = {"critical": [], "high": [], "medium": [], "low": []}
-    missing_questions: list[str] = []
-    suggested_patches: list[dict] = []
 
-    required_sections = [
-        "cover", "executive_summary", "stakeholders", "success_criteria",
-        "assumptions", "scope_of_work", "architecture", "milestones",
-        "cost_breakdown", "acceptance", "resources_cost_estimates",
-    ]
-    for section in required_sections:
-        value = sections.get(section)
-        if value in (None, {}, []):
-            issue = _make_issue(
-                "high",
-                f"{section.upper()}_INCOMPLETE",
-                f"{section} is a submission readiness issue and is recommended before submission.",
-                section,
-                f"What content should be added to {section}?",
-            )
-            issues["high"].append(issue)
-            missing_questions.append(issue["question"])
+def _section_value_for_rule(ctx: dict, section: str) -> Any:
+    if section == "meta":
+        return ctx.get("meta", {})
+    return ctx.get("sections", {}).get(section)
 
+
+def _architecture_service_names(architecture: dict) -> list[str]:
     services = architecture.get("services", []) if isinstance(architecture.get("services"), list) else []
-    has_bedrock = any(
-        "bedrock" in str(_resolve_field_value((svc or {}).get("service_name", ""))).lower()
-        or "bedrock" in str((svc or {}).get("service_id", "")).lower()
-        for svc in services
-        if isinstance(svc, dict)
-    )
-    if not has_bedrock:
-        issues["critical"].append(_make_issue(
-            "critical",
-            "BEDROCK_EVIDENCE_MISSING",
-            "Amazon Bedrock inclusion needs more evidence before submission.",
-            "architecture",
-            "Which Amazon Bedrock models, guardrails, or usage assumptions are in scope?",
-        ))
-        missing_questions.append("Which Amazon Bedrock models, guardrails, or usage assumptions are in scope?")
+    names: list[str] = []
+    for svc in services:
+        if isinstance(svc, dict):
+            name = _resolve_field_value(svc.get("service_name")) or svc.get("service_id", "")
+        else:
+            name = svc
+        if name:
+            names.append(str(name))
+    return names
 
-    calculator_url = cost.get("calculator_url", {})
-    mrr = _to_float(cost.get("mrr", 0))
-    arr = _to_float(cost.get("arr", 0))
+
+def _cost_breakdown_rows(cost: dict) -> list[dict]:
+    rows = cost.get("breakdown_table") if isinstance(cost, dict) else None
+    return rows if isinstance(rows, list) else []
+
+
+def _cost_has_bedrock_row(cost: dict) -> bool:
+    for row in _cost_breakdown_rows(cost):
+        if not isinstance(row, dict):
+            continue
+        for key in ("service_name", "service", "category", "name"):
+            label = _review_text(row.get(key))
+            if "bedrock" in label.lower():
+                return True
+    return False
+
+
+def _field_path_value(root: dict, dotted_path: str) -> Any:
+    node: Any = root
+    for part in dotted_path.split("."):
+        if isinstance(node, dict):
+            node = node.get(part)
+        else:
+            return None
+    return node
+
+
+def _has_url(value: Any) -> bool:
+    text = _review_text(value).lower()
+    return text.startswith("http://") or text.startswith("https://") or "calculator.aws" in text
+
+
+def _has_architecture_diagram(architecture: dict) -> bool:
+    for key in ("diagram_image_s3_key", "drawio_s3_key", "preview_s3_key", "preview_url", "diagram_url"):
+        if _has_resolved_value(architecture.get(key)):
+            return True
+    return False
+
+
+def _resource_total_cost(resources: dict) -> float:
+    if not isinstance(resources, dict):
+        return 0.0
+    total_cost = resources.get("total_cost", {}) if isinstance(resources.get("total_cost"), dict) else {}
+    return _to_float(total_cost.get("total"))
+
+
+def _evaluate_review_rule(rule: dict, item: dict, ctx: dict, suggested_patches: list[dict]) -> dict:
+    related_sections = list(rule.get("related_sections") or [])
+    evidence_terms = rule.get("evidence_terms") if isinstance(rule.get("evidence_terms"), dict) else {}
+    section_values = {section: _section_value_for_rule(ctx, section) for section in related_sections}
+    referenced_sections = [section for section, value in section_values.items() if _review_has_content(value)]
+
+    evidence_found: list[dict] = []
+    missing_evidence: list[str] = []
+    for label, terms in evidence_terms.items():
+        label_terms = terms if isinstance(terms, list) else [str(terms)]
+        label_matches: list[dict] = []
+        for section, value in section_values.items():
+            label_matches.extend(_collect_review_evidence(value, section, label_terms, limit=2))
+            if label_matches:
+                break
+        if label_matches:
+            evidence_found.extend(label_matches)
+        else:
+            missing_evidence.append(str(label))
+
+    if not evidence_found:
+        for section, value in section_values.items():
+            evidence_found.extend(_collect_review_evidence(value, section, [], limit=1))
+            if evidence_found:
+                break
+
+    cost = ctx["cost"]
+    architecture = ctx["architecture"]
+    resources = ctx["resources"]
+    calculator_url = cost.get("calculator_url", {}) if isinstance(cost, dict) else {}
+    mrr = _to_float(cost.get("mrr", 0)) if isinstance(cost, dict) else 0.0
+    arr = _to_float(cost.get("arr", 0)) if isinstance(cost, dict) else 0.0
     funding = cost.get("funding_calculation", {}) if isinstance(cost.get("funding_calculation"), dict) else {}
     sow_cost = _to_float(funding.get("sow_cost"))
-    if sow_cost <= 0:
+    if sow_cost <= 0 and isinstance(resources, dict):
         total_cost = resources.get("total_cost", {}) if isinstance(resources.get("total_cost"), dict) else {}
         sow_cost = _to_float(total_cost.get("total"))
-    if not _has_resolved_value(calculator_url):
-        issues["high"].append(_make_issue(
-            "high",
-            "CALCULATOR_URL_MISSING",
-            "AWS Calculator evidence is recommended before submission.",
-            "cost_breakdown",
-            "What AWS Calculator URL or cost basis should be referenced?",
-        ))
-    if arr <= 0 and mrr > 0:
-        suggested_patches.append({
+    service_names = _architecture_service_names(architecture)
+    has_services = bool(service_names)
+    arch_has_bedrock = any("bedrock" in name.lower() for name in service_names)
+    has_calculator = _has_resolved_value(calculator_url)
+    cost_rows = _cost_breakdown_rows(cost)
+
+    special_status: str | None = None
+    special_missing: list[str] = []
+    rule_id = rule["rule_id"]
+    if rule_id in {"BEDROCK_EVIDENCE_MISSING", "bedrock_included"}:
+        special_status = "PASS" if arch_has_bedrock else ("FAIL" if _review_has_content(architecture) else "NOT_CHECKED")
+        if not arch_has_bedrock:
+            special_missing.append("Amazon Bedrock in architecture services or overview")
+    elif rule_id in {"ARR_MISSING", "total_arr_documented"}:
+        if arr > 0:
+            special_status = "PASS"
+        elif mrr > 0:
+            special_status = "WARNING"
+            special_missing.append("Confirmed Year 1 ARR value")
+        else:
+            special_status = "FAIL" if _review_has_content(cost) else "NOT_CHECKED"
+            special_missing.append("Year 1 ARR or MRR basis")
+    elif rule_id == "SOW_COST_MISSING":
+        special_status = "PASS" if sow_cost > 0 else ("FAIL" if _review_has_content(cost) or _review_has_content(resources) else "NOT_CHECKED")
+        if sow_cost <= 0:
+            special_missing.append("SOW cost or total resource estimate")
+    elif rule_id in {"FUNDING_FORMULA", "funding_amount_rule"}:
+        eligible = _to_float(funding.get("eligible_amount")) if isinstance(funding, dict) else 0.0
+        if arr > 0 and sow_cost > 0 and eligible > 0:
+            special_status = "PASS"
+        elif arr > 0 and sow_cost > 0:
+            special_status = "WARNING"
+            special_missing.append("Confirmed eligible funding amount/formula")
+        else:
+            special_status = "FAIL" if _review_has_content(cost) or _review_has_content(resources) else "NOT_CHECKED"
+            special_missing.append("ARR and SOW cost inputs for funding formula")
+    elif rule_id == "calculator_link_exists":
+        if _has_url(calculator_url):
+            special_status = "PASS"
+        elif "calculator" in _review_text(cost).lower():
+            special_status = "WARNING"
+            special_missing.append("Valid AWS Calculator URL")
+        else:
+            special_status = "FAIL" if _review_has_content(cost) else "NOT_CHECKED"
+            special_missing.append("AWS Calculator share URL")
+    elif rule_id == "bedrock_cost_estimate_exists":
+        has_bedrock_cost = _cost_has_bedrock_row(cost) or ("bedrock" in _review_text(cost).lower() and ("cost" in _review_text(cost).lower() or arr > 0 or mrr > 0))
+        has_token_assumption = "token" in (_review_text(cost) + " " + _review_text(ctx["sections"].get("assumptions", {}))).lower()
+        if has_bedrock_cost and has_token_assumption:
+            special_status = "PASS"
+        elif has_bedrock_cost or has_token_assumption:
+            special_status = "WARNING"
+            special_missing.append("Bedrock token assumptions and monthly/annual cost estimate")
+        else:
+            special_status = "FAIL" if _review_has_content(cost) else "NOT_CHECKED"
+            special_missing.append("Bedrock token/cost estimate")
+    elif rule_id == "sow_cost_breakdown_exists":
+        resource_text = _review_text(resources).lower()
+        has_total = sow_cost > 0 or _resource_total_cost(resources) > 0
+        has_breakdown = any(term in resource_text for term in ("role", "rate", "hour", "phase", "contribution"))
+        if has_total and has_breakdown:
+            special_status = "PASS"
+        elif has_total or has_breakdown:
+            special_status = "WARNING"
+            special_missing.append("Role/rate/hour/phase contribution breakdown")
+        else:
+            special_status = "FAIL" if _review_has_content(resources) else "NOT_CHECKED"
+            special_missing.append("SOW cost breakdown")
+    elif rule_id == "architecture_diagram_exists":
+        if _has_architecture_diagram(architecture):
+            special_status = "PASS"
+        elif _review_has_content(architecture):
+            special_status = "WARNING"
+            special_missing.append("Architecture diagram artifact")
+        else:
+            special_status = "NOT_CHECKED"
+            special_missing.append("Architecture diagram artifact")
+    elif rule_id in {"ARCHITECTURE_COST_ALIGNMENT_MISSING", "architecture_cost_alignment"}:
+        if has_services and (has_calculator or cost_rows):
+            special_status = "PASS" if has_calculator else "WARNING"
+        elif has_services:
+            special_status = "FAIL"
+            special_missing.append("Calculator URL or service-level cost rows mapped to architecture services")
+        else:
+            special_status = "NOT_CHECKED"
+            special_missing.append("Architecture services")
+    elif rule_id == "BEDROCK_COST_NOT_REFLECTED":
+        if not arch_has_bedrock:
+            special_status = "NOT_CHECKED"
+            special_missing.append("Bedrock architecture evidence")
+        elif has_calculator or _cost_has_bedrock_row(cost):
+            special_status = "PASS"
+        else:
+            special_status = "FAIL"
+            special_missing.append("Bedrock-specific cost row or calculator URL")
+    elif rule_id == "APN_TEMPLATE_COMPLETENESS":
+        empty_sections = [section for section, value in section_values.items() if not _review_has_content(value)]
+        if not empty_sections:
+            special_status = "PASS"
+        elif len(empty_sections) <= 2 and len(empty_sections) < len(section_values):
+            special_status = "WARNING"
+        else:
+            special_status = "FAIL" if len(empty_sections) < len(section_values) else "NOT_CHECKED"
+        special_missing.extend([f"{section} content" for section in empty_sections])
+
+    if special_missing:
+        missing_evidence = list(dict.fromkeys(special_missing + missing_evidence))
+
+    if special_status:
+        status = special_status
+    elif not any(_review_has_content(value) for value in section_values.values()):
+        status = "NOT_CHECKED"
+    elif not missing_evidence and evidence_found:
+        status = "PASS"
+    elif evidence_found:
+        status = "WARNING"
+    else:
+        status = "FAIL"
+
+    recommendation_by_status_en = {
+        "PASS": "No immediate fix required; keep the evidence current before submission.",
+        "WARNING": rule.get("recommendation_template_en") or "Add the missing evidence and confirm assumptions before submission.",
+        "FAIL": rule.get("recommendation_template_en") or "Add the required evidence; this is recommended before submission.",
+        "NOT_CHECKED": "Populate the related section so this rule can be evaluated before submission.",
+    }
+    recommendation_by_status_kr = {
+        "PASS": "즉시 수정은 필요하지 않습니다. 제출 전 근거가 최신 상태인지 확인하십시오.",
+        "WARNING": rule.get("recommendation_template_kr") or "누락된 근거를 추가하고 제출 전 가정을 확인하십시오.",
+        "FAIL": rule.get("recommendation_template_kr") or "필수 근거를 추가하십시오. 제출 전 보완을 권장합니다.",
+        "NOT_CHECKED": "관련 섹션을 작성한 뒤 제출 전 이 규칙을 다시 평가하십시오.",
+    }
+    judgment_by_status_en = {
+        "PASS": "Evidence is strong enough for this rule.",
+        "WARNING": "Partial evidence is present, but the document should be strengthened before submission.",
+        "FAIL": "Required evidence is missing or too weak for this rule.",
+        "NOT_CHECKED": "The related section has no usable evidence, so this rule was not checked.",
+    }
+    judgment_by_status_kr = {
+        "PASS": "이 규칙에 필요한 근거가 충분합니다.",
+        "WARNING": "일부 근거는 있으나 제출 전 보완을 권장합니다.",
+        "FAIL": "필수 근거가 누락되었거나 충분하지 않습니다.",
+        "NOT_CHECKED": "관련 섹션에 평가 가능한 근거가 없어 확인하지 못했습니다.",
+    }
+
+    suggested_patch = None
+    if rule_id == "ARR_MISSING" and arr <= 0 and mrr > 0:
+        suggested_patch = {
             "op": "replace",
             "path": "/sections/cost_breakdown/arr",
             "value": _confirmed_field_value(round(mrr * 12, 2)),
             "reason": "ARR can be calculated from MRR when MRR is provided.",
-        })
-    if arr <= 0:
-        issues["high"].append(_make_issue(
-            "high",
-            "ARR_MISSING",
-            "ARR / funding basis is a submission readiness issue.",
-            "cost_breakdown",
-            "What is the Year 1 ARR basis for this PoC?",
-        ))
-    if sow_cost <= 0:
-        issues["high"].append(_make_issue(
-            "high",
-            "SOW_COST_MISSING",
-            "SOW cost basis is recommended before submission.",
-            "resources_cost_estimates",
-            "What SOW cost should be used for funding eligibility?",
-        ))
-
-    overview = architecture.get("overview", {})
-    if services and not _has_resolved_value(overview):
-        issues["medium"].append(_make_issue(
-            "medium",
-            "ARCHITECTURE_OVERVIEW_MISSING",
-            "Architecture and service sizing needs more evidence before submission.",
-            "architecture",
-            "How do the listed AWS services support the target workload and sizing?",
-        ))
-
-    # Architecture ↔ Cost alignment — services must be reflected in cost basis.
-    if services:
-        breakdown_table = cost.get("breakdown_table") if isinstance(cost, dict) else None
-        if not isinstance(breakdown_table, list):
-            breakdown_table = []
-        if not breakdown_table and not _has_resolved_value(calculator_url):
-            issues["medium"].append(_make_issue(
-                "medium",
-                "ARCHITECTURE_COST_ALIGNMENT_MISSING",
-                "Architecture lists AWS services but cost basis has neither a Calculator URL nor a breakdown table.",
-                "cost_breakdown",
-                "Which AWS services map to which cost breakdown rows (or Calculator URL)?",
-            ))
-        # Bedrock specific — if the architecture lists Bedrock but the cost
-        # basis has no Bedrock-related row nor calculator URL, flag it.
-        arch_service_names = []
-        for svc in services:
-            if isinstance(svc, dict):
-                name = _resolve_field_value(svc.get("service_name")) or svc.get("service_id", "")
-            else:
-                name = svc
-            if name:
-                arch_service_names.append(str(name))
-        arch_has_bedrock = any("bedrock" in s.lower() for s in arch_service_names)
-        cost_has_bedrock_row = False
-        for row in breakdown_table:
-            if not isinstance(row, dict):
-                continue
-            label = ""
-            for key in ("service_name", "service", "category", "name"):
-                val = _resolve_field_value(row.get(key))
-                if val:
-                    label = str(val)
-                    break
-            if "bedrock" in label.lower():
-                cost_has_bedrock_row = True
-                break
-        if arch_has_bedrock and not cost_has_bedrock_row and not _has_resolved_value(calculator_url):
-            issues["medium"].append(_make_issue(
-                "medium",
-                "BEDROCK_COST_NOT_REFLECTED",
-                "Architecture lists Amazon Bedrock but cost basis has no Bedrock row or Calculator URL.",
-                "cost_breakdown",
-                "Add a Bedrock cost row or a Calculator URL that covers Bedrock usage.",
-            ))
-
-    business_groups = executive.get("groups", []) if isinstance(executive.get("groups"), list) else []
-    if not business_groups:
-        issues["medium"].append(_make_issue(
-            "medium",
-            "BUSINESS_CASE_MISSING",
-            "Business Case & Commitment is recommended before submission.",
-            "executive_summary",
-            "What business problem, ROI basis, sponsor, and production commitment should be documented?",
-        ))
-
-    assumptions = sections.get("assumptions", {}) if isinstance(sections.get("assumptions"), dict) else {}
-    if assumptions in ({}, {"groups": [], "items": []}):
-        issues["medium"].append(_make_issue(
-            "medium",
-            "RISK_GOVERNANCE_MISSING",
-            "Risk assessment and governance assumptions are recommended before submission.",
-            "assumptions",
-            "What risks, governance controls, and customer assumptions should be included?",
-        ))
-
-    customer = meta.get("customer", {})
-    if not _has_resolved_value(customer):
-        issues["low"].append(_make_issue(
-            "low",
-            "CUSTOMER_MISSING",
-            "Customer name should be confirmed before submission.",
-            "meta",
-            "What is the customer name?",
-        ))
-
-    penalty = (
-        len(issues["critical"]) * 22
-        + len(issues["high"]) * 12
-        + len(issues["medium"]) * 7
-        + len(issues["low"]) * 3
-    )
-    readiness_score = max(0, min(100, 100 - penalty))
-    if arr > 0 and sow_cost > 0:
+        }
+    elif rule_id == "FUNDING_FORMULA" and arr > 0 and sow_cost > 0:
         eligible = min(arr * 0.25, sow_cost, 125000)
-        suggested_patches.append({
+        suggested_patch = {
             "op": "replace",
             "path": "/sections/cost_breakdown/funding_calculation",
             "value": {
@@ -1842,10 +2369,380 @@ def _document_lint_result(item: dict) -> dict:
                 "formula": "min(Year 1 ARR * 25%, SOW Cost, 125000)",
             },
             "reason": "Update deterministic funding calculation basis.",
+        }
+    if suggested_patch:
+        suggested_patches.append(suggested_patch)
+
+    if status == "FAIL":
+        fallback_missing_en = rule.get("fail_criteria_en") or missing_evidence
+        fallback_missing_kr = rule.get("fail_criteria_kr") or missing_evidence
+    elif status == "WARNING":
+        fallback_missing_en = rule.get("warning_criteria_en") or missing_evidence
+        fallback_missing_kr = rule.get("warning_criteria_kr") or missing_evidence
+    else:
+        fallback_missing_en = missing_evidence
+        fallback_missing_kr = missing_evidence
+
+    return {
+        "rule_id": rule["rule_id"],
+        "category": rule.get("category_en", rule.get("category", "")),
+        "title": rule.get("title_en", rule.get("title", "")),
+        "category_en": rule.get("category_en", rule.get("category", "")),
+        "category_kr": rule.get("category_kr", ""),
+        "title_en": rule.get("title_en", rule.get("title", "")),
+        "title_kr": rule.get("title_kr", ""),
+        "status": status,
+        "severity": rule["severity"],
+        "llm_judgment": judgment_by_status_en[status],
+        "llm_judgment_en": judgment_by_status_en[status],
+        "llm_judgment_kr": judgment_by_status_kr[status],
+        "evidence_found": evidence_found[:4],
+        "missing_evidence": missing_evidence,
+        "missing_evidence_en": [str(x) for x in fallback_missing_en],
+        "missing_evidence_kr": [str(x) for x in fallback_missing_kr],
+        "recommendation": recommendation_by_status_en[status],
+        "recommendation_en": recommendation_by_status_en[status],
+        "recommendation_kr": recommendation_by_status_kr[status],
+        "referenced_sections": referenced_sections,
+        "suggested_patch_available": suggested_patch is not None,
+        "suggested_patch": suggested_patch,
+    }
+
+
+def _review_summary(evaluations: list[dict]) -> dict:
+    counts = {"pass": 0, "warning": 0, "fail": 0, "not_checked": 0}
+    for evaluation in evaluations:
+        key = str(evaluation.get("status", "NOT_CHECKED")).lower()
+        if key in counts:
+            counts[key] += 1
+    counts["total"] = len(evaluations)
+    return counts
+
+
+def _review_categories(evaluations: list[dict]) -> list[dict]:
+    by_category: dict[str, dict] = {}
+    for evaluation in evaluations:
+        category = str(evaluation.get("category_en") or evaluation.get("category") or "Uncategorized")
+        bucket = by_category.setdefault(category, {
+            "category": category,
+            "category_en": category,
+            "category_kr": str(evaluation.get("category_kr") or ""),
+            "pass": 0,
+            "warning": 0,
+            "fail": 0,
+            "not_checked": 0,
+            "total": 0,
         })
+        key = str(evaluation.get("status", "NOT_CHECKED")).lower()
+        if key in bucket:
+            bucket[key] += 1
+        bucket["total"] += 1
+    return list(by_category.values())
+
+
+def _issues_from_rule_evaluations(evaluations: list[dict]) -> dict:
+    issues = {"critical": [], "high": [], "medium": [], "low": []}
+    severity_map = {"Critical": "critical", "High": "high", "Medium": "medium", "Low": "low", "Info": "low"}
+    for evaluation in evaluations:
+        status = evaluation.get("status")
+        if status not in {"FAIL", "WARNING"}:
+            continue
+        bucket = severity_map.get(str(evaluation.get("severity")), "medium")
+        section = (evaluation.get("referenced_sections") or evaluation.get("referenced_sections") or [""])[0]
+        missing = evaluation.get("missing_evidence") or []
+        question = f"What evidence should be added for {evaluation.get('title_en') or evaluation.get('title')}?"
+        if missing:
+            question = f"What evidence should be added for {', '.join(str(m) for m in missing[:3])}?"
+        issues[bucket].append(_make_issue(
+            bucket,
+            str(evaluation.get("rule_id")),
+            str(evaluation.get("recommendation") or evaluation.get("llm_judgment") or ""),
+            str(section or ""),
+            question,
+        ))
+    return issues
+
+
+def _review_readiness_score(evaluations: list[dict]) -> int:
+    weights = {
+        "Critical": {"FAIL": 18, "WARNING": 9, "NOT_CHECKED": 6},
+        "High": {"FAIL": 12, "WARNING": 6, "NOT_CHECKED": 4},
+        "Medium": {"FAIL": 7, "WARNING": 3, "NOT_CHECKED": 2},
+        "Low": {"FAIL": 3, "WARNING": 1, "NOT_CHECKED": 1},
+        "Info": {"FAIL": 1, "WARNING": 0, "NOT_CHECKED": 0},
+    }
+    penalty = 0
+    for evaluation in evaluations:
+        penalty += weights.get(str(evaluation.get("severity")), weights["Medium"]).get(str(evaluation.get("status")), 0)
+    return max(0, min(100, 100 - penalty))
+
+
+def _review_rule_storage_key(rule_id: str) -> str:
+    return f"{_REVIEW_RULE_ITEM_PREFIX}{rule_id}"
+
+
+def _normalize_review_rule(rule: dict, *, custom: bool, user_id: str = "system") -> dict:
+    now = _now_iso()
+    normalized = deepcopy(rule)
+    normalized["rule_id"] = str(normalized.get("rule_id", "")).strip()
+    normalized["enabled"] = bool(normalized.get("enabled", True))
+    normalized["custom"] = bool(custom)
+    normalized["severity"] = str(normalized.get("severity", "Medium"))
+    normalized["evaluation_type"] = str(normalized.get("evaluation_type", "llm"))
+    normalized["related_sections"] = [str(s) for s in normalized.get("related_sections", []) if s]
+    for key in (
+        "pass_criteria_en", "pass_criteria_kr", "warning_criteria_en",
+        "warning_criteria_kr", "fail_criteria_en", "fail_criteria_kr",
+    ):
+        value = normalized.get(key, [])
+        if isinstance(value, str):
+            value = [value]
+        normalized[key] = [str(v) for v in value if v]
+    for key in (
+        "category_en", "category_kr", "title_en", "title_kr",
+        "description_en", "description_kr", "recommendation_template_en",
+        "recommendation_template_kr", "source",
+    ):
+        normalized[key] = str(normalized.get(key, "") or "")
+    normalized.setdefault("created_at", now)
+    normalized["updated_at"] = now
+    normalized.setdefault("created_by", user_id)
+    normalized["updated_by"] = user_id
+    return normalized
+
+
+def _validate_review_rule(rule: dict, *, creating: bool) -> list[str]:
+    missing: list[str] = []
+    required = [
+        "rule_id", "category_en", "category_kr", "title_en", "title_kr",
+        "description_en", "description_kr", "severity", "evaluation_type",
+        "related_sections", "pass_criteria_en", "pass_criteria_kr",
+        "warning_criteria_en", "warning_criteria_kr", "fail_criteria_en",
+        "fail_criteria_kr", "recommendation_template_en",
+        "recommendation_template_kr", "source",
+    ]
+    for key in required:
+        value = rule.get(key)
+        if value in (None, "", []):
+            missing.append(key)
+    if str(rule.get("severity", "")) not in _REVIEW_RULE_SEVERITIES:
+        missing.append("severity must be one of Critical, High, Medium, Low, Info")
+    if str(rule.get("evaluation_type", "")) not in _REVIEW_RULE_EVALUATION_TYPES:
+        missing.append("evaluation_type must be one of static, llm, hybrid")
+    if creating and not bool(rule.get("custom")):
+        missing.append("custom must be true")
+    return missing
+
+
+def _builtin_review_rule_map() -> dict[str, dict]:
+    return {rule["rule_id"]: deepcopy(rule) for rule in _REVIEW_RULE_CATALOG}
+
+
+def _scan_review_rule_items(item_type: str) -> list[dict]:
+    try:
+        resp = table.scan(FilterExpression=Attr("item_type").eq(item_type))
+    except Exception as exc:
+        _log("review_rules", "warn", scan_error=_safe_error_reason(exc), item_type=item_type)
+        return []
+    if not isinstance(resp, dict):
+        return []
+    items = resp.get("Items", [])
+    while resp.get("LastEvaluatedKey"):
+        resp = table.scan(
+            FilterExpression=Attr("item_type").eq(item_type),
+            ExclusiveStartKey=resp["LastEvaluatedKey"],
+        )
+        items.extend(resp.get("Items", []))
+    return items
+
+
+def _load_review_rules(*, include_disabled: bool = True) -> list[dict]:
+    rules = _builtin_review_rule_map()
+    for item in _scan_review_rule_items(_REVIEW_RULE_OVERRIDE_TYPE):
+        rule_id = str(item.get("rule_id", ""))
+        if rule_id in rules and "enabled" in item:
+            rules[rule_id]["enabled"] = bool(item.get("enabled"))
+            rules[rule_id]["updated_at"] = str(item.get("updated_at", rules[rule_id].get("updated_at", "")))
+            rules[rule_id]["updated_by"] = str(item.get("updated_by", rules[rule_id].get("updated_by", "")))
+    for item in _scan_review_rule_items(_REVIEW_RULE_CUSTOM_TYPE):
+        rule = {k: v for k, v in item.items() if k not in {"document_id", "item_type"}}
+        if rule.get("rule_id"):
+            rules[str(rule["rule_id"])] = _normalize_review_rule(rule, custom=True, user_id=str(rule.get("updated_by") or "system"))
+    result = list(rules.values())
+    if not include_disabled:
+        result = [rule for rule in result if bool(rule.get("enabled", True))]
+    return sorted(result, key=lambda r: (str(r.get("category_en", "")), str(r.get("rule_id", ""))))
+
+
+def _find_review_rule(rule_id: str, *, include_disabled: bool = True) -> dict | None:
+    for rule in _load_review_rules(include_disabled=include_disabled):
+        if rule.get("rule_id") == rule_id:
+            return rule
+    return None
+
+
+def _filter_review_rules(rules: list[dict], params: dict | None) -> list[dict]:
+    params = params or {}
+    enabled = params.get("enabled")
+    category = str(params.get("category", "") or "").strip().lower()
+    severity = str(params.get("severity", "") or "").strip().lower()
+    custom = params.get("custom")
+    query = str(params.get("q", "") or "").strip().lower()
+
+    def bool_param(value: Any) -> bool | None:
+        if value is None or value == "":
+            return None
+        return str(value).lower() in {"1", "true", "yes", "y"}
+
+    enabled_bool = bool_param(enabled)
+    custom_bool = bool_param(custom)
+    filtered = []
+    for rule in rules:
+        if enabled_bool is not None and bool(rule.get("enabled", True)) != enabled_bool:
+            continue
+        if custom_bool is not None and bool(rule.get("custom", False)) != custom_bool:
+            continue
+        if severity and str(rule.get("severity", "")).lower() != severity:
+            continue
+        if category and category not in f"{rule.get('category_en', '')} {rule.get('category_kr', '')}".lower():
+            continue
+        if query:
+            haystack = " ".join(str(rule.get(k, "")) for k in (
+                "rule_id", "category_en", "category_kr", "title_en", "title_kr",
+                "description_en", "description_kr", "source",
+            )).lower()
+            if query not in haystack:
+                continue
+        filtered.append(rule)
+    return filtered
+
+
+def _public_review_rule(rule: dict) -> dict:
+    return {k: deepcopy(v) for k, v in rule.items() if k not in {"evidence_terms", "document_id", "item_type"}}
+
+
+def _handle_list_review_rules(event: dict) -> dict:
+    _user_id, err = _require_user(event)
+    if err:
+        return err
+    rules = _filter_review_rules(_load_review_rules(include_disabled=True), event.get("queryStringParameters") or {})
+    return _response(200, {
+        "version": _REVIEW_RULE_SEED_VERSION,
+        "source_documents": _REVIEW_RULE_SOURCE_DOCUMENTS,
+        "rules": [_public_review_rule(rule) for rule in rules],
+        "total": len(rules),
+    })
+
+
+def _handle_get_review_rule(rule_id: str, event: dict) -> dict:
+    _user_id, err = _require_user(event)
+    if err:
+        return err
+    rule = _find_review_rule(rule_id, include_disabled=True)
+    if not rule:
+        return _response(404, {"error": "review rule not found", "rule_id": rule_id})
+    return _response(200, _public_review_rule(rule))
+
+
+def _handle_create_review_rule(body: dict, event: dict) -> dict:
+    user_id, err = _require_user(event)
+    if err:
+        return err
+    rule = _normalize_review_rule(body, custom=True, user_id=user_id)
+    validation_errors = _validate_review_rule(rule, creating=True)
+    if validation_errors:
+        return _response(400, {"error": "invalid review rule", "missing_inputs": validation_errors})
+    if _find_review_rule(rule["rule_id"], include_disabled=True):
+        return _response(409, {"error": "duplicate rule_id", "rule_id": rule["rule_id"]})
+    item = deepcopy(rule)
+    item["document_id"] = _review_rule_storage_key(rule["rule_id"])
+    item["item_type"] = _REVIEW_RULE_CUSTOM_TYPE
+    table.put_item(Item=json.loads(_json(item), parse_float=Decimal))
+    return _response(201, _public_review_rule(rule))
+
+
+def _handle_update_review_rule(rule_id: str, body: dict, event: dict) -> dict:
+    user_id, err = _require_user(event)
+    if err:
+        return err
+    existing = _find_review_rule(rule_id, include_disabled=True)
+    if not existing:
+        return _response(404, {"error": "review rule not found", "rule_id": rule_id})
+    if not existing.get("custom"):
+        enabled = bool(body.get("enabled", existing.get("enabled", True)))
+        item = {
+            "document_id": _review_rule_storage_key(rule_id),
+            "item_type": _REVIEW_RULE_OVERRIDE_TYPE,
+            "rule_id": rule_id,
+            "enabled": enabled,
+            "updated_at": _now_iso(),
+            "updated_by": user_id,
+        }
+        table.put_item(Item=item)
+        updated = deepcopy(existing)
+        updated["enabled"] = enabled
+        updated["updated_at"] = item["updated_at"]
+        updated["updated_by"] = user_id
+        return _response(200, _public_review_rule(updated))
+    merged = deepcopy(existing)
+    merged.update(body)
+    merged["rule_id"] = rule_id
+    merged["custom"] = True
+    rule = _normalize_review_rule(merged, custom=True, user_id=user_id)
+    validation_errors = _validate_review_rule(rule, creating=False)
+    if validation_errors:
+        return _response(400, {"error": "invalid review rule", "missing_inputs": validation_errors})
+    item = deepcopy(rule)
+    item["document_id"] = _review_rule_storage_key(rule_id)
+    item["item_type"] = _REVIEW_RULE_CUSTOM_TYPE
+    table.put_item(Item=json.loads(_json(item), parse_float=Decimal))
+    return _response(200, _public_review_rule(rule))
+
+
+def _handle_delete_review_rule(rule_id: str, event: dict) -> dict:
+    user_id, err = _require_user(event)
+    if err:
+        return err
+    existing = _find_review_rule(rule_id, include_disabled=True)
+    if not existing:
+        return _response(404, {"error": "review rule not found", "rule_id": rule_id})
+    if existing.get("custom"):
+        table.delete_item(Key={"document_id": _review_rule_storage_key(rule_id)})
+        return _response(200, {"status": "deleted", "rule_id": rule_id})
+    item = {
+        "document_id": _review_rule_storage_key(rule_id),
+        "item_type": _REVIEW_RULE_OVERRIDE_TYPE,
+        "rule_id": rule_id,
+        "enabled": False,
+        "updated_at": _now_iso(),
+        "updated_by": user_id,
+    }
+    table.put_item(Item=item)
+    return _response(200, {"status": "disabled", "rule_id": rule_id})
+
+
+def _document_lint_result(item: dict) -> dict:
+    ctx = _rule_evidence_context(item)
+    missing_questions: list[str] = []
+    suggested_patches: list[dict] = []
+    enabled_rules = _load_review_rules(include_disabled=False)
+    rule_evaluations = [
+        _evaluate_review_rule(rule, item, ctx, suggested_patches)
+        for rule in enabled_rules
+    ]
+    issues = _issues_from_rule_evaluations(rule_evaluations)
+    for issue_group in issues.values():
+        for issue in issue_group:
+            if issue.get("question"):
+                missing_questions.append(issue["question"])
+    readiness_score = _review_readiness_score(rule_evaluations)
 
     return {
         "readiness_score": readiness_score,
+        "summary": _review_summary(rule_evaluations),
+        "categories": _review_categories(rule_evaluations),
+        "rule_catalog": [_public_review_rule(rule) for rule in enabled_rules],
+        "rule_evaluations": rule_evaluations,
         "issues": issues,
         "missing_questions": missing_questions,
         "suggested_patches": suggested_patches,
@@ -3369,6 +4266,27 @@ def handler(event: dict, context: Any) -> dict:
             return _handle_create_document(event)
         if method == "GET":
             return _handle_list_documents(event)
+        return _response(405, {"error": "method not allowed"})
+
+    # /review_rules (collection)
+    if len(parts) == 1 and parts[0] == "review_rules":
+        if method == "GET":
+            return _handle_list_review_rules(event)
+        if method == "POST":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_create_review_rule(body, event)
+        return _response(405, {"error": "method not allowed"})
+
+    # /review_rules/{rule_id}
+    if len(parts) == 2 and parts[0] == "review_rules":
+        rule_id = parts[1]
+        if method == "GET":
+            return _handle_get_review_rule(rule_id, event)
+        if method == "PUT":
+            body = json.loads(event.get("body", "{}"))
+            return _handle_update_review_rule(rule_id, body, event)
+        if method == "DELETE":
+            return _handle_delete_review_rule(rule_id, event)
         return _response(405, {"error": "method not allowed"})
 
     if len(parts) < 2 or parts[0] != "documents":

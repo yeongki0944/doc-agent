@@ -24,6 +24,17 @@ def _post_event(path: str, body: dict, user_id: str = "user-1") -> dict:
     }
 
 
+def _request_event(method: str, path: str, body: dict | None = None, user_id: str = "user-1", query: dict | None = None) -> dict:
+    event = {
+        "requestContext": {"http": {"method": method, "path": path}},
+        "headers": {"X-User-Id": user_id},
+        "queryStringParameters": query or {},
+    }
+    if body is not None:
+        event["body"] = json.dumps(body)
+    return event
+
+
 def _body(response: dict) -> dict:
     return json.loads(response["body"])
 
@@ -730,6 +741,11 @@ def test_run_submission_lint_returns_frontend_contract(monkeypatch):
     assert response["statusCode"] == 200
     body = _body(response)
     assert "readiness_score" in body
+    assert "summary" in body
+    assert "categories" in body
+    assert "rule_evaluations" in body
+    assert len(body["rule_evaluations"]) == len(document_api._REVIEW_RULE_CATALOG)
+    assert {"PASS", "WARNING", "FAIL", "NOT_CHECKED"} & {r["status"] for r in body["rule_evaluations"]}
     assert set(body["issues"].keys()) == {"critical", "high", "medium", "low"}
     assert body["kb_retrieval"]["mode"] == "fallback"
     assert "AWS will reject" not in json.dumps(body)
@@ -977,8 +993,125 @@ def test_lint_architecture_cost_alignment_check(monkeypatch):
     )
     assert response["statusCode"] == 200
     body = _body(response)
-    medium_codes = [i["code"] for i in body["issues"]["medium"]]
-    assert "BEDROCK_COST_NOT_REFLECTED" in medium_codes
+    critical_codes = [i["code"] for i in body["issues"]["critical"]]
+    assert "architecture_cost_alignment" in critical_codes
+
+
+def test_run_submission_lint_rule_matrix_contains_evidence_and_missing_evidence(monkeypatch):
+    item = _doc_item(version=2)
+    item["sections"] = document_api._default_sections()
+    item["sections"]["architecture"]["overview"] = _field(
+        user_input="Architecture uses Amazon Bedrock and AWS Lambda for a RAG workflow.",
+        status="confirmed",
+    )
+    item["sections"]["architecture"]["services"] = [
+        {"service_name": _field(user_input="Amazon Bedrock", status="confirmed"), "service_id": "amazon_bedrock"},
+        {"service_name": _field(user_input="AWS Lambda", status="confirmed"), "service_id": "aws_lambda"},
+    ]
+    table = MagicMock()
+    table.get_item.return_value = {"Item": item}
+    monkeypatch.setattr(document_api, "table", table)
+    monkeypatch.delenv("APPROVED_SAMPLES_KB_ID", raising=False)
+
+    response = document_api.handler(
+        _post_event("/documents/doc-1/run_submission_lint", {}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    evaluations = body["rule_evaluations"]
+    assert len(evaluations) == len(document_api._REVIEW_RULE_CATALOG)
+    assert any(r["status"] == "PASS" for r in evaluations)
+    assert any(r["status"] in {"FAIL", "WARNING"} for r in evaluations)
+    bedrock = next(r for r in evaluations if r["rule_id"] == "bedrock_included")
+    assert bedrock["status"] == "PASS"
+    assert bedrock["evidence_found"]
+    arr = next(r for r in evaluations if r["rule_id"] == "total_arr_documented")
+    assert arr["missing_evidence"]
+    assert "bedrock_included" not in [i["code"] for group in body["issues"].values() for i in group]
+
+
+def test_review_rules_admin_list_get_and_filter(monkeypatch):
+    table = MagicMock()
+    table.scan.return_value = {"Items": []}
+    monkeypatch.setattr(document_api, "table", table)
+
+    response = document_api.handler(
+        _request_event("GET", "/review_rules", query={"severity": "Critical", "q": "bedrock"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    body = _body(response)
+    assert body["version"] == "2026-05-09.v1"
+    assert body["rules"]
+    assert all(rule["severity"] == "Critical" for rule in body["rules"])
+    assert any(rule["rule_id"] == "bedrock_included" for rule in body["rules"])
+
+    response = document_api.handler(
+        _request_event("GET", "/review_rules/bedrock_included"),
+        None,
+    )
+    assert response["statusCode"] == 200
+    assert _body(response)["title_kr"] == "Amazon Bedrock이 핵심 서비스로 포함되어 있는가"
+
+
+def test_review_rules_admin_custom_crud_and_builtin_disable(monkeypatch):
+    store: dict[str, dict] = {}
+    table = MagicMock()
+
+    def scan(**_kwargs):
+        item_type = _kwargs.get("FilterExpression")
+        # The Attr expression is opaque in unit tests; return all catalog metadata items.
+        return {"Items": list(store.values())}
+
+    def put_item(Item):
+        store[Item["document_id"]] = Item
+
+    def delete_item(Key):
+        store.pop(Key["document_id"], None)
+
+    table.scan.side_effect = scan
+    table.put_item.side_effect = put_item
+    table.delete_item.side_effect = delete_item
+    monkeypatch.setattr(document_api, "table", table)
+
+    custom_rule = {
+        "rule_id": "custom_safe_test_rule",
+        "enabled": True,
+        "custom": True,
+        "category_en": "Custom",
+        "category_kr": "커스텀",
+        "title_en": "Custom safe test rule",
+        "title_kr": "커스텀 안전 테스트 규칙",
+        "description_en": "Safe unit-test custom rule.",
+        "description_kr": "안전한 단위 테스트 커스텀 규칙입니다.",
+        "severity": "Low",
+        "evaluation_type": "llm",
+        "related_sections": ["executive_summary"],
+        "pass_criteria_en": ["Evidence exists."],
+        "pass_criteria_kr": ["근거가 있습니다."],
+        "warning_criteria_en": ["Partial evidence exists."],
+        "warning_criteria_kr": ["일부 근거가 있습니다."],
+        "fail_criteria_en": ["Evidence is missing."],
+        "fail_criteria_kr": ["근거가 없습니다."],
+        "recommendation_template_en": "Add custom evidence.",
+        "recommendation_template_kr": "커스텀 근거를 추가하십시오.",
+        "source": "unit-test",
+    }
+
+    response = document_api.handler(_request_event("POST", "/review_rules", custom_rule), None)
+    assert response["statusCode"] == 201
+    response = document_api.handler(_request_event("PUT", "/review_rules/custom_safe_test_rule", {"enabled": False}), None)
+    assert response["statusCode"] == 200
+    assert _body(response)["enabled"] is False
+    response = document_api.handler(_request_event("DELETE", "/review_rules/custom_safe_test_rule"), None)
+    assert response["statusCode"] == 200
+
+    response = document_api.handler(_request_event("PUT", "/review_rules/bedrock_included", {"enabled": False}), None)
+    assert response["statusCode"] == 200
+    assert _body(response)["enabled"] is False
 
 
 # ---------------------------------------------------------------------------
